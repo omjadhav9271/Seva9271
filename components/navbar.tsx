@@ -6,20 +6,19 @@ import { useRouter, usePathname } from 'next/navigation';
 import {
   Bell, MapPin, Wallet, Menu, X, LogOut, User, BookOpen,
   Heart, Settings, HelpCircle, ArrowUpRight, ArrowDownLeft, TrendingUp,
-  CheckCircle, Gift, Users
+  CheckCircle, Gift, Users, LocateFixed, Crosshair, Navigation
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { useLocation } from '@/lib/location-context';
 
 const navLinks = [
   { href: '/services', label: 'Services' },
-  { href: '/providers', label: 'Providers' },
   { href: '/how-it-works', label: 'How It Works' },
-  { href: '/become-provider', label: 'Become a Provider' },
 ];
 
 const mockNotifications = [
   { id: 1, title: 'Booking Confirmed', desc: 'Your electrician will arrive at 2 PM today', time: '5 minutes ago', icon: CheckCircle, iconColor: '#22c55e' },
-  { id: 2, title: 'Rewards Credited', desc: '₹82 rewards added to your wallet', time: '2 hours ago', icon: Gift, iconColor: '#FF9933' },
+  { id: 2, title: 'Rewards Credited', desc: 'Rs 82 rewards added to your wallet', time: '2 hours ago', icon: Gift, iconColor: '#FF9933' },
   { id: 3, title: 'New Provider Available', desc: 'A top-rated plumber is now in your area', time: '1 day ago', icon: Users, iconColor: '#3b82f6' },
 ];
 
@@ -31,6 +30,7 @@ export default function Navbar() {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
 
   const { user, profile, signOut, loading } = useAuth();
+  const { location, requestLocation } = useLocation();
   const router = useRouter();
   const pathname = usePathname();
 
@@ -75,11 +75,11 @@ export default function Navbar() {
 
   const handleSignOut = async () => {
     await signOut();
-    router.push('/');
+    router.push('/auth/signin');
   };
 
-  const balance = profile?.wallet_balance ?? 12450;
-  const tier = profile?.wallet_tier ?? 'gold';
+  const balance = profile?.wallet_balance ?? 0;
+  const tier = profile?.wallet_tier ?? 'silver';
   const monthlyReward = Math.round((balance * 0.08) / 12);
 
   const closeAll = () => {
@@ -99,7 +99,7 @@ export default function Navbar() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
           {/* Logo */}
-          <Link href="/" className="flex items-center gap-2 flex-shrink-0">
+          <Link href={user ? '/' : '/auth/signin'} className="flex items-center gap-2 flex-shrink-0">
             <span className="text-2xl">🙏</span>
             <span className="text-xl font-bold text-[#138808]">Seva</span>
             <span className="text-2xl">🙏</span>
@@ -124,10 +124,25 @@ export default function Navbar() {
 
           {/* Right Side */}
           <div className="hidden md:flex items-center gap-3">
-            {/* Location */}
-            <button className="flex items-center gap-1.5 text-sm text-gray-300 hover:text-white transition-colors">
-              <MapPin className="w-4 h-4 text-[#FF9933]" />
-              <span>{profile?.city ? `${profile.city}, ${profile.state}` : 'Mumbai, MH'}</span>
+            {/* GPS Location */}
+            <button
+              onClick={requestLocation}
+              className="flex items-center gap-1.5 text-sm text-gray-300 hover:text-white transition-colors group"
+              title={location.error || 'Click to refresh location'}
+            >
+              {location.loading ? (
+                <div className="w-3.5 h-3.5 border-2 border-[#FF9933]/30 border-t-[#FF9933] rounded-full animate-spin" />
+              ) : (
+                <Crosshair className="w-3.5 h-3.5 text-[#FF9933]" />
+              )}
+              <span className="max-w-[120px] truncate">
+                {location.city ? `${location.city}, ${location.state}` : 'Locating...'}
+              </span>
+              {location.error && (
+                <span className="text-red-400 text-xs" title={location.error}>
+                  <LocateFixed className="w-3 h-3" />
+                </span>
+              )}
             </button>
 
             {!loading && (
@@ -142,7 +157,7 @@ export default function Navbar() {
                       >
                         <Wallet className="w-4 h-4 text-[#FF9933]" />
                         <span className="font-semibold text-white">
-                          ₹{balance.toLocaleString('en-IN')}
+                          Rs {balance.toLocaleString('en-IN')}
                         </span>
                         <span className={`text-xs font-bold px-1.5 py-0.5 rounded-full capitalize ${tierBadgeColors[tier]}`}>
                           {tier.charAt(0).toUpperCase() + tier.slice(1)}
@@ -157,11 +172,11 @@ export default function Navbar() {
                           <div className="px-5 py-4 space-y-3 border-b border-[#2a2a2a]">
                             <div className="flex items-center justify-between">
                               <span className="text-sm text-gray-400">Balance:</span>
-                              <span className="text-sm font-bold text-white">₹{balance.toLocaleString('en-IN')}</span>
+                              <span className="text-sm font-bold text-white">Rs {balance.toLocaleString('en-IN')}</span>
                             </div>
                             <div className="flex items-center justify-between">
                               <span className="text-sm text-gray-400">Monthly Rewards:</span>
-                              <span className="text-sm font-bold text-[#22c55e]">+₹{monthlyReward}</span>
+                              <span className="text-sm font-bold text-[#22c55e]">+Rs {monthlyReward}</span>
                             </div>
                             <div className="flex items-center justify-between">
                               <span className="text-sm text-gray-400">Tier:</span>
@@ -258,8 +273,8 @@ export default function Navbar() {
                       {userMenuOpen && (
                         <div className="absolute right-0 mt-2 w-56 bg-[#1a1a1a] border border-[#2a2a2a] rounded-2xl shadow-2xl overflow-hidden">
                           <div className="px-4 py-3.5 border-b border-[#2a2a2a]">
-                            <p className="text-sm font-bold text-white truncate">{profile?.full_name ?? 'Rajesh Kumar'}</p>
-                            <p className="text-xs text-gray-400 truncate mt-0.5">{user.email ?? 'rajesh@example.com'}</p>
+                            <p className="text-sm font-bold text-white truncate">{profile?.full_name ?? 'User'}</p>
+                            <p className="text-xs text-gray-400 truncate mt-0.5">{user.email ?? ''}</p>
                           </div>
                           <div className="py-1.5">
                             <Link href="/profile" onClick={closeAll} className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300 hover:bg-[#252525] hover:text-white transition-colors">
@@ -324,6 +339,15 @@ export default function Navbar() {
       {menuOpen && (
         <div className="md:hidden bg-[#0d0d0d] border-t border-[#2a2a2a]">
           <div className="px-4 py-4 space-y-2">
+            {/* GPS Location on mobile */}
+            <button
+              onClick={requestLocation}
+              className="flex items-center gap-2 px-4 py-3 rounded-lg text-sm text-gray-300 hover:bg-[#1e1e1e] hover:text-white transition-colors"
+            >
+              <Navigation className="w-4 h-4 text-[#FF9933]" />
+              {location.city ? `${location.city}, ${location.state}` : 'Locating...'}
+              {location.error && <span className="text-xs text-red-400">({location.error})</span>}
+            </button>
             {navLinks.map((link) => (
               <Link
                 key={link.href}

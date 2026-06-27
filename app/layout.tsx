@@ -2,6 +2,7 @@ import './globals.css';
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import { AuthProvider } from '@/lib/auth-context';
+import { LocationProvider } from '@/lib/location-context';
 import Navbar from '@/components/navbar';
 import Footer from '@/components/footer';
 import { Toaster } from 'sonner';
@@ -28,19 +29,21 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={inter.variable}>
       <body className={`${inter.className} bg-[#0d0d0d] text-white min-h-screen`}>
         <AuthProvider>
-          <Navbar />
-          <main>{children}</main>
-          <Footer />
-          <Toaster
-            position="top-right"
-            toastOptions={{
-              style: {
-                background: '#1a1a1a',
-                border: '1px solid #2a2a2a',
-                color: '#fff',
-              },
-            }}
-          />
+          <LocationProvider>
+            <Navbar />
+            <main>{children}</main>
+            <Footer />
+            <Toaster
+              position="top-right"
+              toastOptions={{
+                style: {
+                  background: '#1a1a1a',
+                  border: '1px solid #2a2a2a',
+                  color: '#fff',
+                },
+              }}
+            />
+          </LocationProvider>
         </AuthProvider>
       </body>
     </html>

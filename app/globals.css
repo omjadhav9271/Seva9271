@@ -186,3 +186,18 @@ select:focus {
 .tier-silver { background: linear-gradient(135deg, #94a3b8, #64748b); }
 .tier-gold { background: linear-gradient(135deg, #f59e0b, #d97706); }
 .tier-platinum { background: linear-gradient(135deg, #e2e8f0, #94a3b8); }
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
