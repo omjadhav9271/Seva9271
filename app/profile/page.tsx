@@ -42,9 +42,12 @@ export default function ProfilePage() {
 
   const handleSave = async () => {
     setSaving(true);
+    // NOTE: after the security-hardening migration, authenticated users may UPDATE only
+    // (full_name, phone, avatar_url, city, state, address) on profiles. Do NOT include
+    // updated_at or protected columns here or the column-level grant will reject the write.
     const { error } = await supabase
       .from('profiles')
-      .update({ ...form, updated_at: new Date().toISOString() })
+      .update(form)
       .eq('id', user.id);
     setSaving(false);
 

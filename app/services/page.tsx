@@ -9,7 +9,7 @@ import {
   GraduationCap, Settings, Hammer, Leaf, Scissors, ShoppingBasket, Truck,
   CheckCircle, Clock, X
 } from 'lucide-react';
-import { supabase, ServiceProvider } from '@/lib/supabase';
+import { supabase } from '@/lib/supabase';
 
 const categories = [
   { icon: Zap, name: 'Electrician', slug: 'electrician', color: '#FF9933' },
@@ -28,16 +28,38 @@ const categories = [
   { icon: Truck, name: 'Delivery', slug: 'delivery', color: '#f97316' },
 ];
 
-const mockProviders = [
-  { id: '1', business_name: 'Amit Sharma', category: 'Electrician', slug: 'electrician', rating: 4.9, total_reviews: 156, hourly_rate: 350, experience_years: 8, city: 'Mumbai', is_verified: true, is_available: true, avatar: 'AS', color: 'from-amber-500 to-orange-600', bio: 'Expert electrician with 8+ years. Specializes in home wiring and electrical repairs.' },
-  { id: '2', business_name: 'Priya Patel', category: 'Home Cleaning', slug: 'house-cleaning', rating: 4.8, total_reviews: 203, hourly_rate: 250, experience_years: 5, city: 'Mumbai', is_verified: true, is_available: true, avatar: 'PP', color: 'from-pink-500 to-rose-600', bio: 'Professional house cleaner. Deep cleaning, organizing, and maintenance expert.' },
-  { id: '3', business_name: 'Ravi Kumar', category: 'Plumber', slug: 'plumber', rating: 4.9, total_reviews: 89, hourly_rate: 300, experience_years: 10, city: 'Pune', is_verified: true, is_available: true, avatar: 'RK', color: 'from-blue-500 to-cyan-600', bio: 'Senior plumber. Handles all types of plumbing — pipes, leaks, bathroom installations.' },
-  { id: '4', business_name: 'Meena Devi', category: 'Home Cook', slug: 'home-cook', rating: 4.7, total_reviews: 312, hourly_rate: 200, experience_years: 7, city: 'Delhi', is_verified: true, is_available: false, avatar: 'MD', color: 'from-red-500 to-orange-500', bio: 'Home cook specializing in North Indian cuisine. Daily tiffin service available.' },
-  { id: '5', business_name: 'Suresh Farm', category: 'Farm Fresh', slug: 'farm-fresh', rating: 4.8, total_reviews: 145, hourly_rate: 0, experience_years: 15, city: 'Nashik', is_verified: true, is_available: true, avatar: 'SF', color: 'from-green-500 to-emerald-600', bio: 'Direct farm-to-home delivery. Fresh milk, vegetables, fruits from our organic farm.' },
-  { id: '6', business_name: 'Rajesh Deliveries', category: 'Delivery', slug: 'delivery', rating: 4.6, total_reviews: 78, hourly_rate: 0, experience_years: 3, city: 'Mumbai', is_verified: true, is_available: true, avatar: 'RD', color: 'from-orange-500 to-amber-500', bio: 'Quick delivery service. Available for gig deliveries within 10km radius.' },
-  { id: '7', business_name: 'Dr. Anita Singh', category: 'Doctor', slug: 'doctor', rating: 4.9, total_reviews: 67, hourly_rate: 800, experience_years: 12, city: 'Bangalore', is_verified: true, is_available: true, avatar: 'AS', color: 'from-teal-500 to-cyan-600', bio: 'MBBS, MD. Home visit consultations for general medicine and elderly care.' },
-  { id: '8', business_name: 'Vikram Sharma', category: 'Carpenter', slug: 'carpenter', rating: 4.7, total_reviews: 134, hourly_rate: 400, experience_years: 12, city: 'Hyderabad', is_verified: true, is_available: true, avatar: 'VS', color: 'from-yellow-500 to-amber-600', bio: 'Expert carpenter. Furniture making, repairs, modular kitchen installation.' },
-];
+type ProviderCard = {
+  id: string;
+  business_name: string | null;
+  category: string;
+  slug: string;
+  rating: number;
+  total_reviews: number;
+  hourly_rate: number;
+  experience_years: number;
+  city: string | null;
+  is_verified: boolean;
+  is_available: boolean;
+  avatar: string;
+  color: string;
+  bio: string | null;
+};
+
+const categoryGradient: Record<string, string> = {
+  electrician: 'from-amber-500 to-orange-600',
+  'house-cleaning': 'from-pink-500 to-rose-600',
+  plumber: 'from-blue-500 to-cyan-600',
+  'home-cook': 'from-red-500 to-orange-500',
+  'farm-fresh': 'from-green-500 to-emerald-600',
+  delivery: 'from-orange-500 to-amber-500',
+  doctor: 'from-teal-500 to-cyan-600',
+  carpenter: 'from-yellow-500 to-amber-600',
+};
+
+function initials(name: string | null): string {
+  if (!name) return '?';
+  return name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2);
+}
 
 function ServicesContent() {
   const searchParams = useSearchParams();
@@ -48,10 +70,48 @@ function ServicesContent() {
   const [showFilters, setShowFilters] = useState(false);
   const [minRating, setMinRating] = useState(0);
   const [availableOnly, setAvailableOnly] = useState(false);
+  const [providers, setProviders] = useState<ProviderCard[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const filtered = mockProviders.filter((p) => {
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const { data, error } = await supabase
+        .from('service_providers')
+        .select('id, business_name, bio, rating, total_reviews, hourly_rate, experience_years, city, is_verified, is_available, service_categories(name, slug)')
+        .eq('status', 'approved')
+        .order('rating', { ascending: false });
+      if (!mounted) return;
+      if (error) {
+        console.error('Failed to load providers:', error.message);
+        setProviders([]);
+      } else {
+        const mapped: ProviderCard[] = (data ?? []).map((p: any) => ({
+          id: p.id,
+          business_name: p.business_name,
+          category: p.service_categories?.name ?? 'Service',
+          slug: p.service_categories?.slug ?? '',
+          rating: Number(p.rating),
+          total_reviews: p.total_reviews,
+          hourly_rate: p.hourly_rate,
+          experience_years: p.experience_years,
+          city: p.city,
+          is_verified: p.is_verified,
+          is_available: p.is_available,
+          avatar: initials(p.business_name),
+          color: categoryGradient[p.service_categories?.slug ?? ''] ?? 'from-slate-500 to-slate-600',
+          bio: p.bio,
+        }));
+        setProviders(mapped);
+      }
+      setLoading(false);
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  const filtered = providers.filter((p) => {
     const matchesSearch = !searchQuery ||
-      p.business_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (p.business_name ?? '').toLowerCase().includes(searchQuery.toLowerCase()) ||
       p.category.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesCategory = !selectedCategory || p.slug === selectedCategory;
     const matchesRating = p.rating >= minRating;
