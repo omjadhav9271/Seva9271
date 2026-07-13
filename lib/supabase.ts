@@ -66,7 +66,21 @@ export type Booking = {
   duration_hours: number;
   hourly_rate: number;
   total_amount: number;
-  status: 'pending' | 'confirmed' | 'in_progress' | 'completed' | 'cancelled';
+  price_agreed: number | null;
+  price_charged: number | null;
+  status:
+    | 'requested'
+    | 'accepted'
+    | 'en_route'
+    | 'arrived'
+    | 'in_progress'
+    | 'completed'
+    | 'confirmed'
+    | 'paid'
+    | 'reviewed'
+    | 'cancelled'
+    | 'disputed'
+    | 'expired';
   payment_method: 'wallet' | 'upi' | 'cod';
   payment_status: 'pending' | 'paid' | 'refunded';
   notes: string | null;
