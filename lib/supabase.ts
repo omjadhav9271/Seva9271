@@ -100,6 +100,14 @@ export type Review = {
   profiles?: Pick<Profile, 'full_name' | 'avatar_url'>;
 };
 
+export type Message = {
+  id: string;
+  booking_id: string;
+  sender_id: string;
+  body: string;
+  created_at: string;
+};
+
 export type WalletTransaction = {
   id: string;
   user_id: string;

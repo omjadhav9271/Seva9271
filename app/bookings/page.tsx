@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   BookOpen, Calendar, Clock, MapPin, Star, CheckCircle, XCircle,
-  AlertCircle, RefreshCw, Truck, Wallet, User as UserIcon,
+  AlertCircle, RefreshCw, Truck, Wallet, User as UserIcon, MessageSquare,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { supabase } from '@/lib/supabase';
@@ -385,12 +385,14 @@ export default function BookingsPage() {
                           </button>
                         )}
 
-                        <button
+                        <Link
+                          href={`/bookings/${booking.id}`}
                           onClick={(e) => { e.stopPropagation(); }}
                           className="flex items-center gap-2 px-4 py-2 bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl text-sm text-gray-300 hover:text-white transition-colors"
                         >
-                          {view === 'provider' ? 'Contact Customer' : 'Contact Provider'}
-                        </button>
+                          <MessageSquare className="w-4 h-4" />
+                          View & Chat
+                        </Link>
                       </div>
                     </div>
                   )}
