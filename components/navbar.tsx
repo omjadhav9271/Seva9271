@@ -6,9 +6,10 @@ import { useRouter, usePathname } from 'next/navigation';
 import {
   Bell, MapPin, Wallet, Menu, X, LogOut, User, BookOpen,
   Heart, Settings, HelpCircle, ArrowUpRight, ArrowDownLeft, TrendingUp,
-  CheckCircle, Gift, Users
+  CheckCircle, Info, AlertTriangle, AlertCircle, type LucideIcon
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { supabase, type Notification } from '@/lib/supabase';
 
 const navLinks = [
   { href: '/services', label: 'Services' },
@@ -17,11 +18,24 @@ const navLinks = [
   { href: '/become-provider', label: 'Become a Provider' },
 ];
 
-const mockNotifications = [
-  { id: 1, title: 'Booking Confirmed', desc: 'Your electrician will arrive at 2 PM today', time: '5 minutes ago', icon: CheckCircle, iconColor: '#22c55e' },
-  { id: 2, title: 'Rewards Credited', desc: '₹82 rewards added to your wallet', time: '2 hours ago', icon: Gift, iconColor: '#FF9933' },
-  { id: 3, title: 'New Provider Available', desc: 'A top-rated plumber is now in your area', time: '1 day ago', icon: Users, iconColor: '#3b82f6' },
-];
+// Colour + icon per notification type (info / success / warning / error).
+const notifStyles: Record<Notification['type'], { icon: LucideIcon; color: string }> = {
+  info: { icon: Info, color: '#3b82f6' },
+  success: { icon: CheckCircle, color: '#22c55e' },
+  warning: { icon: AlertTriangle, color: '#FF9933' },
+  error: { icon: AlertCircle, color: '#ef4444' },
+};
+
+function timeAgo(iso: string): string {
+  const secs = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (secs < 60) return 'just now';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} hour${hrs === 1 ? '' : 's'} ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
 
 export default function Navbar() {
   const [scrolled, setScrolled] = useState(false);
@@ -29,6 +43,7 @@ export default function Navbar() {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [walletOpen, setWalletOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
 
   const { user, profile, signOut, loading } = useAuth();
   const router = useRouter();
@@ -50,6 +65,40 @@ export default function Navbar() {
     setWalletOpen(false);
     setNotificationsOpen(false);
   }, [pathname]);
+
+  // Real notifications for the signed-in user: initial fetch + live inserts.
+  useEffect(() => {
+    const uid = user?.id;
+    if (!uid) {
+      setNotifications([]);
+      return;
+    }
+
+    let active = true;
+    supabase
+      .from('notifications')
+      .select('*')
+      .eq('user_id', uid)
+      .order('created_at', { ascending: false })
+      .limit(20)
+      .then(({ data }) => {
+        if (active && data) setNotifications(data as Notification[]);
+      });
+
+    const channel = supabase
+      .channel(`notifications:${uid}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${uid}` },
+        (payload) => setNotifications((prev) => [payload.new as Notification, ...prev]),
+      )
+      .subscribe();
+
+    return () => {
+      active = false;
+      supabase.removeChannel(channel);
+    };
+  }, [user?.id]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -81,6 +130,37 @@ export default function Navbar() {
   const balance = profile?.wallet_balance ?? 12450;
   const tier = profile?.wallet_tier ?? 'gold';
   const monthlyReward = Math.round((balance * 0.08) / 12);
+
+  const unreadCount = notifications.filter((n) => !n.is_read).length;
+
+  // Mark the user's unread notifications read (clears the badge). Optimistic + server update.
+  const markAllRead = async () => {
+    if (!user || unreadCount === 0) return;
+    setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
+    await supabase
+      .from('notifications')
+      .update({ is_read: true })
+      .eq('user_id', user.id)
+      .eq('is_read', false);
+  };
+
+  const toggleNotifications = () => {
+    const willOpen = !notificationsOpen;
+    setNotificationsOpen(willOpen);
+    setWalletOpen(false);
+    setUserMenuOpen(false);
+    if (willOpen) markAllRead();
+  };
+
+  // Open a notification: close the dropdown, mark just this one read, go to its source (if any).
+  const openNotification = (n: Notification) => {
+    setNotificationsOpen(false);
+    if (!n.is_read) {
+      setNotifications((prev) => prev.map((x) => (x.id === n.id ? { ...x, is_read: true } : x)));
+      supabase.from('notifications').update({ is_read: true }).eq('id', n.id);
+    }
+    if (n.link) router.push(n.link);
+  };
 
   const closeAll = () => {
     setWalletOpen(false);
@@ -203,13 +283,15 @@ export default function Navbar() {
                     {/* Notifications Button + Dropdown */}
                     <div className="relative" ref={notifRef}>
                       <button
-                        onClick={() => { setNotificationsOpen(!notificationsOpen); setWalletOpen(false); setUserMenuOpen(false); }}
+                        onClick={toggleNotifications}
                         className="relative p-2 rounded-full bg-[#1e1e1e] border border-[#2a2a2a] hover:border-[#FF9933]/50 transition-colors"
                       >
                         <Bell className="w-4 h-4 text-gray-300" />
-                        <span className="absolute -top-1 -right-1 w-4 h-4 bg-[#FF9933] rounded-full text-[10px] font-bold text-white flex items-center justify-center">
-                          {mockNotifications.length}
-                        </span>
+                        {unreadCount > 0 && (
+                          <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 bg-[#FF9933] rounded-full text-[10px] font-bold text-white flex items-center justify-center">
+                            {unreadCount > 9 ? '9+' : unreadCount}
+                          </span>
+                        )}
                       </button>
 
                       {notificationsOpen && (
@@ -217,23 +299,37 @@ export default function Navbar() {
                           <div className="px-5 py-4 border-b border-[#2a2a2a]">
                             <p className="font-bold text-white text-base">Notifications</p>
                           </div>
-                          <div className="divide-y divide-[#222]">
-                            {mockNotifications.map((n) => (
-                              <div key={n.id} className="flex items-start gap-3 px-5 py-3.5 hover:bg-[#252525] transition-colors cursor-pointer">
-                                <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: `${n.iconColor}20` }}>
-                                  <n.icon className="w-4 h-4" style={{ color: n.iconColor }} />
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-sm font-semibold text-white">{n.title}</p>
-                                  <p className="text-xs text-gray-400 mt-0.5 leading-relaxed">{n.desc}</p>
-                                  <p className="text-[11px] text-gray-600 mt-1">{n.time}</p>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
+                          {notifications.length === 0 ? (
+                            <div className="px-5 py-8 text-center text-sm text-gray-500">
+                              No notifications yet
+                            </div>
+                          ) : (
+                            <div className="divide-y divide-[#222] max-h-96 overflow-y-auto">
+                              {notifications.map((n) => {
+                                const { icon: Icon, color } = notifStyles[n.type] ?? notifStyles.info;
+                                return (
+                                  <button
+                                    key={n.id}
+                                    type="button"
+                                    onClick={() => openNotification(n)}
+                                    className="w-full text-left flex items-start gap-3 px-5 py-3.5 hover:bg-[#252525] transition-colors cursor-pointer"
+                                  >
+                                    <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: `${color}20` }}>
+                                      <Icon className="w-4 h-4" style={{ color }} />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-sm font-semibold text-white">{n.title}</p>
+                                      <p className="text-xs text-gray-400 mt-0.5 leading-relaxed">{n.message}</p>
+                                      <p className="text-[11px] text-gray-600 mt-1">{timeAgo(n.created_at)}</p>
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
                           <div className="px-5 py-3 border-t border-[#2a2a2a]">
                             <Link
-                              href="/bookings"
+                              href="/notifications"
                               onClick={closeAll}
                               className="text-sm text-[#FF9933] hover:text-[#e8872e] font-medium transition-colors"
                             >

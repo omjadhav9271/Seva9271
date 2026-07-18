@@ -17,7 +17,7 @@ export default function BookingChat({ bookingId }: { bookingId: string }) {
   const [body, setBody] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const threadRef = useRef<HTMLDivElement>(null);
 
   // Append unless we already have this id (realtime can echo a row we just fetched).
   const addMessage = useCallback((m: Message) => {
@@ -59,9 +59,12 @@ export default function BookingChat({ bookingId }: { bookingId: string }) {
     };
   }, [bookingId, addMessage]);
 
-  // Keep the newest message in view.
+  // Keep the newest message in view by scrolling the thread itself. scrollIntoView() would
+  // also scroll every ancestor, dragging the whole page down to the chat on load — which
+  // would bury the booking's action buttons above it.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const el = threadRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   const send = async () => {
@@ -95,7 +98,7 @@ export default function BookingChat({ bookingId }: { bookingId: string }) {
       </div>
 
       {/* Thread */}
-      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3 min-h-[240px] max-h-[55vh]">
+      <div ref={threadRef} className="flex-1 overflow-y-auto px-5 py-4 space-y-3 min-h-[240px] max-h-[55vh]">
         {loading ? (
           <p className="text-center text-sm text-gray-500 py-8">Loading messages…</p>
         ) : messages.length === 0 ? (
@@ -119,7 +122,6 @@ export default function BookingChat({ bookingId }: { bookingId: string }) {
             );
           })
         )}
-        <div ref={bottomRef} />
       </div>
 
       {/* Composer */}

@@ -1,76 +1,32 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import {
-  ArrowLeft, Calendar, Clock, MapPin, Wallet, CheckCircle, XCircle,
-  AlertCircle, RefreshCw, Truck, Star,
-} from 'lucide-react';
+import { ArrowLeft, Calendar, Clock, MapPin, AlertCircle, CheckCircle, XCircle, Star } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { supabase } from '@/lib/supabase';
 import BookingChat from '@/components/booking-chat';
-
-type BookingStatus =
-  | 'requested' | 'accepted' | 'en_route' | 'arrived' | 'in_progress'
-  | 'completed' | 'confirmed' | 'paid' | 'reviewed'
-  | 'cancelled' | 'disputed' | 'expired';
-
-type BookingDetail = {
-  id: string;
-  customer_id: string;
-  provider_id: string;
-  scheduled_date: string | null;
-  scheduled_time: string | null;
-  total_amount: number;
-  price_agreed: number | null;
-  price_charged: number | null;
-  status: BookingStatus;
-  payment_method: string;
-  payment_status: string;
-  service_type: string;
-  address: string | null;
-  service_providers: {
-    business_name: string | null;
-    city: string | null;
-    service_categories: { name: string; slug: string } | null;
-  } | null;
-  service_categories: { name: string; slug: string } | null;
-};
-
-const DETAIL_SELECT =
-  'id, customer_id, provider_id, scheduled_date, scheduled_time, total_amount, price_agreed, price_charged, status, payment_method, payment_status, service_type, address, service_providers(business_name, city, service_categories(name, slug)), service_categories(name, slug)';
-
-const statusConfig: Record<BookingStatus, { label: string; color: string; bg: string; icon: typeof CheckCircle }> = {
-  requested:   { label: 'Requested',   color: 'text-yellow-400',  bg: 'bg-yellow-900/20 border-yellow-700/30',   icon: AlertCircle },
-  accepted:    { label: 'Accepted',    color: 'text-blue-400',    bg: 'bg-blue-900/20 border-blue-700/30',       icon: CheckCircle },
-  en_route:    { label: 'On the way',  color: 'text-sky-400',     bg: 'bg-sky-900/20 border-sky-700/30',         icon: Truck },
-  arrived:     { label: 'Arrived',     color: 'text-teal-400',    bg: 'bg-teal-900/20 border-teal-700/30',       icon: MapPin },
-  in_progress: { label: 'In Progress', color: 'text-[#FF9933]',   bg: 'bg-[#FF9933]/10 border-[#FF9933]/30',     icon: RefreshCw },
-  completed:   { label: 'Completed',   color: 'text-[#22c55e]',   bg: 'bg-[#138808]/10 border-[#138808]/30',     icon: CheckCircle },
-  confirmed:   { label: 'Confirmed',   color: 'text-emerald-400', bg: 'bg-emerald-900/20 border-emerald-700/30', icon: CheckCircle },
-  paid:        { label: 'Paid',        color: 'text-green-400',   bg: 'bg-green-900/20 border-green-700/30',     icon: Wallet },
-  reviewed:    { label: 'Reviewed',    color: 'text-purple-400',  bg: 'bg-purple-900/20 border-purple-700/30',   icon: Star },
-  cancelled:   { label: 'Cancelled',   color: 'text-red-400',     bg: 'bg-red-900/20 border-red-700/30',         icon: XCircle },
-  disputed:    { label: 'Disputed',    color: 'text-orange-400',  bg: 'bg-orange-900/20 border-orange-700/30',   icon: AlertCircle },
-  expired:     { label: 'Expired',     color: 'text-gray-400',    bg: 'bg-gray-800/40 border-gray-700/40',       icon: Clock },
-};
-
-function formatTime(t: string | null): string {
-  if (!t) return '';
-  const [hStr, mStr] = t.split(':');
-  let h = parseInt(hStr, 10);
-  if (Number.isNaN(h)) return t;
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  h = h % 12;
-  if (h === 0) h = 12;
-  return `${h}:${mStr ?? '00'} ${ampm}`;
-}
+import {
+  type BookingRow, type BookingStatus, type Role,
+  BOOKING_SELECT, statusConfig, actionsFor, runTransition, ownsProviderSide, formatTime,
+} from '@/lib/bookings';
+import { toast } from 'sonner';
 
 export default function BookingDetailPage({ params }: { params: { id: string } }) {
   const { id } = params;
   const { user, loading: authLoading } = useAuth();
-  const [booking, setBooking] = useState<BookingDetail | null>(null);
+  const searchParams = useSearchParams();
+  const [booking, setBooking] = useState<BookingRow | null>(null);
+  const [role, setRole] = useState<Role | null>(null);
   const [loading, setLoading] = useState(true);
+  const [acting, setActing] = useState(false);
+
+  // Message notifications link here with ?tab=chat; status notifications land at the top so
+  // the action buttons are what you see first.
+  const wantChat = searchParams.get('tab') === 'chat';
+  const chatRef = useRef<HTMLDivElement>(null);
+  const didScroll = useRef(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -83,16 +39,60 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
       // RLS returns this row only to the two booking parties; anyone else gets null.
       const { data, error } = await supabase
         .from('bookings')
-        .select(DETAIL_SELECT)
+        .select(BOOKING_SELECT)
         .eq('id', id)
         .maybeSingle();
       if (!active) return;
       if (error) console.error('Failed to load booking:', error.message);
-      setBooking((data as unknown as BookingDetail) ?? null);
-      setLoading(false);
+      const row = (data as unknown as BookingRow) ?? null;
+      setBooking(row);
+
+      // Which side is the viewer on? Customer takes precedence; otherwise they're the
+      // provider iff they own this booking's provider row.
+      if (row) {
+        if (row.customer_id === user.id) {
+          setRole('customer');
+        } else if (await ownsProviderSide(row.provider_id, user.id)) {
+          if (active) setRole('provider');
+        }
+      }
+      if (active) setLoading(false);
     })();
     return () => { active = false; };
   }, [id, user, authLoading]);
+
+  // Scroll the chat into view once, after the booking has rendered.
+  useEffect(() => {
+    if (loading || !booking || !wantChat || didScroll.current) return;
+    didScroll.current = true;
+    chatRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [loading, booking, wantChat]);
+
+  const handleTransition = async (next: BookingStatus) => {
+    if (!booking || acting) return;
+    const prevStatus = booking.status;
+    setActing(true);
+    // Optimistic: advance the badge/actions immediately so the next step is available at once.
+    setBooking((b) => (b ? { ...b, status: next } : b));
+
+    const res = await runTransition(booking.id, next);
+    setActing(false);
+
+    if (res.error) {
+      setBooking((b) => (b ? { ...b, status: prevStatus } : b)); // roll back on rejection
+      toast.error(res.error);
+      return;
+    }
+
+    // Reconcile with the authoritative row the RPC returns (price_charged, payment_status, …).
+    setBooking((b) => (b ? {
+      ...b,
+      status: res.row?.status ?? next,
+      price_charged: res.row?.price_charged ?? b.price_charged,
+      payment_status: res.row?.payment_status ?? b.payment_status,
+    } : b));
+    toast.success(`Marked as “${statusConfig[next].label}”.`);
+  };
 
   if (loading || authLoading) {
     return (
@@ -117,7 +117,7 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
     );
   }
 
-  const isCustomer = user?.id === booking.customer_id;
+  const isCustomer = role === 'customer';
   const categoryName =
     booking.service_categories?.name ??
     booking.service_providers?.service_categories?.name ??
@@ -131,6 +131,10 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
   const amount = booking.price_charged ?? booking.price_agreed ?? booking.total_amount;
   const priceLabel = booking.price_charged != null ? 'Charged' : 'Agreed';
   const address = booking.address ?? booking.service_providers?.city ?? '';
+  const actions = role ? actionsFor(role, booking.status) : [];
+  const canReview = isCustomer &&
+    (booking.status === 'completed' || booking.status === 'confirmed' ||
+     booking.status === 'paid' || booking.status === 'reviewed');
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] pt-20">
@@ -182,10 +186,43 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
               <p className="text-[#FF9933] font-bold mt-0.5">₹{Number(amount).toLocaleString('en-IN')}</p>
             </div>
           </div>
+
+          {/* Role-appropriate transitions (all go through the RPC) */}
+          {(actions.length > 0 || canReview) && (
+            <div className="flex gap-3 flex-wrap pt-4 mt-4 border-t border-[#222]">
+              {actions.map((action) => (
+                <button
+                  key={action.next}
+                  onClick={() => handleTransition(action.next)}
+                  disabled={acting}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm transition-colors disabled:opacity-50 ${
+                    action.tone === 'danger'
+                      ? 'bg-red-900/20 border border-red-700/30 text-red-400 hover:bg-red-900/30'
+                      : 'bg-[#FF9933]/10 border border-[#FF9933]/30 text-[#FF9933] hover:bg-[#FF9933]/20'
+                  }`}
+                >
+                  {action.tone === 'danger' ? <XCircle className="w-4 h-4" /> : <CheckCircle className="w-4 h-4" />}
+                  {action.label}
+                </button>
+              ))}
+
+              {/* Write Review — stubbed until Step 6 (customer side only) */}
+              {canReview && (
+                <button
+                  onClick={() => toast.info('Reviews arrive in a later step.')}
+                  className="flex items-center gap-2 px-4 py-2 bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl text-sm text-gray-300 hover:text-white transition-colors"
+                >
+                  <Star className="w-4 h-4" />Write Review
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Chat */}
-        <BookingChat bookingId={booking.id} />
+        <div ref={chatRef}>
+          <BookingChat bookingId={booking.id} />
+        </div>
       </div>
     </div>
   );
