@@ -4,7 +4,7 @@
    neither decides what a role may do or how a transition is issued. */
 
 import {
-  Star, CheckCircle, XCircle, AlertCircle, RefreshCw, Truck, Wallet, MapPin, Clock,
+  Star, CheckCircle, XCircle, AlertCircle, RefreshCw, Truck, Wallet, MapPin, Clock, Shield,
   type LucideIcon,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
@@ -57,6 +57,18 @@ export const statusConfig: Record<BookingStatus, { label: string; color: string;
   expired:     { label: 'Expired',     color: 'text-gray-400',    bg: 'bg-gray-800/40 border-gray-700/40',       icon: Clock },
 };
 
+// Payment lifecycle (bookings.payment_status). 'held' means funds are captured into platform
+// escrow; 'released' means the provider's wallet was credited on customer-confirm.
+export type PaymentStatus = 'pending' | 'held' | 'released' | 'refunded' | 'failed';
+
+export const paymentStatusConfig: Record<PaymentStatus, { label: string; color: string; bg: string; icon: LucideIcon }> = {
+  pending:  { label: 'Payment pending', color: 'text-yellow-400',  bg: 'bg-yellow-900/20 border-yellow-700/30',   icon: Clock },
+  held:     { label: 'In escrow',       color: 'text-sky-400',     bg: 'bg-sky-900/20 border-sky-700/30',         icon: Shield },
+  released: { label: 'Paid out',        color: 'text-green-400',   bg: 'bg-green-900/20 border-green-700/30',     icon: Wallet },
+  refunded: { label: 'Refunded',        color: 'text-orange-400',  bg: 'bg-orange-900/20 border-orange-700/30',   icon: RefreshCw },
+  failed:   { label: 'Payment failed',  color: 'text-red-400',     bg: 'bg-red-900/20 border-red-700/30',         icon: XCircle },
+};
+
 export const categoryGradient: Record<string, string> = {
   electrician: 'from-amber-500 to-orange-600',
   'house-cleaning': 'from-pink-500 to-rose-600',
@@ -80,8 +92,10 @@ const PROVIDER_ACTION: Partial<Record<BookingStatus, Action>> = {
 };
 
 const CUSTOMER_ACTION: Partial<Record<BookingStatus, Action>> = {
-  completed: { label: 'Confirm done',        next: 'confirmed', tone: 'primary' },
-  confirmed: { label: 'Mark as paid (cash)', next: 'paid',      tone: 'primary' }, // Step-5 stub
+  completed: { label: 'Confirm done', next: 'confirmed', tone: 'primary' },
+  // NOTE: no confirmed→'paid' action. As of Step 5 the system settles on confirm — for an
+  // escrow (online) booking the release trigger pays out and moves it to 'paid'; for cash it
+  // just marks 'paid'. 'paid' is system-only now; the customer's last action is "Confirm done".
 };
 
 // The customer may cancel while the job hasn't started yet.
@@ -113,6 +127,28 @@ export async function runTransition(
   });
   if (error) return { error: error.message };
   return { row: (Array.isArray(data) ? data[0] : data) as Partial<BookingRow> | null };
+}
+
+// Kick off an escrow payment: ask the server (customer-only, amount from the DB) to create a
+// Razorpay order. The access token is sent explicitly because our API routes authenticate via
+// the Authorization header (this app has no SSR cookie session). The caller then opens Razorpay
+// Checkout with the returned order — money state only changes later, via the webhook.
+export type CreateOrderResult =
+  | { orderId: string; amount: number; currency: string; keyId: string; error?: never }
+  | { error: string; orderId?: never };
+
+export async function createPaymentOrder(bookingId: string): Promise<CreateOrderResult> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token;
+  if (!token) return { error: 'Please sign in again.' };
+  const res = await fetch('/api/payments/create-order', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ bookingId }),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) return { error: json?.error ?? 'Could not start payment.' };
+  return json as CreateOrderResult;
 }
 
 // Does `userId` own the provider side of this booking? Deliberately a separate query rather

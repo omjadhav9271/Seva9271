@@ -366,9 +366,10 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                       <label className="text-xs font-medium text-gray-400 uppercase tracking-wide block mb-2">Payment Method</label>
                       <div className="space-y-2">
                         {[
+                          // COD is disabled for the online-only launch — no escrow protection until
+                          // reputation + disputes land (Steps 7–8). Both remaining methods are online.
                           { value: 'upi', label: 'UPI (GPay, PhonePe)', icon: '📱' },
                           { value: 'wallet', label: 'Seva Wallet', icon: '💰' },
-                          { value: 'cod', label: 'Cash on Delivery', icon: '💵' },
                         ].map((pm) => (
                           <button
                             key={pm.value}

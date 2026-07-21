@@ -41,30 +41,43 @@ const tierInfo = {
   },
 };
 
-const mockTransactions: WalletTransaction[] = [
-  { id: '1', user_id: '1', type: 'credit', amount: 500, description: 'Wallet top-up via UPI', reference_id: null, created_at: new Date(Date.now() - 1000 * 60 * 30).toISOString() },
-  { id: '2', user_id: '1', type: 'debit', amount: 350, description: 'Electrician booking - Amit Sharma', reference_id: null, created_at: new Date(Date.now() - 1000 * 60 * 60 * 5).toISOString() },
-  { id: '3', user_id: '1', type: 'reward', amount: 83, description: 'Monthly reward at 8% APR', reference_id: null, created_at: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString() },
-  { id: '4', user_id: '1', type: 'credit', amount: 1000, description: 'Wallet top-up via PhonePe', reference_id: null, created_at: new Date(Date.now() - 1000 * 60 * 60 * 48).toISOString() },
-  { id: '5', user_id: '1', type: 'debit', amount: 250, description: 'House cleaning - Priya Patel', reference_id: null, created_at: new Date(Date.now() - 1000 * 60 * 60 * 72).toISOString() },
-];
-
 export default function WalletPage() {
   const { user, profile, refreshProfile } = useAuth();
   const router = useRouter();
   const [tab, setTab] = useState<'overview' | 'topup' | 'withdraw'>('overview');
   const [amount, setAmount] = useState('');
   const [loading, setLoading] = useState(false);
-  const [transactions, setTransactions] = useState(mockTransactions);
+  const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
+  const [txLoading, setTxLoading] = useState(true);
 
   useEffect(() => {
     if (!user) router.push('/auth/signin');
   }, [user, router]);
 
+  // Real wallet: refresh the balance and pull this user's ledger (RLS scopes it to them).
+  // Providers see payout credits here; the balance moves only via the server-only credit_wallet.
+  useEffect(() => {
+    if (!user) return;
+    let active = true;
+    (async () => {
+      await refreshProfile();
+      const { data } = await supabase
+        .from('wallet_transactions')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(50);
+      if (!active) return;
+      if (data) setTransactions(data as WalletTransaction[]);
+      setTxLoading(false);
+    })();
+    return () => { active = false; };
+  }, [user, refreshProfile]);
+
   if (!user) return null;
 
-  const balance = profile?.wallet_balance ?? 12450;
-  const tier = profile?.wallet_tier ?? 'gold';
+  const balance = profile?.wallet_balance ?? 0;
+  const tier = profile?.wallet_tier ?? 'silver';
   const tierData = tierInfo[tier];
   const monthlyReward = ((balance * 0.08) / 12).toFixed(0);
   const progress = tier === 'platinum' ? 100 : tier === 'gold'
@@ -237,29 +250,35 @@ export default function WalletPage() {
             {/* Transactions */}
             <div className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-5">
               <h3 className="font-bold text-white mb-4">Recent Transactions</h3>
-              <div className="space-y-3">
-                {transactions.map((tx) => (
-                  <div key={tx.id} className="flex items-center gap-4 p-3 rounded-xl hover:bg-[#1e1e1e] transition-colors">
-                    <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${
-                      tx.type === 'credit' ? 'bg-[#138808]/15' :
-                      tx.type === 'reward' ? 'bg-blue-500/15' : 'bg-red-900/20'
-                    }`}>
-                      {tx.type === 'credit' ? <ArrowDownLeft className="w-4 h-4 text-[#22c55e]" /> :
-                       tx.type === 'reward' ? <TrendingUp className="w-4 h-4 text-blue-400" /> :
-                       <ArrowUpRight className="w-4 h-4 text-red-400" />}
+              {txLoading ? (
+                <p className="text-sm text-gray-500 py-6 text-center">Loading transactions…</p>
+              ) : transactions.length === 0 ? (
+                <p className="text-sm text-gray-500 py-6 text-center">No transactions yet.</p>
+              ) : (
+                <div className="space-y-3">
+                  {transactions.map((tx) => (
+                    <div key={tx.id} className="flex items-center gap-4 p-3 rounded-xl hover:bg-[#1e1e1e] transition-colors">
+                      <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${
+                        tx.type === 'credit' ? 'bg-[#138808]/15' :
+                        tx.type === 'reward' ? 'bg-blue-500/15' : 'bg-red-900/20'
+                      }`}>
+                        {tx.type === 'credit' ? <ArrowDownLeft className="w-4 h-4 text-[#22c55e]" /> :
+                         tx.type === 'reward' ? <TrendingUp className="w-4 h-4 text-blue-400" /> :
+                         <ArrowUpRight className="w-4 h-4 text-red-400" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-white truncate">{tx.description}</p>
+                        <p className="text-xs text-gray-500">{formatTime(tx.created_at)}</p>
+                      </div>
+                      <p className={`text-sm font-bold flex-shrink-0 ${
+                        tx.type === 'debit' ? 'text-red-400' : tx.type === 'reward' ? 'text-blue-400' : 'text-[#22c55e]'
+                      }`}>
+                        {tx.type === 'debit' ? '-' : '+'}₹{Number(tx.amount).toLocaleString('en-IN')}
+                      </p>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-white truncate">{tx.description}</p>
-                      <p className="text-xs text-gray-500">{formatTime(tx.created_at)}</p>
-                    </div>
-                    <p className={`text-sm font-bold flex-shrink-0 ${
-                      tx.type === 'debit' ? 'text-red-400' : tx.type === 'reward' ? 'text-blue-400' : 'text-[#22c55e]'
-                    }`}>
-                      {tx.type === 'debit' ? '-' : '+'}₹{tx.amount}
-                    </p>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 

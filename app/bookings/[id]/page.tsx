@@ -1,17 +1,48 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, Calendar, Clock, MapPin, AlertCircle, CheckCircle, XCircle, Star } from 'lucide-react';
+import { ArrowLeft, Calendar, Clock, MapPin, AlertCircle, CheckCircle, XCircle, Star, CreditCard, Shield, Wallet } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { supabase } from '@/lib/supabase';
 import BookingChat from '@/components/booking-chat';
 import {
-  type BookingRow, type BookingStatus, type Role,
-  BOOKING_SELECT, statusConfig, actionsFor, runTransition, ownsProviderSide, formatTime,
+  type BookingRow, type BookingStatus, type PaymentStatus, type Role,
+  BOOKING_SELECT, statusConfig, paymentStatusConfig, actionsFor, runTransition,
+  createPaymentOrder, ownsProviderSide, formatTime,
 } from '@/lib/bookings';
 import { toast } from 'sonner';
+
+// Razorpay Checkout injects window.Razorpay once its script loads.
+declare global {
+  interface Window {
+    Razorpay?: new (options: Record<string, unknown>) => { open: () => void };
+  }
+}
+
+// Load the hosted Checkout script on demand (idempotent). We never bundle it — it must be the
+// live script from Razorpay so payments are handled on their PCI-compliant surface, not ours.
+function loadRazorpayScript(): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined') return resolve(false);
+    if (window.Razorpay) return resolve(true);
+    const src = 'https://checkout.razorpay.com/v1/checkout.js';
+    const existing = document.querySelector<HTMLScriptElement>(`script[src="${src}"]`);
+    if (existing) {
+      existing.addEventListener('load', () => resolve(true));
+      existing.addEventListener('error', () => resolve(false));
+      return;
+    }
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = () => resolve(true);
+    s.onerror = () => resolve(false);
+    document.body.appendChild(s);
+  });
+}
+
+const PAYABLE_STATUSES: BookingStatus[] = ['accepted', 'en_route', 'arrived', 'in_progress'];
 
 export default function BookingDetailPage({ params }: { params: { id: string } }) {
   const { id } = params;
@@ -21,12 +52,14 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
   const [role, setRole] = useState<Role | null>(null);
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
+  const [paying, setPaying] = useState(false);
 
   // Message notifications link here with ?tab=chat; status notifications land at the top so
   // the action buttons are what you see first.
   const wantChat = searchParams.get('tab') === 'chat';
   const chatRef = useRef<HTMLDivElement>(null);
   const didScroll = useRef(false);
+  const pollAbort = useRef(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -68,6 +101,85 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
     chatRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [loading, booking, wantChat]);
 
+  // Re-read the booking (status + payment_status) from the DB. Called after Checkout closes:
+  // the webhook — not the Checkout callback — is what flips payment_status to 'held', so we
+  // simply refetch and let the badge catch up once that server-side event lands.
+  const refetchBooking = useCallback(async () => {
+    const { data } = await supabase
+      .from('bookings')
+      .select(BOOKING_SELECT)
+      .eq('id', id)
+      .maybeSingle();
+    if (data) setBooking(data as unknown as BookingRow);
+  }, [id]);
+
+  // Stop any in-flight payment poll if the page unmounts.
+  useEffect(() => () => { pollAbort.current = true; }, []);
+
+  // After Checkout closes on success, the webhook flips payment_status to 'held' server-side a
+  // few seconds later — but `bookings` isn't in the realtime publication, so a single refetch
+  // races (and usually loses to) the webhook. Poll briefly until the money state leaves
+  // 'pending' so the badge updates without a manual reload. Bounded (~30s) so a webhook that
+  // never arrives (e.g. no tunnel in local dev) just stops instead of looping forever.
+  const pollUntilHeld = useCallback(async () => {
+    pollAbort.current = false;
+    for (let i = 0; i < 15 && !pollAbort.current; i++) {
+      const { data } = await supabase
+        .from('bookings').select(BOOKING_SELECT).eq('id', id).maybeSingle();
+      const row = (data as unknown as BookingRow) ?? null;
+      if (row) setBooking(row);
+      if (row && row.payment_status !== 'pending') {
+        if (row.payment_status === 'held') toast.success('Payment secured — funds are held in escrow.');
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }, [id]);
+
+  const handlePay = async () => {
+    if (!booking || paying) return;
+    setPaying(true);
+
+    // Server creates the order with the amount read from the DB (never the client).
+    const res = await createPaymentOrder(booking.id);
+    if ('error' in res) {
+      setPaying(false);
+      toast.error(res.error);
+      return;
+    }
+
+    const loaded = await loadRazorpayScript();
+    if (!loaded || !window.Razorpay) {
+      setPaying(false);
+      toast.error('Could not load the payment gateway. Check your connection and try again.');
+      return;
+    }
+
+    const rzp = new window.Razorpay({
+      key: res.keyId,
+      order_id: res.orderId,
+      amount: res.amount,
+      currency: res.currency,
+      name: 'Seva',
+      description: `Booking #${booking.id.slice(0, 8)}`,
+      theme: { color: '#FF9933' },
+      // Money state is NOT trusted from here — the webhook is the source of truth. On either
+      // success or dismiss we just refetch; the badge flips to “In escrow” when the webhook lands.
+      handler: () => {
+        setPaying(false);
+        toast.success('Payment received — confirming securely…');
+        void pollUntilHeld();
+      },
+      modal: {
+        ondismiss: () => {
+          setPaying(false);
+          void refetchBooking();
+        },
+      },
+    });
+    rzp.open();
+  };
+
   const handleTransition = async (next: BookingStatus) => {
     if (!booking || acting) return;
     const prevStatus = booking.status;
@@ -92,6 +204,11 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
       payment_status: res.row?.payment_status ?? b.payment_status,
     } : b));
     toast.success(`Marked as “${statusConfig[next].label}”.`);
+
+    // On confirm, the system settles behind the RPC (escrow release → 'released'/'paid', or a
+    // cash booking → 'paid') via the release trigger. The RPC returns the pre-settlement row,
+    // so refetch to show the settled status + payment badge.
+    if (next === 'confirmed') void refetchBooking();
   };
 
   if (loading || authLoading) {
@@ -135,6 +252,19 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
   const canReview = isCustomer &&
     (booking.status === 'completed' || booking.status === 'confirmed' ||
      booking.status === 'paid' || booking.status === 'reviewed');
+  // Cash bookings settle in person — there's nothing to pay online and no escrow to hold.
+  const isCod = booking.payment_method === 'cod';
+  // The customer may pay while the job is live and nothing has been captured yet. Cash is
+  // excluded. This mirrors the server guard in /api/payments/create-order, so the button can
+  // never offer an illegal pay. For online bookings the DB now blocks work until this is done.
+  const canPay = isCustomer && !isCod && booking.payment_status === 'pending' &&
+    PAYABLE_STATUSES.includes(booking.status);
+  // A cash booking shows a "Cash on delivery" badge rather than the online "Payment pending"
+  // track (its payment_status stays 'pending' since no money moves through us).
+  const payCfg = isCod && booking.payment_status === 'pending'
+    ? { label: 'Cash on delivery', color: 'text-amber-400', bg: 'bg-amber-900/20 border-amber-700/30', icon: Wallet }
+    : (paymentStatusConfig[booking.payment_status as PaymentStatus] ?? paymentStatusConfig.pending);
+  const PayStatusIcon = payCfg.icon;
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] pt-20">
@@ -179,13 +309,45 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
             </div>
             <div>
               <span className="text-gray-500">Payment</span>
-              <p className="text-white capitalize mt-0.5">{booking.payment_method} · {booking.payment_status}</p>
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-white capitalize">{booking.payment_method}</span>
+                <span className={`inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full border ${payCfg.color} ${payCfg.bg}`}>
+                  <PayStatusIcon className="w-3 h-3" />
+                  {payCfg.label}
+                </span>
+              </div>
             </div>
             <div>
               <span className="text-gray-500">{priceLabel}</span>
               <p className="text-[#FF9933] font-bold mt-0.5">₹{Number(amount).toLocaleString('en-IN')}</p>
             </div>
           </div>
+
+          {/* Pay via escrow — customer only, once the provider has accepted. Prominent because
+              the provider CAN'T start work until this is paid (the DB blocks accepted→en_route). */}
+          {canPay && (
+            <div className="mt-4 pt-4 border-t border-[#222]">
+              <div className="rounded-xl border border-[#138808]/40 bg-[#138808]/10 p-4">
+                <div className="flex items-start gap-3">
+                  <Shield className="w-5 h-5 text-[#22c55e] flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-semibold text-white">Pay to start your booking</p>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      Your provider has accepted. <span className="text-gray-300">The job won&apos;t start until you pay.</span> Funds are held securely in escrow and released to the provider only after you confirm the work is done.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={handlePay}
+                  disabled={paying}
+                  className="mt-3 w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-semibold bg-[#138808] text-white hover:bg-[#0f6b06] transition-colors disabled:opacity-50"
+                >
+                  <CreditCard className="w-4 h-4" />
+                  {paying ? 'Opening…' : `Pay ₹${Number(amount).toLocaleString('en-IN')} securely`}
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Role-appropriate transitions (all go through the RPC) */}
           {(actions.length > 0 || canReview) && (
