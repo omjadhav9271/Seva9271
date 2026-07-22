@@ -3,10 +3,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, Calendar, Clock, MapPin, AlertCircle, CheckCircle, XCircle, Star, CreditCard, Shield, Wallet } from 'lucide-react';
+import { ArrowLeft, Calendar, Clock, MapPin, AlertCircle, CheckCircle, XCircle, CreditCard, Shield, Wallet } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { supabase } from '@/lib/supabase';
 import BookingChat from '@/components/booking-chat';
+import BookingReview from '@/components/booking-review';
 import {
   type BookingRow, type BookingStatus, type PaymentStatus, type Role,
   BOOKING_SELECT, statusConfig, paymentStatusConfig, actionsFor, runTransition,
@@ -115,6 +116,23 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
 
   // Stop any in-flight payment poll if the page unmounts.
   useEffect(() => () => { pollAbort.current = true; }, []);
+
+  // Live booking updates: `bookings` is in the realtime publication, so when the OTHER party
+  // moves the booking (e.g. the customer confirms → it settles), this page refetches without a
+  // manual refresh — the status/payment badges update and the review section's `settled` gate
+  // flips on, revealing the form for the provider live. RLS gates the stream to the two parties.
+  useEffect(() => {
+    if (!user) return;
+    const channel = supabase
+      .channel(`booking:${id}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'bookings', filter: `id=eq.${id}` },
+        () => { void refetchBooking(); },
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [id, user, refetchBooking]);
 
   // After Checkout closes on success, the webhook flips payment_status to 'held' server-side a
   // few seconds later — but `bookings` isn't in the realtime publication, so a single refetch
@@ -249,9 +267,10 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
   const priceLabel = booking.price_charged != null ? 'Charged' : 'Agreed';
   const address = booking.address ?? booking.service_providers?.city ?? '';
   const actions = role ? actionsFor(role, booking.status) : [];
-  const canReview = isCustomer &&
-    (booking.status === 'completed' || booking.status === 'confirmed' ||
-     booking.status === 'paid' || booking.status === 'reviewed');
+  // Settled = money has cleared (tightened from Step 1's 'completed'). Reviews open for BOTH
+  // parties on a settled booking; the review section itself gates on whether you've reviewed yet.
+  const settled = booking.status === 'paid' || booking.status === 'reviewed' ||
+    booking.payment_status === 'released';
   // Cash bookings settle in person — there's nothing to pay online and no escrow to hold.
   const isCod = booking.payment_method === 'cod';
   // The customer may pay while the job is live and nothing has been captured yet. Cash is
@@ -350,7 +369,7 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
           )}
 
           {/* Role-appropriate transitions (all go through the RPC) */}
-          {(actions.length > 0 || canReview) && (
+          {actions.length > 0 && (
             <div className="flex gap-3 flex-wrap pt-4 mt-4 border-t border-[#222]">
               {actions.map((action) => (
                 <button
@@ -367,19 +386,22 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
                   {action.label}
                 </button>
               ))}
-
-              {/* Write Review — stubbed until Step 6 (customer side only) */}
-              {canReview && (
-                <button
-                  onClick={() => toast.info('Reviews arrive in a later step.')}
-                  className="flex items-center gap-2 px-4 py-2 bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl text-sm text-gray-300 hover:text-white transition-colors"
-                >
-                  <Star className="w-4 h-4" />Write Review
-                </button>
-              )}
             </div>
           )}
         </div>
+
+        {/* Reviews — bidirectional + reciprocity-gated. Rendered for the two parties once the
+            booking is settled; the section itself shows the form, the waiting state, or the
+            revealed counterpart review depending on RLS. */}
+        {role && user && settled && (
+          <BookingReview
+            bookingId={booking.id}
+            role={role}
+            userId={user.id}
+            settled={settled}
+            counterpartyName={counterparty}
+          />
+        )}
 
         {/* Chat */}
         <div ref={chatRef}>

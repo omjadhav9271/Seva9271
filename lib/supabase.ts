@@ -89,13 +89,23 @@ export type Booking = {
   updated_at: string;
 };
 
+export type ReviewDirection = 'customer_to_provider' | 'provider_to_customer';
+
 export type Review = {
   id: string;
   booking_id: string | null;
   customer_id: string;
   provider_id: string;
+  reviewer_id: string | null;
+  direction: ReviewDirection;
   rating: number;
   comment: string | null;
+  // Multi-dimensional axes (§6.1). Customer→provider fills all four; provider→customer fills only
+  // communication + punctuality (quality/price-fairness don't apply and stay null).
+  rating_quality: number | null;
+  rating_punctuality: number | null;
+  rating_communication: number | null;
+  rating_price_fairness: number | null;
   created_at: string;
   profiles?: Pick<Profile, 'full_name' | 'avatar_url'>;
 };

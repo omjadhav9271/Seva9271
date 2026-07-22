@@ -28,7 +28,33 @@ type ProviderDetail = {
   service_categories: { name: string; slug: string } | null;
 };
 
-type ReviewRow = { id: string; rating: number; comment: string | null; created_at: string };
+type ReviewRow = {
+  id: string;
+  rating: number;
+  comment: string | null;
+  created_at: string;
+  rating_quality: number | null;
+  rating_punctuality: number | null;
+  rating_communication: number | null;
+  rating_price_fairness: number | null;
+};
+
+// The multi-dimensional axes a customer rates a provider on (§6.1), in display order. These are
+// the customer→provider labels — the only direction shown on the provider's public page. (The
+// same columns carry different meanings for provider→customer reviews; see booking-review.tsx.)
+const DIMENSION_AXES: { key: keyof ReviewRow; label: string }[] = [
+  { key: 'rating_quality', label: 'Quality of work' },
+  { key: 'rating_punctuality', label: 'Punctuality' },
+  { key: 'rating_communication', label: 'Professionalism' },
+  { key: 'rating_price_fairness', label: 'Value for money' },
+];
+
+// A review's overall = the average of its filled axes (matches how reviews are now captured);
+// fall back to the stored integer rating for any legacy row without per-axis values.
+function reviewOverall(r: ReviewRow): number {
+  const vals = DIMENSION_AXES.map(({ key }) => r[key] as number | null).filter((v): v is number => v != null);
+  return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : r.rating;
+}
 
 const categoryGradient: Record<string, string> = {
   electrician: 'from-amber-500 to-orange-600',
@@ -100,10 +126,13 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
       if (error) console.error('Failed to load provider:', error.message);
       setProvider((data as unknown as ProviderDetail) ?? null);
 
+      // Only customer→provider reviews belong on the provider's public page; RLS additionally
+      // hides any that haven't been reciprocity-revealed yet.
       const { data: reviewData } = await supabase
         .from('reviews')
-        .select('id, rating, comment, created_at')
+        .select('id, rating, comment, created_at, rating_quality, rating_punctuality, rating_communication, rating_price_fairness')
         .eq('provider_id', params.id)
+        .eq('direction', 'customer_to_provider')
         .order('created_at', { ascending: false })
         .limit(10);
       if (!mounted) return;
@@ -166,6 +195,13 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
 
   const gradient = categoryGradient[provider.service_categories?.slug ?? ''] ?? 'from-slate-500 to-slate-600';
   const totalAmount = provider.hourly_rate > 0 ? provider.hourly_rate * DURATION_HOURS : 0;
+
+  // Per-axis averages across the loaded reviews (nulls skipped). v1 display only — Step 7 owns
+  // the real weighted aggregation; here it's a simple mean of what's on screen.
+  const dimensionAverages = DIMENSION_AXES.map(({ key, label }) => {
+    const vals = reviews.map((r) => r[key] as number | null).filter((v): v is number => v != null);
+    return { label, avg: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null };
+  }).filter((d): d is { label: string; avg: number } => d.avg != null);
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] pt-20">
@@ -274,6 +310,23 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                   <span className="text-gray-500 text-sm">/ 5</span>
                 </div>
               </div>
+              {/* Dimension breakdown — averaged across the shown reviews. */}
+              {dimensionAverages.length > 0 && (
+                <div className="grid sm:grid-cols-2 gap-x-6 gap-y-3 mb-6 pb-6 border-b border-[#222]">
+                  {dimensionAverages.map((d) => (
+                    <div key={d.label}>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs text-gray-400">{d.label}</span>
+                        <span className="text-xs font-semibold text-white">{d.avg.toFixed(1)}</span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-[#1e1e1e] overflow-hidden">
+                        <div className="h-full bg-[#FF9933] rounded-full" style={{ width: `${(d.avg / 5) * 100}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {reviews.length === 0 ? (
                 <p className="text-sm text-gray-500">No reviews yet. Reviews appear here once a completed booking is rated.</p>
               ) : (
@@ -292,7 +345,7 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                             </div>
                             <span className="text-xs text-gray-500">{new Date(r.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
                           </div>
-                          <StarRating rating={r.rating} />
+                          <StarRating rating={reviewOverall(r)} />
                           {r.comment && <p className="text-sm text-gray-300 mt-2 leading-relaxed">{r.comment}</p>}
                         </div>
                       </div>
