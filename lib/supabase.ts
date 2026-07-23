@@ -16,6 +16,7 @@ export type Profile = {
   role: 'customer' | 'provider' | 'admin';
   wallet_balance: number;
   wallet_tier: 'silver' | 'gold' | 'platinum';
+  reputation_score: number; // Step 7: server-computed customer trust score (0–5); 0 = not yet computed
   created_at: string;
   updated_at: string;
 };
@@ -42,6 +43,7 @@ export type ServiceProvider = {
   rating: number;
   total_reviews: number;
   total_bookings: number;
+  reputation_score: number; // Step 7: server-computed trust score (0–5), separate from the star average
   is_verified: boolean;
   is_available: boolean;
   city: string | null;
@@ -108,6 +110,32 @@ export type Review = {
   rating_price_fairness: number | null;
   created_at: string;
   profiles?: Pick<Profile, 'full_name' | 'avatar_url'>;
+};
+
+// Step 7: one row per compute_reputation() run — the explainable audit trail behind
+// reputation_score. Written only by the server; provider snapshots are publicly readable,
+// customer snapshots only by the customer themselves (RLS).
+export type ReputationSnapshot = {
+  id: string;
+  subject_type: 'provider' | 'customer';
+  subject_id: string; // service_providers.id (provider) or auth.users.id (customer)
+  score: number;
+  breakdown: {
+    review_score: number;   // Bayesian + time-decay + rater-weighted review component (0–5)
+    review_count: number;
+    ops_score: number;      // operational component (0–5)
+    completion: number;     // completion rate 0–1 (providers; 1 when no data)
+    cancellation: number;   // cancellation rate 0–1
+    dispute: number;        // dispute rate 0–1
+    params: {
+      lambda: number;
+      prior: number;
+      confidence: number;
+      w_reviews: number;
+      w_ops: number;
+    };
+  };
+  computed_at: string;
 };
 
 export type Message = {

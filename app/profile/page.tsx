@@ -2,9 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { User, Phone, MapPin, Mail, Edit2, Save, X, Camera, Shield, Award, Wallet } from 'lucide-react';
+import { User, Phone, MapPin, Mail, Edit2, Save, X, Camera, Shield, ShieldCheck, Award, Wallet } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
-import { supabase } from '@/lib/supabase';
+import { supabase, type ReputationSnapshot } from '@/lib/supabase';
 import { toast } from 'sonner';
 import Link from 'next/link';
 
@@ -13,6 +13,8 @@ export default function ProfilePage() {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Latest customer reputation snapshot (Step 7) — RLS only lets a user read their own.
+  const [repSnapshot, setRepSnapshot] = useState<Pick<ReputationSnapshot, 'score' | 'breakdown' | 'computed_at'> | null>(null);
 
   const [form, setForm] = useState({
     full_name: '',
@@ -37,6 +39,23 @@ export default function ProfilePage() {
       });
     }
   }, [user, profile, router]);
+
+  useEffect(() => {
+    if (!user) return;
+    let mounted = true;
+    (async () => {
+      const { data } = await supabase
+        .from('reputation_snapshots')
+        .select('score, breakdown, computed_at')
+        .eq('subject_type', 'customer')
+        .eq('subject_id', user.id)
+        .order('computed_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (mounted) setRepSnapshot((data as typeof repSnapshot) ?? null);
+    })();
+    return () => { mounted = false; };
+  }, [user]);
 
   if (!user) return null;
 
@@ -211,6 +230,50 @@ export default function ProfilePage() {
               </div>
             </div>
           </div>
+        </div>
+
+        {/* Trust score (Step 7) — the reputation engine's view of this account. Server-computed;
+            providers see it when deciding whether to accept a booking. */}
+        <div className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-6 mb-6">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-bold text-white flex items-center gap-2">
+              <ShieldCheck className="w-5 h-5 text-[#5da9ff]" /> My Trust Score
+            </h3>
+            {Number(profile?.reputation_score ?? 0) > 0 && (
+              <span className="text-2xl font-black text-[#5da9ff]">
+                {Number(profile?.reputation_score).toFixed(1)}
+                <span className="text-sm text-gray-500 font-normal"> / 5</span>
+              </span>
+            )}
+          </div>
+          {Number(profile?.reputation_score ?? 0) === 0 ? (
+            <p className="text-sm text-gray-500">
+              Not rated yet — complete bookings and exchange reviews to build your reputation on Seva.
+            </p>
+          ) : (
+            <>
+              <p className="text-xs text-gray-500 mb-4">
+                Computed from your verified bookings: weighted reviews from providers, plus your
+                cancellation and dispute record. Updates automatically as you use Seva.
+              </p>
+              {repSnapshot && (
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="bg-[#1e1e1e] rounded-xl p-3 text-center">
+                    <p className="text-lg font-black text-white">{Number(repSnapshot.breakdown.review_score).toFixed(1)}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">Review score ({repSnapshot.breakdown.review_count})</p>
+                  </div>
+                  <div className="bg-[#1e1e1e] rounded-xl p-3 text-center">
+                    <p className="text-lg font-black text-white">{Math.round(Number(repSnapshot.breakdown.cancellation) * 100)}%</p>
+                    <p className="text-xs text-gray-400 mt-0.5">Cancellations</p>
+                  </div>
+                  <div className="bg-[#1e1e1e] rounded-xl p-3 text-center">
+                    <p className="text-lg font-black text-white">{Math.round(Number(repSnapshot.breakdown.dispute) * 100)}%</p>
+                    <p className="text-xs text-gray-400 mt-0.5">Disputes</p>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
         </div>
 
         {/* Quick Links */}

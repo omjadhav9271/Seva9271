@@ -4,11 +4,11 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import {
   Star, MapPin, Clock, CheckCircle, ArrowLeft, Heart, Share2,
-  Calendar, Shield, Award
+  Calendar, Shield, ShieldCheck, Award
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabase';
+import { supabase, type ReputationSnapshot } from '@/lib/supabase';
 import { toast } from 'sonner';
 
 type ProviderDetail = {
@@ -21,12 +21,16 @@ type ProviderDetail = {
   rating: number;
   total_reviews: number;
   total_bookings: number;
+  reputation_score: number;
   is_verified: boolean;
   is_available: boolean;
   city: string | null;
   state: string | null;
   service_categories: { name: string; slug: string } | null;
 };
+
+// Latest reputation snapshot — the explainable breakdown behind the trust score (Step 7).
+type SnapshotSlim = Pick<ReputationSnapshot, 'score' | 'breakdown' | 'computed_at'>;
 
 type ReviewRow = {
   id: string;
@@ -104,6 +108,7 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
   const { user } = useAuth();
   const router = useRouter();
   const [provider, setProvider] = useState<ProviderDetail | null>(null);
+  const [snapshot, setSnapshot] = useState<SnapshotSlim | null>(null);
   const [reviews, setReviews] = useState<ReviewRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [bookingDate, setBookingDate] = useState('');
@@ -119,12 +124,24 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
     (async () => {
       const { data, error } = await supabase
         .from('service_providers')
-        .select('id, category_id, business_name, bio, experience_years, hourly_rate, rating, total_reviews, total_bookings, is_verified, is_available, city, state, service_categories(name, slug)')
+        .select('id, category_id, business_name, bio, experience_years, hourly_rate, rating, total_reviews, total_bookings, reputation_score, is_verified, is_available, city, state, service_categories(name, slug)')
         .eq('id', params.id)
         .maybeSingle();
       if (!mounted) return;
       if (error) console.error('Failed to load provider:', error.message);
       setProvider((data as unknown as ProviderDetail) ?? null);
+
+      // Latest snapshot = the breakdown behind the trust score. Provider snapshots are public (RLS).
+      const { data: snapData } = await supabase
+        .from('reputation_snapshots')
+        .select('score, breakdown, computed_at')
+        .eq('subject_type', 'provider')
+        .eq('subject_id', params.id)
+        .order('computed_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!mounted) return;
+      setSnapshot((snapData as SnapshotSlim | null) ?? null);
 
       // Only customer→provider reviews belong on the provider's public page; RLS additionally
       // hides any that haven't been reciprocity-revealed yet.
@@ -239,6 +256,16 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                         <span className="font-bold text-white">{Number(provider.rating).toFixed(1)}</span>
                         <span className="text-gray-500 text-sm">({provider.total_reviews} reviews)</span>
                       </div>
+                      {/* Trust score = the Step-7 engine's number, separate from the star average. */}
+                      {Number(provider.reputation_score) > 0 && (
+                        <span
+                          className="flex items-center gap-1.5 bg-[#054187]/15 border border-[#054187]/40 rounded-full px-2.5 py-0.5 text-sm font-semibold text-[#5da9ff]"
+                          title="Trust score — computed from verified bookings: weighted reviews + completion, cancellation and dispute rates"
+                        >
+                          <ShieldCheck className="w-4 h-4" />
+                          Trust {Number(provider.reputation_score).toFixed(1)}
+                        </span>
+                      )}
                       <span className="flex items-center gap-1 text-sm text-gray-400">
                         <MapPin className="w-4 h-4" />{provider.city}{provider.state ? `, ${provider.state}` : ''}
                       </span>
@@ -277,6 +304,26 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                   <p className="text-xs text-gray-400 mt-0.5">Experience</p>
                 </div>
               </div>
+
+              {/* Trust-score breakdown — from the latest reputation snapshot (Step 7). */}
+              {snapshot && (
+                <div className="flex items-center gap-x-5 gap-y-1 flex-wrap bg-[#1e1e1e] rounded-xl px-4 py-3 mb-6 text-xs">
+                  <span className="flex items-center gap-1.5 font-semibold text-[#5da9ff]">
+                    <ShieldCheck className="w-4 h-4" />
+                    Trust score {Number(snapshot.score).toFixed(1)}
+                  </span>
+                  <span className="text-gray-400">
+                    Reviews <span className="text-white font-semibold">{Number(snapshot.breakdown.review_score).toFixed(1)}</span>
+                    <span className="text-gray-500"> ({snapshot.breakdown.review_count})</span>
+                  </span>
+                  <span className="text-gray-400">
+                    Completion <span className="text-white font-semibold">{Math.round(Number(snapshot.breakdown.completion) * 100)}%</span>
+                  </span>
+                  <span className="text-gray-400">
+                    Disputes <span className="text-white font-semibold">{Math.round(Number(snapshot.breakdown.dispute) * 100)}%</span>
+                  </span>
+                </div>
+              )}
 
               {/* Badges */}
               <div className="flex items-center gap-2 mb-4 flex-wrap">
