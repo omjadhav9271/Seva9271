@@ -57,8 +57,8 @@ type PayTx = {
 const fmtTime = (iso: string) =>
   new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
-// Platform fee — keep in sync with resolve_dispute's c_fee_pct (the RPC does the authoritative math).
-const FEE_PCT = 0.15;
+// Platform fee — mirrors platform_fee_pct() in the DB (the RPC does the authoritative math).
+const FEE_PCT = 0.01;
 const inr = (n: number) => `₹${Math.round(n).toLocaleString('en-IN')}`;
 
 // What a chosen outcome will do to the escrowed amount, mirrored from resolve_dispute so the admin
@@ -408,7 +408,7 @@ export default function AdminDisputeDetailPage({ params }: { params: { id: strin
                       <p className="text-gray-500 uppercase tracking-wide text-[10px] mb-1">This will move (of {inr(Number(amount))} held)</p>
                       <div className="flex justify-between"><span className="text-gray-400">Customer refunded</span><span className={split.customerRefund > 0 ? 'text-[#5da9ff] font-semibold' : 'text-gray-500'}>{inr(split.customerRefund)}</span></div>
                       <div className="flex justify-between"><span className="text-gray-400">Provider receives</span><span className={split.providerPayout > 0 ? 'text-[#138808] font-semibold' : 'text-gray-500'}>{inr(split.providerPayout)}</span></div>
-                      <div className="flex justify-between"><span className="text-gray-500">Platform fee (15%)</span><span className="text-gray-500">{inr(split.platformFee)}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Platform fee (1%)</span><span className="text-gray-500">{inr(split.platformFee)}</span></div>
                       {booking?.payment_status === 'released' && split.customerRefund > 0 && (
                         <p className="text-[11px] text-amber-400/80 pt-1">Escrow was already paid out — the refund is clawed back from the provider&apos;s wallet (may go negative).</p>
                       )}

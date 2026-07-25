@@ -260,8 +260,8 @@ try {
     else no('resolution did not notify both parties');
   }
 
-  // ================= (e) MONEY: held → favor_provider releases escrow to the provider (−15%) =================
-  console.log('\n[e) money: held booking, favor_provider → escrow released to provider wallet (−15% fee)]');
+  // ================= (e) MONEY: held → favor_provider releases escrow to the provider (−1%) =================
+  console.log('\n[e) money: held booking, favor_provider → escrow released to provider wallet (−1% fee)]');
   {
     const sp = await mkProvider(test1Id, 'Step8 E provider');
     const bk = await mkBooking({ customer: test2Id, provider: sp, status: 'in_progress', payment_status: 'held', price_charged: 600 });
@@ -271,14 +271,14 @@ try {
     const rr = await resolveAs(adminClient, disputeIdOf(r.data), 'favor_provider', 'customer');
     if (rr.error) no('resolve favor_provider failed: ' + errMsg(rr.error));
     const wAfter = await walletOf(test1Id);
-    if (round2(wAfter - wBefore) === 510) ok(`provider wallet credited the 85% payout: +₹${round2(wAfter - wBefore)} (600 − 15% fee)`);
-    else no(`provider wallet delta wrong: expected +510, got +${round2(wAfter - wBefore)}`);
+    if (round2(wAfter - wBefore) === 594) ok(`provider wallet credited the 99% payout: +₹${round2(wAfter - wBefore)} (600 − 1% fee)`);
+    else no(`provider wallet delta wrong: expected +594, got +${round2(wAfter - wBefore)}`);
     const wt = (await service.from('wallet_transactions').select('type, amount').eq('reference_id', bk).eq('user_id', test1Id).eq('type', 'credit').maybeSingle()).data;
-    if (wt && Number(wt.amount) === 510) ok('a credit wallet_transaction of 510 was written for the provider');
-    else no('provider credit wallet_transaction not found/!=510: ' + JSON.stringify(wt));
+    if (wt && Number(wt.amount) === 594) ok('a credit wallet_transaction of 594 was written for the provider');
+    else no('provider credit wallet_transaction not found/!=594: ' + JSON.stringify(wt));
     const txRow = await payTxRow(tx);
-    if (txRow?.status === 'released' && Number(txRow.provider_amount) === 510 && Number(txRow.platform_fee) === 90)
-      ok('ledger row captured→released with provider_amount=510, platform_fee=90');
+    if (txRow?.status === 'released' && Number(txRow.provider_amount) === 594 && Number(txRow.platform_fee) === 6)
+      ok('ledger row captured→released with provider_amount=594, platform_fee=6');
     else no('ledger row not released as expected: ' + JSON.stringify(txRow));
     if ((await bookingRow(bk))?.payment_status === 'released') ok("booking payment_status → 'released'");
     else no('booking payment_status not released');
@@ -289,7 +289,7 @@ try {
   {
     const sp = await mkProvider(test1Id, 'Step8 F provider');
     const bk = await mkBooking({ customer: test2Id, provider: sp, status: 'paid', payment_status: 'released', price_charged: 600 });
-    await mkPayTx(bk, { status: 'released', amount: 60000, provider_amount: 510, platform_fee: 90 });
+    await mkPayTx(bk, { status: 'released', amount: 60000, provider_amount: 594, platform_fee: 6 });
     // simulate the earlier payout sitting in the provider's wallet, so the clawback has funds
     await service.rpc('credit_wallet', { p_user_id: test1Id, p_amount: 600, p_type: 'credit', p_description: 'step8 seed prior payout', p_reference_id: bk });
     const wBefore = await walletOf(test1Id);

@@ -127,8 +127,8 @@ try {
 let providerRowId = null, bookingId = null;
 const AMOUNT_RUPEES = 600;
 const AMOUNT_PAISE = AMOUNT_RUPEES * 100;
-const FEE = Math.round(AMOUNT_RUPEES * 0.15 * 100) / 100;   // 90
-const PAYOUT = AMOUNT_RUPEES - FEE;                          // 510
+const FEE = Math.round(AMOUNT_RUPEES * 0.01 * 100) / 100;   // 6 (platform fee = 1%)
+const PAYOUT = AMOUNT_RUPEES - FEE;                          // 594
 
 // ================= (a) create + accept a booking =================
 console.log('[a) setup: create + accept an escrow booking]');

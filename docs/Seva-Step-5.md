@@ -55,7 +55,9 @@ create-order (server, amount from DB)  ─▶ Razorpay Checkout (client)
 
 ## The migration (source of truth)
 
-`supabase/migrations/20260718120000_seva_payments_escrow.sql` — run after all Step 4 migrations. Platform fee is a single constant (`0.15` = 15%); change it in one place.
+`supabase/migrations/20260718120000_seva_payments_escrow.sql` — run after all Step 4 migrations. The platform fee is a single constant (`v_fee_pct`).
+
+> **Fee update (Step 8.5 follow-up):** the fee is now **1%** (was 15%) and is centralized in a `platform_fee_pct()` function so it lives in exactly one place — see `supabase/migrations/20260730120000_seva_platform_fee_1pct.sql`, which re-declares `release_escrow_on_confirm` and `resolve_dispute` to read it. The code block below is the *original* Step-5 version and still shows the 15% constant.
 
 ```sql
 /* Seva — Step 5: payments + escrow. Run AFTER the Step 4 migrations.
