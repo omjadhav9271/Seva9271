@@ -320,7 +320,8 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                     Completion <span className="text-white font-semibold">{Math.round(Number(snapshot.breakdown.completion) * 100)}%</span>
                   </span>
                   <span className="text-gray-400">
-                    Disputes <span className="text-white font-semibold">{Math.round(Number(snapshot.breakdown.dispute) * 100)}%</span>
+                    {/* fault-based since Step 8; older snapshots carry the raw-disputed `dispute` key */}
+                    Disputes <span className="text-white font-semibold">{Math.round(Number(snapshot.breakdown.dispute_fault_rate ?? snapshot.breakdown.dispute ?? 0) * 100)}%</span>
                   </span>
                 </div>
               )}

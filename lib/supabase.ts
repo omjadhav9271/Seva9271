@@ -126,7 +126,10 @@ export type ReputationSnapshot = {
     ops_score: number;      // operational component (0–5)
     completion: number;     // completion rate 0–1 (providers; 1 when no data)
     cancellation: number;   // cancellation rate 0–1
-    dispute: number;        // dispute rate 0–1
+    // Step 8: rate of disputes RESOLVED AGAINST the subject (fault-based). Snapshots computed
+    // before Step 8 carry the old `dispute` key (raw disputed-rate) instead — read with fallback.
+    dispute_fault_rate?: number;
+    dispute?: number;       // legacy pre-Step-8 key
     params: {
       lambda: number;
       prior: number;
@@ -154,6 +157,50 @@ export type Notification = {
   type: 'info' | 'success' | 'warning' | 'error';
   is_read: boolean;
   link: string | null;
+  created_at: string;
+};
+
+// Step 8: one dispute per problem, one OPEN dispute per booking (partial unique index).
+// Written only by raise_dispute / resolve_dispute; readable by the booking parties + admins.
+export type DisputeReason =
+  | 'work_not_done' | 'poor_quality' | 'overcharged' | 'no_show' | 'damage'
+  | 'payment_not_received' | 'customer_behaviour' | 'other';
+
+export type DisputeOutcome = 'favor_customer' | 'favor_provider' | 'partial' | 'no_fault';
+
+export type Dispute = {
+  id: string;
+  booking_id: string;
+  raised_by: string;
+  raiser_role: 'customer' | 'provider';
+  reason: DisputeReason;
+  description: string | null;
+  status: 'open' | 'under_review' | 'resolved';
+  outcome: DisputeOutcome | null;
+  fault_party: 'customer' | 'provider' | 'none' | null;
+  refund_amount: number | null;
+  resolution_notes: string | null;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  created_at: string;
+};
+
+// Step 8.5: evidence a party attaches to an OPEN dispute (images/video/audio/pdf). The file lives
+// in the private 'dispute-evidence' Storage bucket at <dispute_id>/<uuid>.<ext>; this row is its
+// metadata. RLS: a party reads only their OWN rows, the admin reads all; insert only by a party
+// while the dispute is unresolved; append-only (no updates).
+export type EvidenceKind = 'image' | 'video' | 'audio' | 'file';
+
+export type DisputeEvidence = {
+  id: string;
+  dispute_id: string;
+  booking_id: string;
+  uploaded_by: string;
+  uploader_role: 'customer' | 'provider';
+  file_path: string;
+  mime_type: string | null;
+  kind: EvidenceKind;
+  caption: string | null;
   created_at: string;
 };
 

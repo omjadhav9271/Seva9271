@@ -3,11 +3,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, Calendar, Clock, MapPin, AlertCircle, CheckCircle, XCircle, CreditCard, Shield, Wallet } from 'lucide-react';
+import { ArrowLeft, Calendar, Clock, MapPin, AlertCircle, AlertTriangle, CheckCircle, XCircle, CreditCard, Shield, Wallet, Scale } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
-import { supabase } from '@/lib/supabase';
+import { supabase, type Dispute, type DisputeReason } from '@/lib/supabase';
 import BookingChat from '@/components/booking-chat';
 import BookingReview from '@/components/booking-review';
+import DisputeEvidencePanel from '@/components/dispute-evidence-panel';
 import {
   type BookingRow, type BookingStatus, type PaymentStatus, type Role,
   BOOKING_SELECT, statusConfig, paymentStatusConfig, actionsFor, runTransition,
@@ -45,6 +46,37 @@ function loadRazorpayScript(): Promise<boolean> {
 
 const PAYABLE_STATUSES: BookingStatus[] = ['accepted', 'en_route', 'arrived', 'in_progress'];
 
+// Mirrors raise_dispute's allowed states — the button never offers an illegal dispute.
+const DISPUTABLE_STATUSES: BookingStatus[] = ['arrived', 'in_progress', 'completed', 'confirmed', 'paid'];
+
+// Role-appropriate reason lists (the DB CHECK accepts the union; this is UX curation).
+const DISPUTE_REASONS: Record<Role, { value: DisputeReason; label: string }[]> = {
+  customer: [
+    { value: 'work_not_done', label: 'Work was not done' },
+    { value: 'poor_quality', label: 'Poor quality of work' },
+    { value: 'overcharged', label: 'Overcharged / price issue' },
+    { value: 'no_show', label: 'Provider did not show up' },
+    { value: 'damage', label: 'Damage to property' },
+    { value: 'other', label: 'Other' },
+  ],
+  provider: [
+    { value: 'payment_not_received', label: 'Payment not received' },
+    { value: 'customer_behaviour', label: 'Customer behaviour' },
+    { value: 'no_show', label: 'Customer not available / no access' },
+    { value: 'other', label: 'Other' },
+  ],
+};
+
+const OUTCOME_TEXT: Record<string, string> = {
+  favor_customer: 'Resolved in the customer’s favour — refund issued.',
+  favor_provider: 'Resolved in the provider’s favour.',
+  partial: 'Resolved with a partial refund.',
+  no_fault: 'Resolved — no fault found on either side.',
+};
+
+const reasonLabel = (r: string) =>
+  [...DISPUTE_REASONS.customer, ...DISPUTE_REASONS.provider].find((x) => x.value === r)?.label ?? r;
+
 export default function BookingDetailPage({ params }: { params: { id: string } }) {
   const { id } = params;
   const { user, loading: authLoading } = useAuth();
@@ -54,6 +86,11 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
   const [paying, setPaying] = useState(false);
+  const [dispute, setDispute] = useState<Dispute | null>(null);
+  const [disputeFormOpen, setDisputeFormOpen] = useState(false);
+  const [disputeReason, setDisputeReason] = useState<DisputeReason | ''>('');
+  const [disputeDesc, setDisputeDesc] = useState('');
+  const [raising, setRaising] = useState(false);
 
   // Message notifications link here with ?tab=chat; status notifications land at the top so
   // the action buttons are what you see first.
@@ -102,6 +139,24 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
     chatRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [loading, booking, wantChat]);
 
+  // Latest dispute on this booking (RLS: parties + admins only). The latest row is the one that
+  // matters — the partial unique index allows at most one open dispute at a time.
+  const fetchDispute = useCallback(async () => {
+    const { data } = await supabase
+      .from('disputes')
+      .select('*')
+      .eq('booking_id', id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    setDispute((data as Dispute | null) ?? null);
+  }, [id]);
+
+  useEffect(() => {
+    if (!user) return;
+    void fetchDispute();
+  }, [user, fetchDispute]);
+
   // Re-read the booking (status + payment_status) from the DB. Called after Checkout closes:
   // the webhook — not the Checkout callback — is what flips payment_status to 'held', so we
   // simply refetch and let the badge catch up once that server-side event lands.
@@ -128,11 +183,12 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'bookings', filter: `id=eq.${id}` },
-        () => { void refetchBooking(); },
+        // A status flip to/out of 'disputed' comes with a dispute row change — refresh both.
+        () => { void refetchBooking(); void fetchDispute(); },
       )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [id, user, refetchBooking]);
+  }, [id, user, refetchBooking, fetchDispute]);
 
   // After Checkout closes on success, the webhook flips payment_status to 'held' server-side a
   // few seconds later — but `bookings` isn't in the realtime publication, so a single refetch
@@ -229,6 +285,27 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
     if (next === 'confirmed') void refetchBooking();
   };
 
+  // Raise a dispute — the ONLY way a booking enters 'disputed' (Step 8). The RPC validates
+  // party + state server-side; here we just collect reason + description.
+  const handleRaiseDispute = async () => {
+    if (!booking || !disputeReason || raising) return;
+    setRaising(true);
+    const { data, error } = await supabase.rpc('raise_dispute', {
+      p_booking_id: booking.id,
+      p_reason: disputeReason,
+      p_description: disputeDesc.trim() || null,
+    });
+    setRaising(false);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    setDispute((Array.isArray(data) ? data[0] : data) as Dispute);
+    setDisputeFormOpen(false);
+    toast.success('Dispute raised. Our team will review the booking and get back to both of you.');
+    void refetchBooking();
+  };
+
   if (loading || authLoading) {
     return (
       <div className="min-h-screen bg-[#0d0d0d] pt-20">
@@ -291,6 +368,36 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
         <Link href="/bookings" className="inline-flex items-center gap-2 text-sm text-gray-400 hover:text-white mb-6">
           <ArrowLeft className="w-4 h-4" />Back to My Bookings
         </Link>
+
+        {/* Dispute banner — replaces the normal action emphasis while a dispute is live. */}
+        {dispute && dispute.status !== 'resolved' && (
+          <div className="rounded-2xl border border-orange-700/40 bg-orange-900/15 p-4 mb-6 flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-orange-400 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold text-orange-300">
+                Dispute {dispute.status === 'open' ? 'open' : 'under review'} — {reasonLabel(dispute.reason)}
+              </p>
+              <p className="text-xs text-gray-400 mt-1">
+                Raised by {dispute.raised_by === user?.id ? 'you' : `the ${dispute.raiser_role}`} on{' '}
+                {new Date(dispute.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}.
+                Our team is reviewing the booking history, chat and payments. Funds stay protected until it&apos;s resolved.
+              </p>
+            </div>
+          </div>
+        )}
+        {dispute && dispute.status === 'resolved' && (
+          <div className="rounded-2xl border border-[#2a2a2a] bg-[#161616] p-4 mb-6 flex items-start gap-3">
+            <Scale className="w-5 h-5 text-[#5da9ff] flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold text-white">
+                Dispute resolved{dispute.outcome ? ` — ${OUTCOME_TEXT[dispute.outcome]}` : '.'}
+              </p>
+              {dispute.resolution_notes && (
+                <p className="text-xs text-gray-400 mt-1">{dispute.resolution_notes}</p>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Summary */}
         <div className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-5 mb-6">
@@ -388,7 +495,71 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
               ))}
             </div>
           )}
+
+          {/* Report a problem — either party, only in the states raise_dispute accepts, and only
+              while no dispute is open (a resolved one doesn't block a new problem). */}
+          {role && DISPUTABLE_STATUSES.includes(booking.status) &&
+            (!dispute || dispute.status === 'resolved') && (
+            <div className="pt-4 mt-4 border-t border-[#222]">
+              {!disputeFormOpen ? (
+                <button
+                  onClick={() => setDisputeFormOpen(true)}
+                  className="flex items-center gap-2 text-xs text-gray-500 hover:text-orange-400 transition-colors"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  Report a problem with this booking
+                </button>
+              ) : (
+                <div className="rounded-xl border border-orange-700/30 bg-orange-900/10 p-4">
+                  <p className="text-sm font-semibold text-white mb-3">What went wrong?</p>
+                  <div className="space-y-3">
+                    <select
+                      value={disputeReason}
+                      onChange={(e) => setDisputeReason(e.target.value as DisputeReason)}
+                      className="w-full bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-orange-500/50"
+                    >
+                      <option value="">Select a reason…</option>
+                      {DISPUTE_REASONS[role].map((r) => (
+                        <option key={r.value} value={r.value}>{r.label}</option>
+                      ))}
+                    </select>
+                    <textarea
+                      value={disputeDesc}
+                      onChange={(e) => setDisputeDesc(e.target.value)}
+                      rows={3}
+                      placeholder="Describe what happened (optional, but helps our team resolve it faster)"
+                      className="w-full bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-orange-500/50 resize-none"
+                    />
+                    <p className="text-xs text-gray-500">
+                      Raising a dispute pauses this booking while our team reviews the full history —
+                      timeline, chat and payments. Money stays protected until it&apos;s resolved.
+                    </p>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleRaiseDispute}
+                        disabled={raising || !disputeReason}
+                        className="px-4 py-2 rounded-xl text-sm font-semibold bg-orange-600 text-white hover:bg-orange-700 transition-colors disabled:opacity-50"
+                      >
+                        {raising ? 'Submitting…' : 'Raise dispute'}
+                      </button>
+                      <button
+                        onClick={() => setDisputeFormOpen(false)}
+                        disabled={raising}
+                        className="px-4 py-2 rounded-xl text-sm text-gray-400 hover:text-white transition-colors disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
+
+        {/* Dispute evidence — either party attaches files while a dispute is live; you see only
+            your own. The admin weighs both sides in the evidence bundle. */}
+        {dispute && role && <DisputeEvidencePanel dispute={dispute} role={role} />}
 
         {/* Reviews — bidirectional + reciprocity-gated. Rendered for the two parties once the
             booking is settled; the section itself shows the form, the waiting state, or the

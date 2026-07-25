@@ -267,7 +267,8 @@ export default function ProfilePage() {
                     <p className="text-xs text-gray-400 mt-0.5">Cancellations</p>
                   </div>
                   <div className="bg-[#1e1e1e] rounded-xl p-3 text-center">
-                    <p className="text-lg font-black text-white">{Math.round(Number(repSnapshot.breakdown.dispute) * 100)}%</p>
+                    {/* fault-based since Step 8; older snapshots carry the raw-disputed `dispute` key */}
+                    <p className="text-lg font-black text-white">{Math.round(Number(repSnapshot.breakdown.dispute_fault_rate ?? repSnapshot.breakdown.dispute ?? 0) * 100)}%</p>
                     <p className="text-xs text-gray-400 mt-0.5">Disputes</p>
                   </div>
                 </div>

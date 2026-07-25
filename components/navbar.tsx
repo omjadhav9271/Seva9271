@@ -49,6 +49,12 @@ export default function Navbar() {
   const router = useRouter();
   const pathname = usePathname();
 
+  // Admin link only for admins — role is server-controlled (not client-writable), and the admin
+  // pages + RLS re-check it anyway; this is pure navigation, not a security boundary.
+  const links = profile?.role === 'admin'
+    ? [...navLinks, { href: '/admin/disputes', label: 'Admin' }]
+    : navLinks;
+
   const walletRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
   const userRef = useRef<HTMLDivElement>(null);
@@ -187,7 +193,7 @@ export default function Navbar() {
 
           {/* Desktop Nav Links */}
           <div className="hidden md:flex items-center gap-6">
-            {navLinks.map((link) => (
+            {links.map((link) => (
               <Link
                 key={link.href}
                 href={link.href}
@@ -420,7 +426,7 @@ export default function Navbar() {
       {menuOpen && (
         <div className="md:hidden bg-[#0d0d0d] border-t border-[#2a2a2a]">
           <div className="px-4 py-4 space-y-2">
-            {navLinks.map((link) => (
+            {links.map((link) => (
               <Link
                 key={link.href}
                 href={link.href}

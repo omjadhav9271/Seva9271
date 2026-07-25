@@ -1,10 +1,14 @@
 /* POST /api/payments/refund — return escrowed funds to the customer.
  *
- * Auth: the booking's customer, or an admin. (Full dispute/cancel policy is Step 8; here we
- * allow either party-of-record to trigger a refund of money that is still held.)
- * Only a 'held' booking can be refunded. We call the Razorpay refund API on the captured
- * payment, then mark the ledger row + booking 'refunded'. Idempotent: a second call on an
- * already-refunded booking is a 200 no-op. */
+ * Auth: the booking's customer, or an admin.
+ * Two modes:
+ *  1. Customer/admin refund of HELD money (pre-Step-8 behaviour, unchanged): only a 'held'
+ *     booking, full amount, ledger row captured→refunded, booking → 'refunded'.
+ *  2. Admin dispute-resolution refund (`disputeResolution: true`, Step 8): resolve_dispute has
+ *     already set bookings.payment_status='refunded', so the held-only guard can't serve these —
+ *     eligibility keys on the RESOLVED dispute (favor_customer/partial) + the ledger row still
+ *     holding a refundable gateway payment ('captured' or 'released'). Supports partial amounts
+ *     (rupees in, paise to Razorpay). Idempotent via the ledger row's refunded state. */
 
 import { NextResponse } from 'next/server';
 import { getSupabaseAdmin } from '@/lib/supabase-admin';
@@ -20,7 +24,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  let body: { bookingId?: string };
+  let body: { bookingId?: string; amount?: number; disputeResolution?: boolean };
   try {
     body = await req.json();
   } catch {
@@ -45,14 +49,65 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'booking not found' }, { status: 404 });
   }
 
-  // Authorize: the booking's customer or an admin.
-  let isAdmin = false;
-  if (booking.customer_id !== userId) {
-    const { data: prof } = await admin.from('profiles').select('role').eq('id', userId).maybeSingle();
-    isAdmin = prof?.role === 'admin';
+  // Authorize: the booking's customer or an admin (role is server-controlled).
+  const { data: prof } = await admin.from('profiles').select('role').eq('id', userId).maybeSingle();
+  const isAdmin = prof?.role === 'admin';
+  if (booking.customer_id !== userId && !isAdmin) {
+    return NextResponse.json({ error: 'not authorized to refund this booking' }, { status: 403 });
+  }
+
+  // ── Mode 2: admin dispute-resolution refund (Step 8) ──────────────────────────────────────
+  if (body.disputeResolution) {
     if (!isAdmin) {
-      return NextResponse.json({ error: 'not authorized to refund this booking' }, { status: 403 });
+      return NextResponse.json({ error: 'dispute refunds are admin-only' }, { status: 403 });
     }
+    // Eligibility = a resolved dispute that owes the customer money.
+    const { data: dis } = await admin
+      .from('disputes')
+      .select('id, outcome, refund_amount')
+      .eq('booking_id', bookingId)
+      .eq('status', 'resolved')
+      .in('outcome', ['favor_customer', 'partial'])
+      .order('resolved_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!dis) {
+      return NextResponse.json({ error: 'no resolved dispute owing a refund on this booking' }, { status: 409 });
+    }
+    // The gateway payment: captured (was held) or released (was paid out — RPC clawed back).
+    const { data: dtx } = await admin
+      .from('payment_transactions')
+      .select('id, razorpay_payment_id, amount, status')
+      .eq('booking_id', bookingId)
+      .not('razorpay_payment_id', 'is', null)
+      .in('status', ['captured', 'released', 'refunded'])
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!dtx || !dtx.razorpay_payment_id) {
+      return NextResponse.json({ error: 'no gateway payment to refund' }, { status: 409 });
+    }
+    if (dtx.status === 'refunded') {
+      return NextResponse.json({ ok: true, idempotent: true, refunded: true });
+    }
+    // Amount: request (rupees) → dispute's recorded refund_amount → full capture. Never above
+    // what was captured; tx.amount is stored in paise.
+    const rupees = Number(body.amount ?? dis.refund_amount ?? 0);
+    const amountPaise = rupees > 0
+      ? Math.min(Math.round(rupees * 100), Number(dtx.amount))
+      : Number(dtx.amount);
+    try {
+      await getRazorpay().payments.refund(dtx.razorpay_payment_id, { amount: amountPaise });
+    } catch (e) {
+      console.error('razorpay dispute refund failed:', e);
+      return NextResponse.json({ error: 'refund failed at gateway' }, { status: 502 });
+    }
+    await admin
+      .from('payment_transactions')
+      .update({ status: 'refunded', updated_at: new Date().toISOString() })
+      .eq('id', dtx.id)
+      .neq('status', 'refunded'); // idempotency guard
+    return NextResponse.json({ ok: true, refunded: true, bookingId, amountPaise });
   }
 
   // Idempotent: already refunded → success no-op.
