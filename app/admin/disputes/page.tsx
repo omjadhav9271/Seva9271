@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { Scale, AlertTriangle, CheckCircle, ChevronRight } from 'lucide-react';
+import { Scale, AlertTriangle, CheckCircle, ChevronRight, BadgeCheck } from 'lucide-react';
 import { supabase, type Dispute } from '@/lib/supabase';
 import { useAdminGuard, REASON_LABELS } from '@/lib/admin';
 
@@ -62,9 +62,12 @@ export default function AdminDisputesPage() {
           <Scale className="w-7 h-7 text-[#FF9933]" />
           <h1 className="text-3xl font-black text-white">Dispute Queue</h1>
         </div>
-        <p className="text-sm text-gray-400 mb-6">
+        <p className="text-sm text-gray-400 mb-4">
           Every dispute carries its full evidence bundle — timeline, chat, payments, reputations.
         </p>
+        <Link href="/admin/providers" className="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-[#FF9933] transition-colors mb-6">
+          <BadgeCheck className="w-3.5 h-3.5" /> Provider applications
+        </Link>
 
         <div className="flex gap-2 mb-6">
           {(['open', 'resolved'] as const).map((t) => (

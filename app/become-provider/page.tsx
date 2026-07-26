@@ -1,327 +1,454 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import {
-  CheckCircle, ArrowRight, Zap, Wrench, ChefHat, Sparkles, Heart, Car,
-  Stethoscope, GraduationCap, Settings, Hammer, Leaf, Scissors,
-  ShoppingBasket, Truck, Shield, TrendingUp, Users, Award
+  CheckCircle, Clock, AlertTriangle, ShieldCheck, Upload, X, FileText, Loader2, Ban,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { supabase } from '@/lib/supabase';
+import {
+  fetchMyApplication, submitApplication, uploadKycDoc, removeKycDoc,
+  KYC_ACCEPT, KYC_SLOTS, type MyApplication,
+} from '@/lib/provider-application';
+import type { KycDocument } from '@/lib/supabase';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 
-const categories = [
-  { icon: Zap, name: 'Electrician', slug: 'electrician', color: '#FF9933' },
-  { icon: Wrench, name: 'Plumber', slug: 'plumber', color: '#3b82f6' },
-  { icon: ChefHat, name: 'Home Cook / Tiffin', slug: 'home-cook', color: '#ef4444' },
-  { icon: Sparkles, name: 'House Cleaning', slug: 'house-cleaning', color: '#22c55e' },
-  { icon: Heart, name: 'Caretaker', slug: 'caretaker', color: '#ec4899' },
-  { icon: Car, name: 'Driver', slug: 'driver', color: '#94a3b8' },
-  { icon: Stethoscope, name: 'Doctor', slug: 'doctor', color: '#14b8a6' },
-  { icon: GraduationCap, name: 'Tutor', slug: 'tutor', color: '#a855f7' },
-  { icon: Settings, name: 'Appliance Repair', slug: 'appliance-repair', color: '#6366f1' },
-  { icon: Hammer, name: 'Carpenter', slug: 'carpenter', color: '#f59e0b' },
-  { icon: Leaf, name: 'Gardening', slug: 'gardening', color: '#84cc16' },
-  { icon: Scissors, name: 'Beauty & Wellness', slug: 'beauty', color: '#f43f5e' },
-  { icon: ShoppingBasket, name: 'Farm Fresh', slug: 'farm-fresh', color: '#10b981' },
-  { icon: Truck, name: 'Delivery', slug: 'delivery', color: '#f97316' },
-];
+type CategoryRow = { id: string; name: string; slug: string };
 
-const benefits = [
-  { icon: TrendingUp, title: 'Grow Your Income', desc: 'Earn ₹15,000-₹80,000+ per month depending on your skills and availability.' },
-  { icon: Users, title: 'Large Customer Base', desc: 'Access thousands of verified customers actively looking for your services.' },
-  { icon: Shield, title: 'Safe & Secure', desc: 'All customers are verified. Get payment protection and dispute resolution.' },
-  { icon: Award, title: 'Build Your Reputation', desc: 'Earn verified reviews and badges to stand out and attract more customers.' },
-];
+const BIO_MAX = 300;
 
-const steps = [
-  { num: '01', title: 'Apply', desc: 'Fill out the provider application with your details and service category.' },
-  { num: '02', title: 'Get Verified', desc: 'Submit documents for background check. Usually takes 24-48 hours.' },
-  { num: '03', title: 'Go Live', desc: 'Once approved, your profile goes live and customers can book you.' },
-  { num: '04', title: 'Earn', desc: 'Complete services, collect payments, and build your reputation.' },
-];
+const emptyForm = {
+  categoryId: '', businessName: '', city: '', area: '', hourlyRate: '', experience: '', bio: '',
+};
 
 export default function BecomeProviderPage() {
-  const { user } = useAuth();
+  const { user, profile, loading: authLoading } = useAuth();
   const router = useRouter();
-  const [step, setStep] = useState(1);
-  const [form, setForm] = useState({
-    category: '',
-    businessName: '',
-    bio: '',
-    experience: '',
-    hourlyRate: '',
-    city: '',
-    state: '',
-    phone: '',
-    aadhar: '',
-  });
-  const [submitting, setSubmitting] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
 
-  const handleSubmit = async () => {
-    if (!user) {
-      router.push('/auth/signup');
-      return;
-    }
-    if (!form.category || !form.businessName || !form.city) {
-      toast.error('Please fill all required fields');
-      return;
-    }
-    setSubmitting(true);
-    await new Promise(r => setTimeout(r, 2000));
-    setSubmitting(false);
-    setSubmitted(true);
-    toast.success('Application submitted! We will review it within 24 hours.');
+  const [categories, setCategories] = useState<CategoryRow[]>([]);
+  const [application, setApplication] = useState<MyApplication | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(false);   // show the form even though a row exists
+  const [form, setForm] = useState(emptyForm);
+  const [docs, setDocs] = useState<(KycDocument | null)[]>([null, null]);
+  const [uploadingSlot, setUploadingSlot] = useState<number | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const fileInputs = useRef<(HTMLInputElement | null)[]>([]);
+
+  // Categories drive category_id — the RPC needs the real uuid, not a slug.
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const { data } = await supabase.from('service_categories').select('id, name, slug').order('name');
+      if (active) setCategories((data ?? []) as CategoryRow[]);
+    })();
+    return () => { active = false; };
+  }, []);
+
+  const prefill = useCallback((row: MyApplication) => {
+    setForm({
+      categoryId: row.category_id ?? '',
+      businessName: row.business_name ?? '',
+      city: row.city ?? '',
+      area: row.address ?? '',
+      hourlyRate: row.hourly_rate ? String(row.hourly_rate) : '',
+      experience: row.experience_years ? String(row.experience_years) : '',
+      bio: row.bio ?? '',
+    });
+    const existing = row.kyc_documents ?? [];
+    setDocs([existing[0] ?? null, existing[1] ?? null]);
+  }, []);
+
+  // Load the caller's own application (if any) — this is what makes the status screen honest.
+  useEffect(() => {
+    if (authLoading) return;
+    if (!user) { setLoading(false); return; }
+    let active = true;
+    (async () => {
+      const row = await fetchMyApplication();
+      if (!active) return;
+      setApplication(row);
+      if (row) prefill(row);
+      setLoading(false);
+    })();
+    return () => { active = false; };
+  }, [user, authLoading, prefill]);
+
+  const handleFile = async (slot: number, file: File | undefined) => {
+    if (!file) return;
+    setUploadingSlot(slot);
+    const result = await uploadKycDoc(file, KYC_SLOTS[slot].key);
+    setUploadingSlot(null);
+    if ('error' in result) { toast.error(result.error); return; }
+    const replaced = docs[slot];
+    setDocs((prev) => prev.map((d, i) => (i === slot ? result.data : d)));
+    if (replaced) await removeKycDoc(replaced.path);   // don't leave the old file behind
   };
 
-  if (submitted) {
-    return (
-      <div className="min-h-screen bg-[#0d0d0d] pt-20 flex items-center justify-center px-4">
-        <div className="text-center max-w-lg">
-          <div className="w-24 h-24 rounded-full bg-[#138808]/10 border-2 border-[#138808]/30 flex items-center justify-center mx-auto mb-6">
-            <CheckCircle className="w-12 h-12 text-[#138808]" />
+  const clearDoc = async (slot: number) => {
+    const doc = docs[slot];
+    setDocs((prev) => prev.map((d, i) => (i === slot ? null : d)));
+    if (fileInputs.current[slot]) fileInputs.current[slot]!.value = '';
+    if (doc) await removeKycDoc(doc.path);
+  };
+
+  const handleSubmit = async () => {
+    if (!user) { router.push('/auth/signin'); return; }
+    if (!form.categoryId) { toast.error('Pick the service you offer'); return; }
+    if (!form.businessName.trim()) { toast.error('Add the name customers will see'); return; }
+    if (!form.city.trim()) { toast.error('Add the city you work in'); return; }
+    if (!docs[0]) { toast.error('Upload a photo ID — it\'s how we verify you'); return; }
+
+    setSubmitting(true);
+    const result = await submitApplication({
+      categoryId: form.categoryId,
+      businessName: form.businessName.trim(),
+      bio: form.bio.trim(),
+      experienceYears: Number(form.experience) || 0,
+      hourlyRate: Number(form.hourlyRate) || 0,
+      city: form.city.trim(),
+      state: profile?.state ?? 'Maharashtra',
+      area: form.area.trim(),
+      documents: docs.filter((d): d is KycDocument => d != null),
+    });
+    setSubmitting(false);
+
+    if ('error' in result) { toast.error(result.error); return; }
+    setApplication(result.data);
+    prefill(result.data);
+    setEditing(false);
+    toast.success('Application submitted — we\'ll review it within 24–48 hours.');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  if (authLoading || loading) {
+    return <div className="min-h-screen bg-[#0d0d0d] pt-20 flex items-center justify-center text-gray-400">Loading…</div>;
+  }
+
+  // ---------------------------------------------------------------- status screens
+  // Driven entirely by the row the server wrote. No optimistic "submitted!" state.
+  if (application && !editing) {
+    const { status, kyc_status } = application;
+
+    if (status === 'approved') {
+      return (
+        <StatusShell
+          icon={<CheckCircle className="w-12 h-12 text-[#138808]" />}
+          tone="#138808"
+          title="You're live."
+          body="Your profile is verified and customers can book you now."
+        >
+          <div className="flex flex-col sm:flex-row gap-3 justify-center">
+            <Link href={`/providers/${application.id}`} className="saffron-btn px-6 py-3 rounded-xl font-semibold text-sm">
+              View my public profile
+            </Link>
+            <Link href="/bookings" className="px-6 py-3 rounded-xl border border-[#2a2a2a] text-sm text-gray-300 hover:text-white transition-colors">
+              Go to my bookings
+            </Link>
           </div>
-          <h2 className="text-3xl font-black text-white mb-3">Application Submitted!</h2>
-          <p className="text-gray-400 mb-8">Our team will review your application within 24-48 hours. You'll receive an email once approved.</p>
-          <Link href="/" className="saffron-btn px-8 py-3.5 rounded-xl font-semibold text-sm inline-block">
-            Back to Home
-          </Link>
+        </StatusShell>
+      );
+    }
+
+    if (status === 'rejected' || kyc_status === 'rejected') {
+      return (
+        <StatusShell
+          icon={<AlertTriangle className="w-12 h-12 text-orange-400" />}
+          tone="#fb923c"
+          title="Your application needs changes"
+          body="Fix the point below and resubmit — everything you entered is saved."
+        >
+          <div className="bg-[#161616] border border-orange-500/25 rounded-xl p-4 text-left mb-6">
+            <p className="text-xs uppercase tracking-wide text-orange-400/80 mb-1.5">Reason</p>
+            <p className="text-sm text-gray-200">
+              {application.rejection_reason?.trim() || 'No reason was recorded. Please review your details and documents, then resubmit.'}
+            </p>
+          </div>
+          <button onClick={() => setEditing(true)} className="saffron-btn px-6 py-3 rounded-xl font-semibold text-sm">
+            Fix and resubmit
+          </button>
+        </StatusShell>
+      );
+    }
+
+    if (status === 'suspended') {
+      return (
+        <StatusShell
+          icon={<Ban className="w-12 h-12 text-red-400" />}
+          tone="#f87171"
+          title="Your profile is suspended"
+          body="You can't take bookings right now. Reply to the email we sent, or contact support to sort it out."
+        />
+      );
+    }
+
+    // pending — the honest default
+    return (
+      <StatusShell
+        icon={<Clock className="w-12 h-12 text-[#FF9933]" />}
+        tone="#FF9933"
+        title="Submitted — reviewed within 24–48 hours"
+        body="A person checks every application and your ID before a profile goes live. We'll notify you the moment it's decided."
+      >
+        <div className="bg-[#161616] border border-[#2a2a2a] rounded-xl p-4 text-left mb-6 space-y-2">
+          <Row label="Name" value={application.business_name} />
+          <Row label="Service area" value={[application.address, application.city].filter(Boolean).join(', ') || null} />
+          <Row label="Rate" value={application.hourly_rate ? `₹${application.hourly_rate}/hr` : null} />
+          <Row label="Documents" value={`${(application.kyc_documents ?? []).length} uploaded`} />
+          <Row
+            label="Submitted"
+            value={application.applied_at ? new Date(application.applied_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : null}
+          />
         </div>
-      </div>
+        <button onClick={() => setEditing(true)} className="px-6 py-3 rounded-xl border border-[#2a2a2a] text-sm text-gray-300 hover:text-white transition-colors">
+          Edit my application
+        </button>
+      </StatusShell>
     );
   }
 
+  // ---------------------------------------------------------------- the application form
+  const bioLeft = BIO_MAX - form.bio.length;
+
   return (
     <div className="min-h-screen bg-[#0d0d0d] pt-16">
-      {/* Hero */}
-      <section className="relative py-20 overflow-hidden">
+      <section className="relative py-14 overflow-hidden">
         <div className="absolute inset-0 pointer-events-none">
           <div className="absolute top-0 left-0 w-96 h-96 bg-[#FF9933]/8 rounded-full blur-[100px]" />
           <div className="absolute bottom-0 right-0 w-96 h-96 bg-[#138808]/8 rounded-full blur-[100px]" />
         </div>
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center relative">
-          <div className="inline-flex items-center gap-2 bg-[#FF9933]/10 border border-[#FF9933]/20 rounded-full px-4 py-1.5 mb-6">
-            <span className="text-[#FF9933] text-sm font-medium">Join 10,000+ providers on Seva</span>
-          </div>
-          <h1 className="text-4xl sm:text-5xl font-black text-white mb-6">
-            Turn Your Skills Into<br />
-            <span className="text-[#FF9933]">Steady Income</span>
+        <div className="max-w-2xl mx-auto px-4 sm:px-6 text-center relative">
+          <h1 className="text-3xl sm:text-4xl font-black text-white mb-4">
+            Work for yourself,<br /><span className="text-[#FF9933]">on your own reputation</span>
           </h1>
-          <p className="text-gray-400 text-lg mb-10 max-w-2xl mx-auto">
-            Join India's fastest growing service marketplace. Set your own schedule, prices, and build a thriving business.
+          <p className="text-gray-400 mb-6">
+            One short application. We verify your ID, then your profile goes live and the reviews you earn stay yours.
           </p>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 max-w-2xl mx-auto">
-            {[
-              { value: '₹45K', label: 'Avg Monthly Earnings' },
-              { value: '10K+', label: 'Active Providers' },
-              { value: '24hrs', label: 'Verification Time' },
-              { value: '0%', label: 'Joining Fee' },
-            ].map((s) => (
-              <div key={s.label} className="bg-[#161616] border border-[#2a2a2a] rounded-xl p-4 text-center">
-                <p className="text-xl font-black text-[#FF9933]">{s.value}</p>
-                <p className="text-xs text-gray-400 mt-1">{s.label}</p>
-              </div>
-            ))}
+          <div className="flex items-center justify-center gap-2 text-xs text-gray-500">
+            <ShieldCheck className="w-4 h-4 text-[#138808]" />
+            Takes about 3 minutes · No joining fee
           </div>
         </div>
       </section>
 
-      {/* Benefits */}
-      <section className="py-16 bg-[#0a0a0a]">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-          <h2 className="text-2xl font-black text-white mb-8 text-center">Why Join Seva?</h2>
-          <div className="grid md:grid-cols-4 gap-5">
-            {benefits.map((b) => (
-              <div key={b.title} className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-5">
-                <div className="w-10 h-10 rounded-xl bg-[#FF9933]/10 flex items-center justify-center mb-4">
-                  <b.icon className="w-5 h-5 text-[#FF9933]" />
-                </div>
-                <h3 className="font-bold text-white mb-2">{b.title}</h3>
-                <p className="text-sm text-gray-400 leading-relaxed">{b.desc}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
+      <section className="pb-20 max-w-2xl mx-auto px-4 sm:px-6">
+        {editing && (
+          <button
+            onClick={() => { if (application) prefill(application); setEditing(false); }}
+            className="text-sm text-gray-400 hover:text-white mb-4 transition-colors"
+          >
+            ← Back to status
+          </button>
+        )}
 
-      {/* Application Form */}
-      <section className="py-16 max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="text-center mb-10">
-          <h2 className="text-2xl font-black text-white mb-2">Apply to Become a Provider</h2>
-          <p className="text-gray-400">It takes less than 5 minutes</p>
-        </div>
-
-        {/* Steps Progress */}
-        <div className="flex items-center justify-center gap-3 mb-10">
-          {[1, 2, 3].map((s) => (
-            <div key={s} className="flex items-center gap-3">
-              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold transition-all ${step >= s ? 'bg-[#FF9933] text-white' : 'bg-[#1e1e1e] border border-[#2a2a2a] text-gray-500'}`}>
-                {step > s ? <CheckCircle className="w-4 h-4" /> : s}
-              </div>
-              {s < 3 && <div className={`w-16 h-0.5 ${step > s ? 'bg-[#FF9933]' : 'bg-[#2a2a2a]'}`} />}
-            </div>
-          ))}
-        </div>
-
-        <div className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-8">
-          {step === 1 && (
-            <div>
-              <h3 className="font-bold text-white text-lg mb-6">Step 1: Choose Your Service</h3>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6">
-                {categories.map((cat) => (
-                  <button
-                    key={cat.slug}
-                    onClick={() => setForm({ ...form, category: cat.slug })}
-                    className={`flex items-center gap-3 p-3 rounded-xl border text-sm font-medium transition-all ${form.category === cat.slug ? 'border-[#FF9933]/60 bg-[#FF9933]/10 text-white' : 'border-[#2a2a2a] bg-[#1e1e1e] text-gray-400 hover:border-[#FF9933]/40'}`}
-                  >
-                    <cat.icon className="w-4 h-4 flex-shrink-0" style={{ color: form.category === cat.slug ? '#FF9933' : cat.color }} />
-                    <span className="text-xs">{cat.name}</span>
-                    {form.category === cat.slug && <CheckCircle className="w-3.5 h-3.5 text-[#FF9933] ml-auto" />}
-                  </button>
-                ))}
-              </div>
-              <button
-                onClick={() => form.category && setStep(2)}
-                disabled={!form.category}
-                className="saffron-btn w-full rounded-xl py-3.5 font-semibold flex items-center justify-center gap-2 disabled:opacity-40"
-              >
-                Next Step <ArrowRight className="w-4 h-4" />
-              </button>
-            </div>
-          )}
-
-          {step === 2 && (
-            <div>
-              <h3 className="font-bold text-white text-lg mb-6">Step 2: Your Business Details</h3>
-              <div className="space-y-4 mb-6">
-                <div>
-                  <label className="block text-sm text-gray-400 mb-2">Business / Display Name *</label>
-                  <input
-                    value={form.businessName}
-                    onChange={(e) => setForm({ ...form, businessName: e.target.value })}
-                    className="w-full bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-[#FF9933]"
-                    placeholder="e.g., Ramesh Electricals"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-400 mb-2">About You / Bio</label>
-                  <textarea
-                    value={form.bio}
-                    onChange={(e) => setForm({ ...form, bio: e.target.value })}
-                    rows={3}
-                    className="w-full bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-[#FF9933] resize-none"
-                    placeholder="Describe your experience and skills..."
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm text-gray-400 mb-2">Experience (years)</label>
-                    <input
-                      type="number"
-                      value={form.experience}
-                      onChange={(e) => setForm({ ...form, experience: e.target.value })}
-                      className="w-full bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-[#FF9933]"
-                      placeholder="5"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-gray-400 mb-2">Hourly Rate (₹)</label>
-                    <input
-                      type="number"
-                      value={form.hourlyRate}
-                      onChange={(e) => setForm({ ...form, hourlyRate: e.target.value })}
-                      className="w-full bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-[#FF9933]"
-                      placeholder="300"
-                    />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm text-gray-400 mb-2">City *</label>
-                    <input
-                      value={form.city}
-                      onChange={(e) => setForm({ ...form, city: e.target.value })}
-                      className="w-full bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-[#FF9933]"
-                      placeholder="Mumbai"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-gray-400 mb-2">State</label>
-                    <input
-                      value={form.state}
-                      onChange={(e) => setForm({ ...form, state: e.target.value })}
-                      className="w-full bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-[#FF9933]"
-                      placeholder="Maharashtra"
-                    />
-                  </div>
-                </div>
-              </div>
-              <div className="flex gap-3">
-                <button onClick={() => setStep(1)} className="flex-1 py-3 border border-[#2a2a2a] rounded-xl text-sm text-gray-300 hover:text-white transition-colors">Back</button>
-                <button onClick={() => form.businessName && form.city && setStep(3)} disabled={!form.businessName || !form.city} className="saffron-btn flex-1 rounded-xl py-3 font-semibold flex items-center justify-center gap-2 disabled:opacity-40">
-                  Next <ArrowRight className="w-4 h-4" />
+        <div className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-6 sm:p-8 space-y-6">
+          {/* Category */}
+          <Field label="What do you do?" required>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {categories.map((cat) => (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => setForm({ ...form, categoryId: cat.id })}
+                  className={`px-3 py-2.5 rounded-xl border text-xs font-medium text-left transition-all ${
+                    form.categoryId === cat.id
+                      ? 'border-[#FF9933]/60 bg-[#FF9933]/10 text-white'
+                      : 'border-[#2a2a2a] bg-[#1e1e1e] text-gray-400 hover:border-[#FF9933]/40'
+                  }`}
+                >
+                  {cat.name}
                 </button>
-              </div>
+              ))}
             </div>
-          )}
+          </Field>
 
-          {step === 3 && (
-            <div>
-              <h3 className="font-bold text-white text-lg mb-6">Step 3: Verification Documents</h3>
-              <div className="space-y-4 mb-6">
-                <div>
-                  <label className="block text-sm text-gray-400 mb-2">Phone Number *</label>
-                  <input
-                    value={form.phone}
-                    onChange={(e) => setForm({ ...form, phone: e.target.value })}
-                    className="w-full bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-[#FF9933]"
-                    placeholder="+91 98765 43210"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-400 mb-2">Aadhaar Number</label>
-                  <input
-                    value={form.aadhar}
-                    onChange={(e) => setForm({ ...form, aadhar: e.target.value })}
-                    className="w-full bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-[#FF9933]"
-                    placeholder="XXXX XXXX XXXX"
-                  />
-                </div>
-                <div className="p-4 bg-[#FF9933]/5 border border-[#FF9933]/15 rounded-xl">
-                  <p className="text-xs text-gray-400">By submitting, you agree that all information provided is accurate. Fake details will result in permanent ban. Your data is securely stored and never shared.</p>
-                </div>
-              </div>
-              <div className="flex gap-3">
-                <button onClick={() => setStep(2)} className="flex-1 py-3 border border-[#2a2a2a] rounded-xl text-sm text-gray-300 hover:text-white transition-colors">Back</button>
-                <button onClick={handleSubmit} disabled={submitting} className="saffron-btn flex-1 rounded-xl py-3 font-semibold flex items-center justify-center gap-2 disabled:opacity-60">
-                  {submitting ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Submit Application'}
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      </section>
+          {/* Name */}
+          <Field label="Name customers will see" required>
+            <input
+              value={form.businessName}
+              onChange={(e) => setForm({ ...form, businessName: e.target.value })}
+              className={inputClass}
+              placeholder="e.g. Ramesh Electricals"
+            />
+          </Field>
 
-      {/* How it works for providers */}
-      <section className="py-16 bg-[#0a0a0a]">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-          <h2 className="text-2xl font-black text-white mb-8 text-center">How It Works</h2>
-          <div className="grid md:grid-cols-4 gap-6">
-            {steps.map((s, i) => (
-              <div key={s.num} className="text-center">
-                <div className="w-14 h-14 rounded-full bg-gradient-to-br from-[#FF9933] to-[#138808] flex items-center justify-center font-black text-white text-lg mx-auto mb-4 shadow-lg shadow-[#FF9933]/20">
-                  {s.num}
-                </div>
-                <h3 className="font-bold text-white mb-2">{s.title}</h3>
-                <p className="text-sm text-gray-400 leading-relaxed">{s.desc}</p>
-              </div>
-            ))}
+          {/* Where */}
+          <div className="grid sm:grid-cols-2 gap-4">
+            <Field label="City" required>
+              <input
+                value={form.city}
+                onChange={(e) => setForm({ ...form, city: e.target.value })}
+                className={inputClass}
+                placeholder="Mumbai"
+              />
+            </Field>
+            <Field label="Area you cover">
+              <input
+                value={form.area}
+                onChange={(e) => setForm({ ...form, area: e.target.value })}
+                className={inputClass}
+                placeholder="Andheri, Bandra"
+              />
+            </Field>
           </div>
+
+          {/* Money + experience */}
+          <div className="grid sm:grid-cols-2 gap-4">
+            <Field label="Your hourly rate (₹)">
+              <input
+                type="number"
+                inputMode="numeric"
+                value={form.hourlyRate}
+                onChange={(e) => setForm({ ...form, hourlyRate: e.target.value })}
+                className={inputClass}
+                placeholder="300"
+              />
+            </Field>
+            <Field label="Years of experience">
+              <input
+                type="number"
+                inputMode="numeric"
+                value={form.experience}
+                onChange={(e) => setForm({ ...form, experience: e.target.value })}
+                className={inputClass}
+                placeholder="5"
+              />
+            </Field>
+          </div>
+
+          {/* Bio */}
+          <Field label="A line about your work">
+            <textarea
+              value={form.bio}
+              onChange={(e) => setForm({ ...form, bio: e.target.value.slice(0, BIO_MAX) })}
+              rows={3}
+              className={`${inputClass} resize-none`}
+              placeholder="What you do, and what you're good at."
+            />
+            <p className="text-xs text-gray-600 mt-1.5 text-right">{bioLeft} characters left</p>
+          </Field>
+
+          {/* Documents */}
+          <Field label="Proof of identity" required>
+            <div className="space-y-2">
+              {KYC_SLOTS.map((slot, i) => {
+                const doc = docs[i];
+                return (
+                  <div key={slot.key}>
+                    <input
+                      ref={(el) => { fileInputs.current[i] = el; }}
+                      type="file"
+                      accept={KYC_ACCEPT}
+                      className="hidden"
+                      onChange={(e) => handleFile(i, e.target.files?.[0])}
+                    />
+                    {doc ? (
+                      <div className="flex items-center gap-3 bg-[#1e1e1e] border border-[#138808]/30 rounded-xl px-4 py-3">
+                        <FileText className="w-4 h-4 text-[#138808] flex-shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-white truncate">{doc.name ?? slot.key}</p>
+                          <p className="text-xs text-gray-500">{slot.key} · uploaded</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => clearDoc(i)}
+                          className="text-gray-500 hover:text-red-400 transition-colors flex-shrink-0"
+                          aria-label={`Remove ${slot.key}`}
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => fileInputs.current[i]?.click()}
+                        disabled={uploadingSlot === i}
+                        className="w-full flex items-center gap-3 bg-[#1e1e1e] border border-dashed border-[#2a2a2a] hover:border-[#FF9933]/40 rounded-xl px-4 py-3 text-left transition-all disabled:opacity-60"
+                      >
+                        {uploadingSlot === i
+                          ? <Loader2 className="w-4 h-4 text-[#FF9933] animate-spin flex-shrink-0" />
+                          : <Upload className="w-4 h-4 text-gray-500 flex-shrink-0" />}
+                        <div className="min-w-0">
+                          <p className="text-sm text-gray-300">
+                            {slot.key}{slot.required ? '' : ' (optional)'}
+                          </p>
+                          <p className="text-xs text-gray-600">{slot.hint}</p>
+                        </div>
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <p className="text-xs text-gray-600 mt-2">
+              Photo or PDF, up to 10 MB. Stored privately — only you and our verification team can open it, never customers.
+            </p>
+          </Field>
+
+          <button
+            onClick={handleSubmit}
+            disabled={submitting || uploadingSlot !== null}
+            className="saffron-btn w-full rounded-xl py-3.5 font-semibold flex items-center justify-center gap-2 disabled:opacity-60"
+          >
+            {submitting
+              ? <><Loader2 className="w-4 h-4 animate-spin" /> Submitting…</>
+              : user ? (application ? 'Resubmit application' : 'Submit application') : 'Sign in to apply'}
+          </button>
+          <p className="text-xs text-gray-600 text-center -mt-2">
+            A person reviews every application, usually within 24–48 hours.
+          </p>
         </div>
       </section>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ small presentational bits */
+
+const inputClass =
+  'w-full bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-[#FF9933]';
+
+function Field({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+  return (
+    <div>
+      <label className="block text-sm text-gray-300 mb-2 font-medium">
+        {label}{required && <span className="text-[#FF9933]"> *</span>}
+      </label>
+      {children}
+    </div>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string | null }) {
+  if (!value) return null;
+  return (
+    <div className="flex justify-between gap-4 text-sm">
+      <span className="text-gray-500">{label}</span>
+      <span className="text-gray-200 text-right">{value}</span>
+    </div>
+  );
+}
+
+function StatusShell({
+  icon, tone, title, body, children,
+}: {
+  icon: React.ReactNode; tone: string; title: string; body: string; children?: React.ReactNode;
+}) {
+  return (
+    <div className="min-h-screen bg-[#0d0d0d] pt-20 flex items-center justify-center px-4">
+      <div className="text-center max-w-lg w-full py-16">
+        <div
+          className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 border-2"
+          style={{ backgroundColor: `${tone}1a`, borderColor: `${tone}4d` }}
+        >
+          {icon}
+        </div>
+        <h2 className="text-2xl sm:text-3xl font-black text-white mb-3">{title}</h2>
+        <p className="text-gray-400 mb-8">{body}</p>
+        {children}
+      </div>
     </div>
   );
 }

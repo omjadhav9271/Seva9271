@@ -5,7 +5,9 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
-import { supabase, type DisputeReason, type DisputeOutcome } from '@/lib/supabase';
+import {
+  supabase, type DisputeReason, type DisputeOutcome, type KycStatus, type ServiceProvider,
+} from '@/lib/supabase';
 
 // Redirects non-admins away. Returns 'ok' only for a confirmed admin; render nothing (or a
 // loading shell) while 'checking' — the profile row arrives async after the user does.
@@ -62,6 +64,91 @@ export async function fetchDisputeContacts(
   const json = await res.json().catch(() => ({}));
   if (!res.ok) return { error: json?.error ?? 'Could not load contacts.' };
   return { data: json as DisputeContacts };
+}
+
+/* ------------------------------------------------------------------ Step 9: provider applications
+   The queue and its documents come from the service-role route: the kyc_* columns are not
+   granted to `authenticated` and the IDs live in a private bucket. The DECISION goes straight to
+   the DB instead — review_provider_application re-checks is_admin() itself, so the guard that
+   matters is never the browser's. */
+
+export type ProviderApplicationRow = {
+  id: string;
+  user_id: string;
+  business_name: string | null;
+  city: string | null;
+  state: string | null;
+  status: ServiceProvider['status'];
+  kyc_status: KycStatus;
+  hourly_rate: number;
+  applied_at: string | null;
+  reviewed_at: string | null;
+  document_count: number;
+  service_categories: { name: string } | null;
+};
+
+export type ProviderApplicationDocument = {
+  path: string;
+  label: string;
+  name: string | null;
+  mime: string | null;
+  url: string | null;   // short-lived signed URL, minted server-side
+};
+
+export type ProviderApplicationDetail = {
+  application: ProviderApplicationRow & {
+    bio: string | null;
+    experience_years: number;
+    address: string | null;
+    is_verified: boolean;
+    rejection_reason: string | null;
+    reviewed_by: string | null;
+    created_at: string;
+  };
+  documents: ProviderApplicationDocument[];
+  owner: {
+    name: string | null;
+    phone: string | null;
+    email: string | null;
+    location: string | null;
+    member_since: string | null;
+  };
+};
+
+async function adminGet<T>(path: string): Promise<{ data: T } | { error: string }> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token;
+  if (!token) return { error: 'Please sign in again.' };
+  const res = await fetch(path, { headers: { Authorization: `Bearer ${token}` } });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) return { error: json?.error ?? 'Request failed.' };
+  return { data: json as T };
+}
+
+export function fetchProviderApplications() {
+  return adminGet<{ applications: ProviderApplicationRow[] }>('/api/admin/provider-applications');
+}
+
+export function fetchProviderApplication(id: string) {
+  return adminGet<ProviderApplicationDetail>(
+    `/api/admin/provider-applications?id=${encodeURIComponent(id)}`,
+  );
+}
+
+// Approve → approved + verified + notified + bookable. Reject → reason recorded + notified, and
+// the provider can edit and resubmit. Admin-only, enforced inside the RPC.
+export async function reviewProviderApplication(
+  providerId: string,
+  decision: 'approve' | 'reject',
+  reason?: string,
+): Promise<{ ok: true } | { error: string }> {
+  const { error } = await supabase.rpc('review_provider_application', {
+    p_provider_id: providerId,
+    p_decision: decision,
+    p_reason: reason?.trim() || null,
+  });
+  if (error) return { error: error.message };
+  return { ok: true };
 }
 
 // Issue the REAL gateway refund after resolve_dispute has recorded the decision (the RPC can't

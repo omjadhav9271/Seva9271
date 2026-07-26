@@ -32,6 +32,17 @@ export type ServiceCategory = {
   created_at: string;
 };
 
+// Step 9: one uploaded ID document. The file itself lives in the PRIVATE 'kyc-docs' Storage
+// bucket at <user_id>/<uuid>.<ext>; this is the metadata stored in kyc_documents. Never public —
+// the owner and admins reach it through short-lived signed URLs.
+export type KycDocument = {
+  path: string;            // storage object key within the 'kyc-docs' bucket
+  label: string;           // which slot it fills, e.g. 'Photo ID'
+  name: string | null;     // original filename, for the admin's reference
+  mime: string | null;
+  uploaded_at: string;
+};
+
 export type ServiceProvider = {
   id: string;
   user_id: string;
@@ -50,12 +61,23 @@ export type ServiceProvider = {
   state: string | null;
   address: string | null;
   status: 'pending' | 'approved' | 'rejected' | 'suspended';
-  created_at: string;
-  updated_at: string;
+  // Step 9 — onboarding / verification. All server-written: kyc_status and status are set by
+  // submit_provider_application (→ 'submitted'/pending) and review_provider_application
+  // (→ 'verified'/approved or 'rejected'). None of these carry a SELECT grant to `authenticated`:
+  // a provider reads their own via the my_provider_profile view, admins via the service-role
+  // route /api/admin/provider-applications.
+  kyc_status: KycStatus;
+  kyc_documents: KycDocument[];
+  rejection_reason: string | null;
+  applied_at: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
   // Joined fields
   profiles?: Profile;
   service_categories?: ServiceCategory;
 };
+
+export type KycStatus = 'unsubmitted' | 'submitted' | 'verified' | 'rejected';
 
 export type Booking = {
   id: string;

@@ -122,10 +122,14 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
   useEffect(() => {
     let mounted = true;
     (async () => {
+      // Step 9: only an APPROVED provider has a public profile. A pending / rejected / suspended
+      // one reads as "not found" here, and the bookings insert policy refuses it at the DB even
+      // if someone posts around this page.
       const { data, error } = await supabase
         .from('service_providers')
         .select('id, category_id, business_name, bio, experience_years, hourly_rate, rating, total_reviews, total_bookings, reputation_score, is_verified, is_available, city, state, service_categories(name, slug)')
         .eq('id', params.id)
+        .eq('status', 'approved')
         .maybeSingle();
       if (!mounted) return;
       if (error) console.error('Failed to load provider:', error.message);
