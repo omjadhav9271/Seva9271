@@ -24,6 +24,9 @@
         sign their documents, another user cannot, and after approval the documents are frozen.
     (f) COLUMN GRANTS — kyc_documents / rejection_reason are unreadable by `authenticated`
         directly; the owner reads their own row through my_provider_profile.
+    (h) VERIFICATION ATTESTS TO A CLAIM (migration 20260801120000) — an approved provider who
+        changes their CATEGORY loses the badge and goes back in the queue, while ordinary
+        descriptive edits keep them live and their KYC evidence stays frozen.
 
   Usage:
     CUSTOMER_EMAIL=test2@gmail.com CUSTOMER_PASSWORD=test2@9271 \
@@ -372,6 +375,72 @@ try {
     const stillThere = (listed ?? []).some((o) => `${applicantId}/${o.name}` === docPath);
     if (stillThere) ok('a verified provider cannot delete the documents that justified approval');
     else no('the KYC document was deleted after verification');
+  }
+
+  // ================= (h) verification attests to a CLAIM =================
+  // Regression cover for the hole found after Step 9 shipped: category_id is deliberately absent
+  // from the client's UPDATE grant, but submit_provider_application is SECURITY DEFINER, so its
+  // upsert wrote category over an APPROVED row while leaving status/is_verified alone — a
+  // verified electrician could re-point their verified badge at elderly care, in a state
+  // (approved + kyc submitted) the admin queue doesn't even list. Fixed in 20260801120000.
+  console.log('\n[h) changing what you are verified FOR costs you the badge]');
+  {
+    const { data: cats } = await service.from('service_categories').select('id, slug').limit(2);
+    const otherCategory = (cats ?? []).find((c) => c.id !== categoryId)?.id ?? null;
+
+    const direct = await applicant.from('service_providers')
+      .update({ category_id: otherCategory }).eq('id', providerId).select('id');
+    if (denied(direct.error)) ok('a direct UPDATE of category_id is refused (Step-1 column grant)');
+    else no('client updated category_id directly: ' + JSON.stringify(direct.error ?? direct.data));
+
+    if (!otherCategory) {
+      sk('only one service category exists — cannot exercise the category switch');
+    } else {
+      const before = await rowOf(providerId);
+      const realDoc = [{ path: docPath, label: 'Photo ID', name: 'id.png', mime: 'image/png', uploaded_at: new Date().toISOString() }];
+      const swap = await applicant.rpc('submit_provider_application', {
+        p_category_id: otherCategory, p_business_name: 'Step9 Applicant', p_bio: 'switching trade',
+        p_experience_years: 4, p_hourly_rate: 350, p_city: 'Mumbai', p_state: 'MH',
+        p_address: 'Andheri', p_documents: realDoc,
+      });
+      const after = await rowOf(providerId);
+      if (swap.error) {
+        no('resubmission with a new category errored: ' + errMsg(swap.error));
+      } else if (before.status === 'approved' && after.status === 'pending' && after.is_verified === false) {
+        ok('switching category on an APPROVED row revokes the badge → pending + unverified');
+      } else {
+        no(`ESCALATION: category changed while status=${after.status}, is_verified=${after.is_verified}`);
+      }
+      if (after.kyc_status === 'submitted' && after.reviewed_at === null)
+        ok('...and it re-enters the admin queue as a fresh application');
+      else no('not cleanly re-queued: ' + JSON.stringify({ kyc: after.kyc_status, reviewed_at: after.reviewed_at }));
+
+      const { data: notes } = await applicant.from('notifications').select('title')
+        .eq('user_id', applicantId).gte('created_at', runStart).order('created_at', { ascending: false }).limit(1);
+      if (/back in review/i.test(notes?.[0]?.title ?? ''))
+        ok('...and the provider is told their profile is paused (honest status)');
+      else no('provider not notified they went offline: ' + JSON.stringify(notes));
+
+      // the badge must survive ordinary edits, or providers get knocked offline for a typo fix
+      await adminClient.rpc('review_provider_application', { p_provider_id: providerId, p_decision: 'approve' });
+      // note the SWAPPED document: an approved provider must not be able to substitute the
+      // evidence an admin actually looked at.
+      const edit = await applicant.rpc('submit_provider_application', {
+        p_category_id: otherCategory, p_business_name: 'Step9 Applicant Renamed', p_bio: 'same trade, new blurb',
+        p_experience_years: 6, p_hourly_rate: 420, p_city: 'Mumbai', p_state: 'MH',
+        p_address: 'Andheri',
+        p_documents: [{ path: `${applicantId}/swapped.png`, label: 'Photo ID', name: 'swapped.png', mime: 'image/png', uploaded_at: new Date().toISOString() }],
+      });
+      const edited = await rowOf(providerId);
+      if (!edit.error && edited.status === 'approved' && edited.is_verified === true && edited.business_name === 'Step9 Applicant Renamed')
+        ok('descriptive edits (name/bio/rate) keep an approved provider live');
+      else no('a harmless edit changed the verification state: ' + JSON.stringify({ err: errMsg(edit.error), status: edited.status, verified: edited.is_verified }));
+
+      // and the evidence behind a granted badge is not silently replaceable
+      const keptDoc = (edited.kyc_documents ?? [])[0]?.path;
+      if (keptDoc === docPath) ok('an approved provider cannot swap the KYC evidence behind their badge');
+      else no(`approved provider replaced their KYC evidence: ${JSON.stringify(edited.kyc_documents)}`);
+    }
   }
 
   // ================= eKYC stub =================

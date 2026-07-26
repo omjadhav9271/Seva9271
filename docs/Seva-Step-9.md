@@ -140,6 +140,34 @@ RETURNS text LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$
 $$;
 ```
 
+### ⚠️ Post-ship correction — §3 above is superseded
+
+`submit_provider_application` as written above **has a verification-bypass hole**, found by probing
+this step's own thesis after it shipped. Do not re-apply §3 verbatim; migration
+`20260801120000_seva_reverify_on_category_change.sql` replaces it.
+
+Step 1 deliberately keeps `category_id` out of the client's UPDATE grant — what a provider is
+verified *for* is not theirs to edit, and a direct `UPDATE` is correctly refused. But this function
+is `SECURITY DEFINER`, so it runs as the table owner and **column grants do not apply to it**. Its
+`ON CONFLICT` branch writes `category_id` over an already-approved row while leaving
+`status='approved'` and `is_verified=true` untouched.
+
+A verified electrician could therefore re-point their **verified badge** at Caretaker / Elderly Care
+— §7.1's flagged in-home, high-trust category — with no re-review. The resulting row sat at
+`status='approved'` + `kyc_status='submitted'`, a combination the admin queue does not list
+(it filters `status='pending'`), so the switch was invisible to the people meant to catch it.
+
+The spec assumed the only callers were first-time or rejected applicants; the upsert quietly made
+the approved case reachable. The rule now: **verification attests to a specific claim — change the
+claim, re-earn the badge.** A category change on an approved row returns it to pending +
+unverified and notifies the provider; descriptive edits (name, bio, rate, city, experience) leave
+verification alone; and a verified row's `kyc_documents` can no longer be silently replaced.
+Regression cover lives in `scripts/verify-step9.mjs` section (h).
+
+**The general lesson for this codebase:** every `SECURITY DEFINER` function is a hole in the
+column-grant model. Whenever a column is withheld from `authenticated` via `GRANT (…)`, audit each
+definer function that writes that column — the grant does not protect it there.
+
 ---
 
 ## App wiring
