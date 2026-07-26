@@ -102,17 +102,31 @@ async function authClient(prefix) {
   return { client, userId, token: session?.access_token ?? null };
 }
 
-// ---- helper: newest notification for a user, read via that user's own client (RLS-gated) ----
-async function latestNotif(client, userId) {
+// ---- helpers: notifications for a user, read via that user's own client (RLS-gated) ----
+// These used to read only the SINGLE newest row and require it to be ours, which made every
+// assertion depend on global state: any unrelated notification for these shared test accounts
+// steals the slot, and `ORDER BY created_at DESC LIMIT 1` is non-deterministic on a tie (NOW()
+// is the TRANSACTION timestamp, so rows written together share it exactly). That produced a
+// ~1-in-4 flake in full-suite runs — never in isolation. Snapshot the ids first, then look for
+// a genuinely NEW notification with the expected title.
+async function recentNotifs(client, userId, limit = 25) {
   const { data } = await client
     .from('notifications')
     .select('id, title, message, type, link, created_at')
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  return data ?? null;
+    .limit(limit);
+  return data ?? [];
 }
+const notifSnapshot = async (client, userId) =>
+  new Set((await recentNotifs(client, userId)).map((r) => r.id));
+
+// Everything that arrived for this user since the snapshot, plus the one we expect (if present).
+async function newNotif(client, userId, before, title) {
+  const fresh = (await recentNotifs(client, userId)).filter((r) => !before.has(r.id));
+  return { hit: fresh.find((r) => r.title === title) ?? null, fresh };
+}
+const describe = (fresh) => fresh.length ? fresh.map((f) => `"${f.title}"`).join(', ') : 'none';
 
 // ---- helper: does a live notification INSERT reach `subClient` when `trigger()` runs? ----
 // Subscribe first, fire the DB write only after SUBSCRIBED, resolve on the payload or a timeout.
@@ -180,7 +194,7 @@ console.log('[setup + new-booking notification]');
   }
 
   if (providerRowId) {
-    const beforeProv = await latestNotif(providerClient, providerId);
+    const beforeProv = await notifSnapshot(providerClient, providerId);
 
     const { data: bk, error: bkErr } = await customerClient.from('bookings').insert({
       customer_id: customerId, provider_id: providerRowId, category_id: categoryId,
@@ -191,15 +205,15 @@ console.log('[setup + new-booking notification]');
     else { bookingId = bk.id; ok('booking created (' + bookingId.slice(0, 8) + ')'); }
 
     if (bookingId) {
-      const afterProv = await latestNotif(providerClient, providerId);
-      if (afterProv && afterProv.id !== beforeProv?.id && afterProv.title === 'New booking request') {
-        createdNotifIds.push(afterProv.id);
+      const { hit, fresh } = await newNotif(providerClient, providerId, beforeProv, 'New booking request');
+      if (hit) {
+        createdNotifIds.push(hit.id);
         ok('new booking → PROVIDER got a "New booking request" notification');
         const want = '/bookings/' + bookingId;
-        if (afterProv.link === want) ok('  ↳ deep-links to this booking: /bookings/' + bookingId.slice(0, 8));
-        else no('  ↳ notification link wrong (want ' + want + ', got ' + (afterProv.link ?? 'NULL') + ')');
+        if (hit.link === want) ok('  ↳ deep-links to this booking: /bookings/' + bookingId.slice(0, 8));
+        else no('  ↳ notification link wrong (want ' + want + ', got ' + (hit.link ?? 'NULL') + ')');
       } else {
-        no('new booking did NOT notify the provider (newest title: ' + (afterProv?.title ?? 'none') + ')');
+        no('new booking did NOT notify the provider (new notifications: ' + describe(fresh) + ')');
       }
     }
   }
@@ -208,7 +222,7 @@ console.log('[setup + new-booking notification]');
 // ---- transition: provider accepts → customer notified ----
 if (bookingId) {
   console.log('\n[transition notification]');
-  const beforeCust = await latestNotif(customerClient, customerId);
+  const beforeCust = await notifSnapshot(customerClient, customerId);
 
   const { error: trErr } = await providerClient.rpc('transition_booking', {
     p_booking_id: bookingId, p_next_status: 'accepted',
@@ -216,17 +230,17 @@ if (bookingId) {
   if (trErr) { no('provider accept transition failed: ' + trErr.message); }
   else {
     ok('provider accepted the booking (requested → accepted)');
-    const afterCust = await latestNotif(customerClient, customerId);
-    if (afterCust && afterCust.id !== beforeCust?.id && afterCust.title === 'Booking accepted' && afterCust.type === 'success') {
-      createdNotifIds.push(afterCust.id);
+    const { hit, fresh } = await newNotif(customerClient, customerId, beforeCust, 'Booking accepted');
+    if (hit && hit.type === 'success') {
+      createdNotifIds.push(hit.id);
       ok('transition → CUSTOMER got a "Booking accepted" (success) notification');
       // No ?tab=chat: a status notification opens at the top, where the actions are.
       const want = '/bookings/' + bookingId;
-      if (afterCust.link === want) ok('  ↳ deep-links to this booking: /bookings/' + bookingId.slice(0, 8));
-      else no('  ↳ notification link wrong (want ' + want + ', got ' + (afterCust.link ?? 'NULL') + ')');
+      if (hit.link === want) ok('  ↳ deep-links to this booking: /bookings/' + bookingId.slice(0, 8));
+      else no('  ↳ notification link wrong (want ' + want + ', got ' + (hit.link ?? 'NULL') + ')');
     } else {
-      no('transition did NOT notify the customer correctly (newest: ' +
-        (afterCust ? `"${afterCust.title}"/${afterCust.type}` : 'none') + ')');
+      no('transition did NOT notify the customer correctly (new notifications: ' + describe(fresh) +
+        (hit ? `; "Booking accepted" arrived with type=${hit.type}, expected success` : '') + ')');
     }
   }
 }
@@ -234,7 +248,7 @@ if (bookingId) {
 // ---- message: customer messages → provider (recipient) notified ----
 if (bookingId) {
   console.log('\n[message notification]');
-  const beforeProv = await latestNotif(providerClient, providerId);
+  const beforeProv = await notifSnapshot(providerClient, providerId);
 
   const { error: msgErr } = await customerClient
     .from('messages')
@@ -242,15 +256,15 @@ if (bookingId) {
   if (msgErr) { no('customer send message failed: ' + msgErr.message); }
   else {
     ok('customer sent a message');
-    const afterProv = await latestNotif(providerClient, providerId);
-    if (afterProv && afterProv.id !== beforeProv?.id && afterProv.title === 'New message') {
-      createdNotifIds.push(afterProv.id);
+    const { hit, fresh } = await newNotif(providerClient, providerId, beforeProv, 'New message');
+    if (hit) {
+      createdNotifIds.push(hit.id);
       ok('message → PROVIDER (recipient) got a "New message" notification');
       const want = '/bookings/' + bookingId + '?tab=chat';
-      if (afterProv.link === want) ok('  ↳ deep-links to the chat: /bookings/' + bookingId.slice(0, 8) + '?tab=chat');
-      else no('  ↳ notification link wrong (want ' + want + ', got ' + (afterProv.link ?? 'NULL') + ')');
+      if (hit.link === want) ok('  ↳ deep-links to the chat: /bookings/' + bookingId.slice(0, 8) + '?tab=chat');
+      else no('  ↳ notification link wrong (want ' + want + ', got ' + (hit.link ?? 'NULL') + ')');
     } else {
-      no('message did NOT notify the recipient (newest title: ' + (afterProv?.title ?? 'none') + ')');
+      no('message did NOT notify the recipient (new notifications: ' + describe(fresh) + ')');
     }
   }
 }
@@ -278,7 +292,7 @@ if (bookingId) {
 // As-Customer tab, where their own job isn't listed. Runs last — 'cancelled' is terminal.
 if (bookingId) {
   console.log('\n[provider-recipient link]');
-  const beforeProv = await latestNotif(providerClient, providerId);
+  const beforeProv = await notifSnapshot(providerClient, providerId);
 
   const { error: cancelErr } = await customerClient.rpc('transition_booking', {
     p_booking_id: bookingId, p_next_status: 'cancelled',
@@ -286,15 +300,15 @@ if (bookingId) {
   if (cancelErr) { no('customer cancel transition failed: ' + cancelErr.message); }
   else {
     ok('customer cancelled the booking (accepted → cancelled)');
-    const afterProv = await latestNotif(providerClient, providerId);
-    if (afterProv && afterProv.id !== beforeProv?.id && afterProv.title === 'Booking cancelled') {
-      createdNotifIds.push(afterProv.id);
+    const { hit, fresh } = await newNotif(providerClient, providerId, beforeProv, 'Booking cancelled');
+    if (hit) {
+      createdNotifIds.push(hit.id);
       ok('customer-driven transition → PROVIDER got a "Booking cancelled" notification');
       const want = '/bookings/' + bookingId;
-      if (afterProv.link === want) ok('  ↳ deep-links to this booking: /bookings/' + bookingId.slice(0, 8));
-      else no('  ↳ notification link wrong (want ' + want + ', got ' + (afterProv.link ?? 'NULL') + ')');
+      if (hit.link === want) ok('  ↳ deep-links to this booking: /bookings/' + bookingId.slice(0, 8));
+      else no('  ↳ notification link wrong (want ' + want + ', got ' + (hit.link ?? 'NULL') + ')');
     } else {
-      no('cancel did NOT notify the provider (newest title: ' + (afterProv?.title ?? 'none') + ')');
+      no('cancel did NOT notify the provider (new notifications: ' + describe(fresh) + ')');
     }
   }
 }
