@@ -76,7 +76,29 @@ async function authClient(prefix) {
 console.log('[sessions]');
 const { client: customerClient, userId: customerId } = await authClient('CUSTOMER');
 const { client: providerClient, userId: providerId } = await authClient('PROVIDER');
-const { client: strangerClient, userId: strangerId } = await authClient('STRANGER');
+let { client: strangerClient, userId: strangerId } = await authClient('STRANGER');
+
+// Step 8 promoted the shared STRANGER account to admin, and the admin_read_* policies
+// intentionally expose the rows this script checks a third party CANNOT see — which quietly
+// turned that isolation check into a permanent skip. Mint a pre-confirmed NON-admin third
+// party so the check actually runs, whoever STRANGER_EMAIL happens to point at.
+let throwawayStranger = null;
+if (strangerId && service) {
+  const { data: sProf } = await service.from('profiles').select('role').eq('id', strangerId).maybeSingle();
+  if (sProf?.role === 'admin') {
+    const email = `step7-stranger-${Date.now()}-${Math.random().toString(36).slice(2, 7)}@seva.test`;
+    const password = `Pw-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+    const { data: made, error: cErr } = await service.auth.admin.createUser({ email, password, email_confirm: true });
+    if (!cErr && made?.user) {
+      const c = createClient(URL, ANON, { auth: { persistSession: false, autoRefreshToken: false } });
+      const { error: sErr } = await c.auth.signInWithPassword({ email, password });
+      if (!sErr) {
+        strangerClient = c; strangerId = made.user.id; throwawayStranger = made.user.id;
+        console.log('  (STRANGER_EMAIL is an admin — using a throwaway non-admin third party instead)');
+      }
+    }
+  }
+}
 console.log('  customer:', customerId ?? 'NONE', '| provider:', providerId ?? 'NONE', '| stranger:', strangerId ?? 'NONE', '\n');
 const distinct = new Set([customerId, providerId, strangerId]);
 if (!customerId || !providerId || !strangerId || distinct.size !== 3) {
@@ -433,6 +455,7 @@ try {
 }
 
 // ================= cleanup =================
+if (throwawayStranger && service) await service.auth.admin.deleteUser(throwawayStranger);
 console.log('\n[cleanup]');
 {
   for (const id of bookingIds) await service.from('notifications').delete().like('link', `/bookings/${id}%`);
