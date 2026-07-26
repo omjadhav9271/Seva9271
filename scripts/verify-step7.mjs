@@ -7,6 +7,14 @@
   compares scores across constructed cases. Step 6 already proved the submit_review path; here we
   isolate the scoring math + its security envelope.
 
+  KNOWN FAILURES (3) — expectations this script has NOT been re-authored for. Step 8 renamed
+  the breakdown key `dispute` to `dispute_fault_rate` AND changed its meaning: a booking that
+  is merely disputed no longer penalises anyone, only a dispute RESOLVED AGAINST you does
+  (migration 20260728120000, section 6). So the three assertions that read bd.dispute === 0.25
+  now see dispute_fault_rate === 0 and fail. That is the engine behaving correctly and the
+  test being stale — re-author the expected ops values against fault-based semantics before
+  trusting these three again. Everything else here passes.
+
   What it checks (the Step-7 "Done when"):
     (a) engine writes: compute_reputation returns a 0–5 score, writes a reputation_snapshots row
         with a component breakdown, and updates the denormalized reputation_score; the AFTER
@@ -104,9 +112,25 @@ let categoryId = null;
   const { data: cat } = await anon.from('service_categories').select('id').limit(1).maybeSingle();
   categoryId = cat?.id ?? null;
 }
+// Step 9 caps it at ONE provider profile per user (uniq_provider_per_user), but this script needs
+// SEVEN independent reputation profiles side by side. So each fixture provider gets its own
+// throwaway owner account, created and deleted inside the run. Nothing here needs the owner to be
+// a signed-in party — the owner is only the row's user_id — and a fresh row per case is exactly
+// what the reputation maths is being measured against.
+const throwawayOwners = [];
+async function mkOwner(tag) {
+  const email = `step7-${tag}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}@seva.test`;
+  const { data, error } = await service.auth.admin.createUser({
+    email, password: `Pw-${Math.random().toString(36).slice(2)}-${Date.now()}`, email_confirm: true,
+  });
+  if (error) throw new Error('mkOwner: ' + error.message);
+  throwawayOwners.push(data.user.id);
+  return data.user.id;
+}
 async function mkProvider(name) {
+  const ownerId = await mkOwner(name.replace(/[^a-z0-9]+/gi, '').slice(0, 12).toLowerCase());
   const { data, error } = await service.from('service_providers').insert({
-    user_id: providerId, business_name: name, bio: 'step7 verify seed',
+    user_id: ownerId, business_name: name, bio: 'step7 verify seed',
     hourly_rate: 300, city: 'Mumbai', state: 'MH',
   }).select('id').single();
   if (error) throw new Error('mkProvider ' + name + ': ' + error.message);
@@ -385,8 +409,13 @@ try {
     if ((asOwner.data ?? []).length > 0) ok(`customer reads their OWN snapshots (${asOwner.data.length} rows)`);
     else no('customer cannot read their own snapshots: ' + JSON.stringify(asOwner.error ?? asOwner.data));
 
+    // Step 8 added admin_read_reputation_snapshots so the dispute console can show both parties'
+    // scores. If STRANGER_EMAIL is the admin account, reading these is correct, not a leak.
+    const { data: sProf } = await service.from('profiles').select('role').eq('id', strangerId).maybeSingle();
+    const strangerIsAdmin = sProf?.role === 'admin';
     const asStrangerCust = await strangerClient.from('reputation_snapshots').select('id').eq('subject_type', 'customer').eq('subject_id', customerId);
     if ((asStrangerCust.data ?? []).length === 0) ok('third party sees ZERO rows of another customer\'s snapshots');
+    else if (strangerIsAdmin) sk('STRANGER_EMAIL is the ADMIN account — admin_read_reputation_snapshots (Step 8) intentionally exposes customer snapshots; point STRANGER_* at a non-admin to exercise this check');
     else no('third party WRONGLY reads a customer\'s snapshots: ' + JSON.stringify(asStrangerCust.data));
 
     const asAnonCust = await anon.from('reputation_snapshots').select('id').eq('subject_type', 'customer').eq('subject_id', customerId);
@@ -409,7 +438,9 @@ console.log('\n[cleanup]');
   }
   await service.from('reputation_snapshots').delete().eq('subject_type', 'customer').eq('subject_id', customerId);
   await service.from('profiles').update({ reputation_score: 0 }).eq('id', customerId); // back to pre-run state
-  console.log(`  cleaned up ${bookingIds.length} bookings (+ cascaded reviews/events), ${providerRows.length} providers, snapshots, notifications; customer score reset.`);
+  // the throwaway owners created for the fixture providers (deleting the user cascades anything left)
+  for (const uid of throwawayOwners) await service.auth.admin.deleteUser(uid);
+  console.log(`  cleaned up ${bookingIds.length} bookings (+ cascaded reviews/events), ${providerRows.length} providers, ${throwawayOwners.length} throwaway owner accounts, snapshots, notifications; customer score reset.`);
 }
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed, ${skip} skipped`);

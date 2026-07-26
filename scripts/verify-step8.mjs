@@ -105,6 +105,23 @@ const PRIOR = 4.0, C = 5, W_REV = 0.7, W_OPS = 0.3;
 const scoreNoReviews = (ops) => round2(W_REV * ((C * PRIOR) / C) + W_OPS * ops); // review_score → prior
 
 // ---- record originals to restore (this script mutates real wallet + reputation) ----
+
+// Step 9 (uniq_provider_per_user) vs this script's fixture model: it stages SEVERAL provider
+// rows under the SAME owner account, which the unique index now refuses. Unlike step7 the
+// providers here must also be SIGNED-IN parties (raise_dispute) and their OWNER's wallet is
+// what escrow credits/claws back, so the fix is a real fixture rewrite: one throwaway owner
+// account PLUS its session per provider, and every walletOf/notifCount assertion repointed at
+// that owner. Deliberately not hacked in place — a mis-wired wallet assertion would still go
+// green while checking nothing, on the most safety-critical path in the repo (invariants #2/#5).
+{
+  const { data: owned } = await service.from('service_providers').select('id').eq('user_id', test1Id);
+  if ((owned ?? []).length > 0) {
+    console.log(`KNOWN INCOMPATIBILITY: ${'verify-step8'} stages multiple provider rows per owner, but Step 9 allows`);
+    console.log('one provider profile per user and test1 already owns one. This script needs its fixture');
+    console.log('model rewritten (throwaway owner + session per provider) before it can run again.');
+    process.exit(1);
+  }
+}
 const runStart = new Date().toISOString();
 const walletOf = async (uid) => Number((await service.from('profiles').select('wallet_balance').eq('id', uid).maybeSingle()).data?.wallet_balance ?? 0);
 const repOf    = async (uid) => Number((await service.from('profiles').select('reputation_score').eq('id', uid).maybeSingle()).data?.reputation_score ?? 0);

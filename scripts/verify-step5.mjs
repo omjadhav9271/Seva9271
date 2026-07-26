@@ -65,6 +65,25 @@ if (!WEBHOOK_SECRET) {
 }
 
 const anon = createClient(URL, ANON);
+// Step 9: one provider profile per user (uniq_provider_per_user) and a fresh one is born pending.
+// Reuse the provider account's existing row, create one only when there is none, then make sure
+// it's approved — otherwise bookings against it are refused by the Step-9 gate.
+async function ensureApprovedProvider(client, ownerId, fields) {
+  const { data: existing } = await client
+    .from('service_providers').select('id, status').eq('user_id', ownerId).maybeSingle();
+  let id = existing?.id ?? null, created = false, status = existing?.status ?? null;
+  if (!id) {
+    const { data, error } = await client.from('service_providers').insert(fields).select('id, status').maybeSingle();
+    if (error || !data) return { id: null, created: false, error: error?.message ?? 'no row' };
+    id = data.id; status = data.status; created = true;
+  }
+  if (status !== 'approved') {
+    if (!service) return { id, created, error: "provider is '" + status + "' and SUPABASE_SERVICE_ROLE_KEY is missing to approve it (Step-9 gate)" };
+    await service.from('service_providers').update({ status: 'approved', is_verified: true }).eq('id', id);
+  }
+  return { id, created };
+}
+
 const service = createClient(URL, SERVICE, { auth: { persistSession: false, autoRefreshToken: false } });
 
 // ---- helper: authenticated client for a named role (mirrors verify-step4.mjs) ----
@@ -125,6 +144,7 @@ try {
 }
 
 let providerRowId = null, bookingId = null;
+let providerRowCreated = false;  // only tear down a row this run actually created
 const AMOUNT_RUPEES = 600;
 const AMOUNT_PAISE = AMOUNT_RUPEES * 100;
 const FEE = Math.round(AMOUNT_RUPEES * 0.01 * 100) / 100;   // 6 (platform fee = 1%)
@@ -136,12 +156,15 @@ console.log('[a) setup: create + accept an escrow booking]');
   const { data: cat } = await anon.from('service_categories').select('id').limit(1).maybeSingle();
   const categoryId = cat?.id ?? null;
 
-  const { data: prov, error: provErr } = await providerClient.from('service_providers').insert({
+  const prov = await ensureApprovedProvider(providerClient, providerId, {
     user_id: providerId, category_id: categoryId, business_name: 'Verify Step5 Provider',
     bio: 'escrow test', hourly_rate: 300, city: 'Mumbai', state: 'MH',
-  }).select('id').maybeSingle();
-  if (provErr || !prov) { no('create provider profile: ' + (provErr?.message ?? 'no row')); }
-  else { providerRowId = prov.id; ok('provider profile created (' + providerRowId.slice(0, 8) + ')'); }
+  });
+  if (prov.error || !prov.id) { no('provider profile: ' + (prov.error ?? 'no row')); }
+  else {
+    providerRowId = prov.id; providerRowCreated = prov.created;
+    ok('provider profile ' + (prov.created ? 'created' : 'reused') + ' + approved (' + providerRowId.slice(0, 8) + ')');
+  }
 
   if (providerRowId) {
     const { data: bk, error: bkErr } = await customerClient.from('bookings').insert({
@@ -338,7 +361,7 @@ console.log('\n[cleanup]');
   await service.from('profiles').update({ wallet_balance: Math.max(0, Math.round((bal - PAYOUT) * 100) / 100) }).eq('id', providerId);
   await service.from('notifications').delete().like('link', `/bookings/${bookingId}%`); // FK is to users, not bookings
   await service.from('bookings').delete().eq('id', bookingId);           // cascades events + payment_transactions
-  if (providerRowId) await providerClient.from('service_providers').delete().eq('id', providerRowId);
+  if (providerRowCreated && providerRowId) await providerClient.from('service_providers').delete().eq('id', providerRowId);
   console.log('  cleaned up booking, ledger, payout credit, notifications, and provider profile.');
 }
 

@@ -36,6 +36,9 @@ const env = Object.fromEntries(
 
 const URL = env.NEXT_PUBLIC_SUPABASE_URL;
 const KEY = env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+// Step 9 added an approval gate: a provider row is born 'pending' and cannot be booked until an
+// admin approves it, and approving is server-only. Used solely to stage the fixture.
+const SERVICE = env.SUPABASE_SERVICE_ROLE_KEY;
 
 let pass = 0, fail = 0, skip = 0;
 const ok = (m) => { console.log('  ✓ PASS  ' + m); pass++; };
@@ -43,7 +46,27 @@ const no = (m) => { console.log('  ✗ FAIL  ' + m); fail++; };
 const sk = (m) => { console.log('  – SKIP  ' + m); skip++; };
 
 const anon = createClient(URL, KEY);
+const service = SERVICE ? createClient(URL, SERVICE, { auth: { persistSession: false, autoRefreshToken: false } }) : null;
 console.log('DB:', URL, '\n');
+
+// Step 9: one provider profile per user (uniq_provider_per_user) and a fresh one is born pending.
+// Reuse the provider account's existing row, create one only when there is none, then make sure
+// it's approved — otherwise the booking below is refused by the Step-9 gate.
+async function ensureApprovedProvider(client, ownerId, fields) {
+  const { data: existing } = await client
+    .from('service_providers').select('id, status').eq('user_id', ownerId).maybeSingle();
+  let id = existing?.id ?? null, created = false, status = existing?.status ?? null;
+  if (!id) {
+    const { data, error } = await client.from('service_providers').insert(fields).select('id, status').maybeSingle();
+    if (error || !data) return { id: null, created: false, error: error?.message ?? 'no row' };
+    id = data.id; status = data.status; created = true;
+  }
+  if (status !== 'approved') {
+    if (!service) return { id, created, error: `provider is '${status}' and SUPABASE_SERVICE_ROLE_KEY is missing to approve it (Step-9 gate)` };
+    await service.from('service_providers').update({ status: 'approved', is_verified: true }).eq('id', id);
+  }
+  return { id, created };
+}
 
 // ---- helper: get an authenticated client for a named role ----
 async function authClient(prefix) {
@@ -96,6 +119,7 @@ if (customerId === providerId) {
 
 // ---- provision: a provider profile (as provider) + a booking (as customer) ----
 let providerRowId = null;
+let providerRowCreated = false;  // only tear down a row this run actually created
 let bookingId = null;
 let bk2Id = null;
 let agreedPrice = 600;
@@ -105,12 +129,15 @@ console.log('[setup]');
   const { data: cat } = await anon.from('service_categories').select('id').limit(1).maybeSingle();
   const categoryId = cat?.id ?? null;
 
-  const { data: prov, error: provErr } = await providerClient.from('service_providers').insert({
+  const prov = await ensureApprovedProvider(providerClient, providerId, {
     user_id: providerId, category_id: categoryId, business_name: 'Verify Step2 Provider',
     bio: 'state-machine test', hourly_rate: 300, city: 'Mumbai', state: 'MH',
-  }).select('id').maybeSingle();
-  if (provErr || !prov) { no('create provider profile: ' + (provErr?.message ?? 'no row')); }
-  else { providerRowId = prov.id; ok('provider profile created (' + providerRowId.slice(0, 8) + ')'); }
+  });
+  if (prov.error || !prov.id) { no('provider profile: ' + (prov.error ?? 'no row')); }
+  else {
+    providerRowId = prov.id; providerRowCreated = prov.created;
+    ok(`provider profile ${prov.created ? 'created' : 'reused'} + approved (${providerRowId.slice(0, 8)})`);
+  }
 
   if (providerRowId) {
     const { data: bk, error: bkErr } = await customerClient.from('bookings').insert({
@@ -229,7 +256,7 @@ if (providerRowId) {
 // ---- cleanup ----
 if (bookingId) await customerClient.from('bookings').delete().eq('id', bookingId);
 if (bk2Id) await customerClient.from('bookings').delete().eq('id', bk2Id);
-if (providerRowId) await providerClient.from('service_providers').delete().eq('id', providerRowId);
+if (providerRowCreated && providerRowId) await providerClient.from('service_providers').delete().eq('id', providerRowId);
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed, ${skip} skipped`);
 process.exit(fail === 0 ? 0 : 1);

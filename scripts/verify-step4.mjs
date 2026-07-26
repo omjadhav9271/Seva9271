@@ -46,6 +46,9 @@ const env = Object.fromEntries(
 
 const URL = env.NEXT_PUBLIC_SUPABASE_URL;
 const KEY = env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+// Step 9 added an approval gate: a provider row is born 'pending' and cannot be booked until
+// an admin approves it, and approving is server-only. Used solely to stage the fixture.
+const SERVICE = env.SUPABASE_SERVICE_ROLE_KEY;
 
 let pass = 0, fail = 0, skip = 0;
 const ok = (m) => { console.log('  ✓ PASS  ' + m); pass++; };
@@ -53,6 +56,26 @@ const no = (m) => { console.log('  ✗ FAIL  ' + m); fail++; };
 const sk = (m) => { console.log('  – SKIP  ' + m); skip++; };
 
 const anon = createClient(URL, KEY);
+const service = SERVICE ? createClient(URL, SERVICE, { auth: { persistSession: false, autoRefreshToken: false } }) : null;
+// Step 9: one provider profile per user (uniq_provider_per_user) and a fresh one is born pending.
+// Reuse the provider account's existing row, create one only when there is none, then make sure
+// it's approved — otherwise bookings against it are refused by the Step-9 gate.
+async function ensureApprovedProvider(client, ownerId, fields) {
+  const { data: existing } = await client
+    .from('service_providers').select('id, status').eq('user_id', ownerId).maybeSingle();
+  let id = existing?.id ?? null, created = false, status = existing?.status ?? null;
+  if (!id) {
+    const { data, error } = await client.from('service_providers').insert(fields).select('id, status').maybeSingle();
+    if (error || !data) return { id: null, created: false, error: error?.message ?? 'no row' };
+    id = data.id; status = data.status; created = true;
+  }
+  if (status !== 'approved') {
+    if (!service) return { id, created, error: "provider is '" + status + "' and SUPABASE_SERVICE_ROLE_KEY is missing to approve it (Step-9 gate)" };
+    await service.from('service_providers').update({ status: 'approved', is_verified: true }).eq('id', id);
+  }
+  return { id, created };
+}
+
 console.log('DB:', URL, '\n');
 
 // ---- helper: get an authenticated client (+ access token) for a named role ----
@@ -138,6 +161,7 @@ const createdNotifIds = []; // notifications we observe → cleaned up at the en
 // ---- setup: provider profile (as provider) + booking (as customer). ----
 // The booking INSERT itself fires trg_notify_new_booking → provider notification.
 let providerRowId = null;
+let providerRowCreated = false;  // only tear down a row this run actually created
 let bookingId = null;
 
 console.log('[setup + new-booking notification]');
@@ -145,12 +169,15 @@ console.log('[setup + new-booking notification]');
   const { data: cat } = await anon.from('service_categories').select('id').limit(1).maybeSingle();
   const categoryId = cat?.id ?? null;
 
-  const { data: prov, error: provErr } = await providerClient.from('service_providers').insert({
+  const prov = await ensureApprovedProvider(providerClient, providerId, {
     user_id: providerId, category_id: categoryId, business_name: 'Verify Step4 Provider',
     bio: 'notify test', hourly_rate: 300, city: 'Mumbai', state: 'MH',
-  }).select('id').maybeSingle();
-  if (provErr || !prov) { no('create provider profile: ' + (provErr?.message ?? 'no row')); }
-  else { providerRowId = prov.id; ok('provider profile created (' + providerRowId.slice(0, 8) + ')'); }
+  });
+  if (prov.error || !prov.id) { no('provider profile: ' + (prov.error ?? 'no row')); }
+  else {
+    providerRowId = prov.id; providerRowCreated = prov.created;
+    ok('provider profile ' + (prov.created ? 'created' : 'reused') + ' + approved (' + providerRowId.slice(0, 8) + ')');
+  }
 
   if (providerRowId) {
     const beforeProv = await latestNotif(providerClient, providerId);
@@ -158,7 +185,7 @@ console.log('[setup + new-booking notification]');
     const { data: bk, error: bkErr } = await customerClient.from('bookings').insert({
       customer_id: customerId, provider_id: providerRowId, category_id: categoryId,
       service_type: 'one-time', scheduled_date: '2026-08-01', scheduled_time: '11:00',
-      duration_hours: 2, hourly_rate: 300, total_amount: 600, payment_method: 'cod',
+      duration_hours: 2, hourly_rate: 300, total_amount: 600, payment_method: 'upi',
     }).select('id').maybeSingle();
     if (bkErr || !bk) { no('create booking: ' + (bkErr?.message ?? 'no row')); }
     else { bookingId = bk.id; ok('booking created (' + bookingId.slice(0, 8) + ')'); }
@@ -299,7 +326,7 @@ for (const id of createdNotifIds) {
   await providerClient.from('notifications').delete().eq('id', id);
 }
 if (bookingId) await customerClient.from('bookings').delete().eq('id', bookingId);
-if (providerRowId) await providerClient.from('service_providers').delete().eq('id', providerRowId);
+if (providerRowCreated && providerRowId) await providerClient.from('service_providers').delete().eq('id', providerRowId);
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed, ${skip} skipped`);
 process.exit(fail === 0 ? 0 : 1);

@@ -66,7 +66,26 @@ async function authClient(prefix) {
 // ---- sessions ----
 console.log('[sessions]');
 const { client: customerClient, userId: customerId } = await authClient('CUSTOMER');
-const { client: providerClient, userId: providerId } = await authClient('PROVIDER');
+let { client: providerClient, userId: providerId } = await authClient('PROVIDER');
+
+// Step 9: one provider profile per user (uniq_provider_per_user), and this script asserts a
+// PRISTINE provider row (rating=5 / total_reviews=1 after exactly one review). The shared test
+// provider account now permanently owns a row with real review history, so the provider SIDE of
+// this run is a throwaway account created and deleted here. It's a real signed-in provider — the
+// reciprocity and realtime assertions still exercise a genuine session.
+let throwawayProviderId = null;
+{
+  const email = `step6-provider-${Date.now()}-${Math.random().toString(36).slice(2, 7)}@seva.test`;
+  const password = `Pw-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+  const { data: created, error: cErr } = await service.auth.admin.createUser({ email, password, email_confirm: true });
+  if (cErr || !created?.user) { console.log('Cannot run: could not create a throwaway provider account (' + (cErr?.message ?? 'no user') + ').'); process.exit(1); }
+  const client = createClient(URL, ANON, { auth: { persistSession: false, autoRefreshToken: false } });
+  const { error: sErr } = await client.auth.signInWithPassword({ email, password });
+  if (sErr) { console.log('Cannot run: could not sign in the throwaway provider (' + sErr.message + ').'); process.exit(1); }
+  providerClient = client;
+  providerId = created.user.id;
+  throwawayProviderId = created.user.id;
+}
 const { client: strangerClient, userId: strangerId } = await authClient('STRANGER');
 console.log('  customer:', customerId ?? 'NONE', '| provider:', providerId ?? 'NONE', '| stranger:', strangerId ?? 'NONE', '\n');
 const distinct = new Set([customerId, providerId, strangerId]);
@@ -100,7 +119,12 @@ console.log('[setup: provider profile + settled booking + unsettled booking]');
     hourly_rate: 300, city: 'Mumbai', state: 'MH',
   }).select('id, category_id').maybeSingle();
   if (provErr || !prov) { no('create provider profile: ' + (provErr?.message ?? 'no row')); }
-  else { providerRowId = prov.id; ok('provider profile created (' + providerRowId.slice(0, 8) + ')'); }
+  else {
+    providerRowId = prov.id;
+    // Step 9: born pending, and a pending provider cannot be booked. Approving is server-only.
+    await service.from('service_providers').update({ status: 'approved', is_verified: true }).eq('id', providerRowId);
+    ok('provider profile created + approved (' + providerRowId.slice(0, 8) + ')');
+  }
 
   const { data: cat } = await anon.from('service_categories').select('id').limit(1).maybeSingle();
   const categoryId = cat?.id ?? null;
@@ -329,6 +353,8 @@ console.log('\n[cleanup]');
   await service.from('notifications').delete().like('link', `/bookings/${bookingId}%`);
   await service.from('bookings').delete().in('id', [bookingId, unsettledId].filter(Boolean)); // cascades reviews + events
   await service.from('service_providers').delete().eq('id', providerRowId);
+  // the throwaway provider account (deleting the user cascades anything left behind)
+  if (throwawayProviderId) await service.auth.admin.deleteUser(throwawayProviderId);
   console.log('  cleaned up bookings, reviews, events, reward ledger, notifications, and provider profile.');
 }
 
