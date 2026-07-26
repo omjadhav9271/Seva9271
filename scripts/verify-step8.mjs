@@ -106,22 +106,6 @@ const scoreNoReviews = (ops) => round2(W_REV * ((C * PRIOR) / C) + W_OPS * ops);
 
 // ---- record originals to restore (this script mutates real wallet + reputation) ----
 
-// Step 9 (uniq_provider_per_user) vs this script's fixture model: it stages SEVERAL provider
-// rows under the SAME owner account, which the unique index now refuses. Unlike step7 the
-// providers here must also be SIGNED-IN parties (raise_dispute) and their OWNER's wallet is
-// what escrow credits/claws back, so the fix is a real fixture rewrite: one throwaway owner
-// account PLUS its session per provider, and every walletOf/notifCount assertion repointed at
-// that owner. Deliberately not hacked in place — a mis-wired wallet assertion would still go
-// green while checking nothing, on the most safety-critical path in the repo (invariants #2/#5).
-{
-  const { data: owned } = await service.from('service_providers').select('id').eq('user_id', test1Id);
-  if ((owned ?? []).length > 0) {
-    console.log(`KNOWN INCOMPATIBILITY: ${'verify-step8'} stages multiple provider rows per owner, but Step 9 allows`);
-    console.log('one provider profile per user and test1 already owns one. This script needs its fixture');
-    console.log('model rewritten (throwaway owner + session per provider) before it can run again.');
-    process.exit(1);
-  }
-}
 const runStart = new Date().toISOString();
 const walletOf = async (uid) => Number((await service.from('profiles').select('wallet_balance').eq('id', uid).maybeSingle()).data?.wallet_balance ?? 0);
 const repOf    = async (uid) => Number((await service.from('profiles').select('reputation_score').eq('id', uid).maybeSingle()).data?.reputation_score ?? 0);
@@ -136,14 +120,32 @@ let categoryId = null;
 let rnd = 0;
 const uniq = () => `${Date.now()}_${rnd++}`;
 
-async function mkProvider(ownerId, name) {
+// Step 9 allows ONE provider profile per user, but this script needs an independent provider per
+// case — and each must be a SIGNED-IN party (raise_dispute) whose OWNER's wallet is what escrow
+// credits and claws back. So every fixture provider gets its own throwaway owner account AND
+// session, created and deleted inside the run. Returns { id, ownerId, client }; assertions about
+// "the provider" must use .ownerId / .client, never the shared test accounts.
+const throwawayOwners = [];
+async function mkOwner(tag) {
+  const email = `step8-${tag}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}@seva.test`;
+  const password = `Pw-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+  const { data, error } = await service.auth.admin.createUser({ email, password, email_confirm: true });
+  if (error) throw new Error('mkOwner: ' + error.message);
+  const client = createClient(URL, ANON, { auth: { persistSession: false, autoRefreshToken: false } });
+  const { error: sErr } = await client.auth.signInWithPassword({ email, password });
+  if (sErr) throw new Error('mkOwner signIn: ' + sErr.message);
+  throwawayOwners.push(data.user.id);
+  return { ownerId: data.user.id, client };
+}
+async function mkProvider(name) {
+  const { ownerId, client } = await mkOwner(name.replace(/[^a-z0-9]+/gi, '').slice(0, 12).toLowerCase());
   const { data, error } = await service.from('service_providers').insert({
     user_id: ownerId, business_name: name, bio: 'step8 verify seed',
     hourly_rate: 300, city: 'Mumbai', state: 'MH',
   }).select('id').single();
   if (error) throw new Error('mkProvider ' + name + ': ' + error.message);
   spIds.push(data.id);
-  return data.id;
+  return { id: data.id, ownerId, client };
 }
 async function mkBooking({ customer, provider, status, payment_status = 'pending', total = 600, price_charged = null }) {
   const { data, error } = await service.from('bookings').insert({
@@ -206,9 +208,9 @@ try {
   // ================= (a) raise_dispute: either party → disputed + event + counterparty notified =================
   console.log('[a) raise_dispute: either party disputes a disputable booking → disputed + event + notify]');
   {
-    const sp = await mkProvider(test1Id, 'Step8 A provider');
+    const sp = await mkProvider('Step8 A provider');
     // customer raises
-    const bkCust = await mkBooking({ customer: test2Id, provider: sp, status: 'in_progress' });
+    const bkCust = await mkBooking({ customer: test2Id, provider: sp.id, status: 'in_progress' });
     const rC = await raiseAs(test2Client, bkCust, 'work_not_done', 'nothing was done');
     if (!rC.error && disputeIdOf(rC.data)) ok('CUSTOMER can raise a dispute (raise_dispute returned the row)');
     else no('customer raise_dispute failed: ' + errMsg(rC.error));
@@ -217,12 +219,12 @@ try {
     else no('booking not disputed after customer raise: ' + JSON.stringify(afterC));
     if (await eventExists(bkCust, 'disputed', 'customer')) ok("booking_events row records the disputed transition (actor_role='customer')");
     else no('no disputed booking_event with actor_role=customer');
-    if (await notifCount(test1Id, 'Dispute raised', bkCust)) ok('counterparty (provider) notified on raise');
+    if (await notifCount(sp.ownerId, 'Dispute raised', bkCust)) ok('counterparty (provider) notified on raise');
     else no('provider was not notified on a customer-raised dispute');
 
     // provider raises (the other direction)
-    const bkProv = await mkBooking({ customer: test2Id, provider: sp, status: 'completed' });
-    const rP = await raiseAs(test1Client, bkProv, 'payment_not_received');
+    const bkProv = await mkBooking({ customer: test2Id, provider: sp.id, status: 'completed' });
+    const rP = await raiseAs(sp.client, bkProv, 'payment_not_received');
     if (!rP.error && disputeIdOf(rP.data)) ok('PROVIDER can raise a dispute');
     else no('provider raise_dispute failed: ' + errMsg(rP.error));
     if ((await bookingRow(bkProv))?.status === 'disputed') ok('booking → disputed after a provider raise');
@@ -232,17 +234,17 @@ try {
 
     // ---- (b) second open dispute on the same booking is rejected ----
     console.log('\n[b) a second OPEN dispute on the same booking is rejected]');
-    const dup = await raiseAs(test1Client, bkCust, 'other');
+    const dup = await raiseAs(sp.client, bkCust, 'other');
     if (dup.error) ok('second raise_dispute on an already-disputed booking rejected: ' + errMsg(dup.error));
     else no('second raise_dispute unexpectedly succeeded');
     // and the partial unique index blocks a direct 2nd non-resolved row
-    const dupIns = await service.from('disputes').insert({ booking_id: bkCust, raised_by: test1Id, raiser_role: 'provider', reason: 'other', status: 'open' }).select('id');
+    const dupIns = await service.from('disputes').insert({ booking_id: bkCust, raised_by: sp.ownerId, raiser_role: 'provider', reason: 'other', status: 'open' }).select('id');
     if (dupIns.error && dupIns.error.code === '23505') ok('partial unique index blocks a 2nd non-resolved dispute row (23505)');
     else no('partial unique index did not block a 2nd open dispute: ' + JSON.stringify(dupIns.error ?? dupIns.data));
 
     // ---- (c) a non-party is rejected from raise_dispute (no admin bypass) ----
     console.log('\n[c) a non-party (here: the admin) is rejected from raise_dispute]');
-    const bkFresh = await mkBooking({ customer: test2Id, provider: sp, status: 'in_progress' });
+    const bkFresh = await mkBooking({ customer: test2Id, provider: sp.id, status: 'in_progress' });
     const np = await raiseAs(adminClient, bkFresh, 'other');
     if (np.error && /not a party/i.test(errMsg(np.error))) ok('non-party raise_dispute rejected: ' + errMsg(np.error));
     else no('non-party raise_dispute not cleanly rejected: ' + JSON.stringify(np.error ?? np.data));
@@ -251,15 +253,15 @@ try {
   // ================= (d) resolve_dispute is ADMIN-ONLY; admin resolves + notifies both =================
   console.log('\n[d) resolve_dispute: parties rejected, admin resolves + notifies both]');
   {
-    const sp = await mkProvider(test1Id, 'Step8 D provider');
-    const bk = await mkBooking({ customer: test2Id, provider: sp, status: 'in_progress' });
+    const sp = await mkProvider('Step8 D provider');
+    const bk = await mkBooking({ customer: test2Id, provider: sp.id, status: 'in_progress' });
     const r = await raiseAs(test2Client, bk, 'other');
     const dId = disputeIdOf(r.data);
 
     const byCustomer = await resolveAs(test2Client, dId, 'no_fault', 'none');
     if (byCustomer.error && /admin only/i.test(errMsg(byCustomer.error))) ok('a PARTY (customer) calling resolve_dispute is rejected: ' + errMsg(byCustomer.error));
     else no('customer resolve_dispute not rejected: ' + JSON.stringify(byCustomer.error ?? byCustomer.data));
-    const byProvider = await resolveAs(test1Client, dId, 'no_fault', 'none');
+    const byProvider = await resolveAs(sp.client, dId, 'no_fault', 'none');
     if (byProvider.error && /admin only/i.test(errMsg(byProvider.error))) ok('a PARTY (provider) calling resolve_dispute is rejected');
     else no('provider resolve_dispute not rejected: ' + JSON.stringify(byProvider.error ?? byProvider.data));
 
@@ -272,7 +274,7 @@ try {
     else no('resolved dispute not recorded as expected: ' + JSON.stringify(dAfter));
     if ((await bookingRow(bk))?.status !== 'disputed') ok("booking EXITS 'disputed' on resolution (status=" + (await bookingRow(bk))?.status + ')');
     else no("booking still 'disputed' after resolution");
-    const both = (await notifCount(test2Id, 'Dispute resolved', bk)) > 0 && (await notifCount(test1Id, 'Dispute resolved', bk)) > 0;
+    const both = (await notifCount(test2Id, 'Dispute resolved', bk)) > 0 && (await notifCount(sp.ownerId, 'Dispute resolved', bk)) > 0;
     if (both) ok('BOTH parties notified on resolution');
     else no('resolution did not notify both parties');
   }
@@ -280,17 +282,17 @@ try {
   // ================= (e) MONEY: held → favor_provider releases escrow to the provider (−1%) =================
   console.log('\n[e) money: held booking, favor_provider → escrow released to provider wallet (−1% fee)]');
   {
-    const sp = await mkProvider(test1Id, 'Step8 E provider');
-    const bk = await mkBooking({ customer: test2Id, provider: sp, status: 'in_progress', payment_status: 'held', price_charged: 600 });
+    const sp = await mkProvider('Step8 E provider');
+    const bk = await mkBooking({ customer: test2Id, provider: sp.id, status: 'in_progress', payment_status: 'held', price_charged: 600 });
     const tx = await mkPayTx(bk, { status: 'captured', amount: 60000 });
-    const wBefore = await walletOf(test1Id);
+    const wBefore = await walletOf(sp.ownerId);
     const r = await raiseAs(test2Client, bk, 'other');
     const rr = await resolveAs(adminClient, disputeIdOf(r.data), 'favor_provider', 'customer');
     if (rr.error) no('resolve favor_provider failed: ' + errMsg(rr.error));
-    const wAfter = await walletOf(test1Id);
+    const wAfter = await walletOf(sp.ownerId);
     if (round2(wAfter - wBefore) === 594) ok(`provider wallet credited the 99% payout: +₹${round2(wAfter - wBefore)} (600 − 1% fee)`);
     else no(`provider wallet delta wrong: expected +594, got +${round2(wAfter - wBefore)}`);
-    const wt = (await service.from('wallet_transactions').select('type, amount').eq('reference_id', bk).eq('user_id', test1Id).eq('type', 'credit').maybeSingle()).data;
+    const wt = (await service.from('wallet_transactions').select('type, amount').eq('reference_id', bk).eq('user_id', sp.ownerId).eq('type', 'credit').maybeSingle()).data;
     if (wt && Number(wt.amount) === 594) ok('a credit wallet_transaction of 594 was written for the provider');
     else no('provider credit wallet_transaction not found/!=594: ' + JSON.stringify(wt));
     const txRow = await payTxRow(tx);
@@ -304,19 +306,19 @@ try {
   // ================= (f) MONEY: released → favor_customer claws back from the provider =================
   console.log('\n[f) money: already-released booking, favor_customer → wallet clawback (debit) from provider]');
   {
-    const sp = await mkProvider(test1Id, 'Step8 F provider');
-    const bk = await mkBooking({ customer: test2Id, provider: sp, status: 'paid', payment_status: 'released', price_charged: 600 });
+    const sp = await mkProvider('Step8 F provider');
+    const bk = await mkBooking({ customer: test2Id, provider: sp.id, status: 'paid', payment_status: 'released', price_charged: 600 });
     await mkPayTx(bk, { status: 'released', amount: 60000, provider_amount: 594, platform_fee: 6 });
     // simulate the earlier payout sitting in the provider's wallet, so the clawback has funds
-    await service.rpc('credit_wallet', { p_user_id: test1Id, p_amount: 600, p_type: 'credit', p_description: 'step8 seed prior payout', p_reference_id: bk });
-    const wBefore = await walletOf(test1Id);
+    await service.rpc('credit_wallet', { p_user_id: sp.ownerId, p_amount: 600, p_type: 'credit', p_description: 'step8 seed prior payout', p_reference_id: bk });
+    const wBefore = await walletOf(sp.ownerId);
     const r = await raiseAs(test2Client, bk, 'poor_quality');
     const rr = await resolveAs(adminClient, disputeIdOf(r.data), 'favor_customer', 'provider', { notes: 'refund the customer' });
     if (rr.error) no('resolve favor_customer failed: ' + errMsg(rr.error));
-    const wAfter = await walletOf(test1Id);
+    const wAfter = await walletOf(sp.ownerId);
     if (round2(wBefore - wAfter) === 600) ok(`provider wallet CLAWED BACK the full ₹600: ${round2(wAfter - wBefore)}`);
     else no(`clawback delta wrong: expected −600, got ${round2(wAfter - wBefore)}`);
-    const wt = (await service.from('wallet_transactions').select('type, amount').eq('reference_id', bk).eq('user_id', test1Id).eq('type', 'debit').maybeSingle()).data;
+    const wt = (await service.from('wallet_transactions').select('type, amount').eq('reference_id', bk).eq('user_id', sp.ownerId).eq('type', 'debit').maybeSingle()).data;
     if (wt && Number(wt.amount) === 600) ok('a debit wallet_transaction of 600 was written (the clawback)');
     else no('clawback debit wallet_transaction not found/!=600: ' + JSON.stringify(wt));
     const bAfter = await bookingRow(bk);
@@ -332,14 +334,14 @@ try {
     const expFault = scoreNoReviews(cleanOps - 3 * 0.25);      // fault_rate 1/4 → ops 4.25
 
     // -- exonerated provider --
-    const pExon = await mkProvider(test1Id, 'Step8 G exonerated');
+    const pExon = await mkProvider('Step8 G exonerated');
     let bExon;
-    for (let i = 0; i < 4; i++) { const b = await mkBooking({ customer: test2Id, provider: pExon, status: 'paid' }); if (i === 0) bExon = b; }
-    const gExonBefore = await computeRep('provider', pExon);
+    for (let i = 0; i < 4; i++) { const b = await mkBooking({ customer: test2Id, provider: pExon.id, status: 'paid' }); if (i === 0) bExon = b; }
+    const gExonBefore = await computeRep('provider', pExon.id);
     const rE = await raiseAs(test2Client, bExon, 'other');
     await resolveAs(adminClient, disputeIdOf(rE.data), 'favor_provider', 'customer'); // provider NOT at fault
-    const gExonAfter = await computeRep('provider', pExon);
-    const frExon = await faultRate('provider', pExon);
+    const gExonAfter = await computeRep('provider', pExon.id);
+    const frExon = await faultRate('provider', pExon.id);
     console.log(`  exonerated: before ${gExonBefore} → after ${gExonAfter} (expected ${expExon}, provider fault_rate=${frExon})`);
     if (Math.abs(gExonAfter - gExonBefore) <= 0.001) ok(`EXONERATED provider: score UNCHANGED (${gExonBefore} → ${gExonAfter})`);
     else no(`exonerated provider score moved: ${gExonBefore} → ${gExonAfter}`);
@@ -347,14 +349,14 @@ try {
     else no(`exonerated provider fault_rate should be 0, got ${frExon}`);
 
     // -- at-fault provider (identical record, only fault differs) --
-    const pFault = await mkProvider(test1Id, 'Step8 G at-fault');
+    const pFault = await mkProvider('Step8 G at-fault');
     let bFault;
-    for (let i = 0; i < 4; i++) { const b = await mkBooking({ customer: test2Id, provider: pFault, status: 'paid' }); if (i === 0) bFault = b; }
-    const gFaultBefore = await computeRep('provider', pFault);
+    for (let i = 0; i < 4; i++) { const b = await mkBooking({ customer: test2Id, provider: pFault.id, status: 'paid' }); if (i === 0) bFault = b; }
+    const gFaultBefore = await computeRep('provider', pFault.id);
     const rF = await raiseAs(test2Client, bFault, 'poor_quality');
     await resolveAs(adminClient, disputeIdOf(rF.data), 'partial', 'provider', { refund: 100 }); // provider AT fault, booking stays 'paid'
-    const gFaultAfter = await computeRep('provider', pFault);
-    const frFault = await faultRate('provider', pFault);
+    const gFaultAfter = await computeRep('provider', pFault.id);
+    const frFault = await faultRate('provider', pFault.id);
     console.log(`  at-fault:   before ${gFaultBefore} → after ${gFaultAfter} (expected ${expFault}, provider fault_rate=${frFault})`);
     if (gFaultAfter < gFaultBefore) ok(`AT-FAULT provider: score DROPPED (${gFaultBefore} → ${gFaultAfter})`);
     else no(`at-fault provider score did not drop: ${gFaultBefore} → ${gFaultAfter}`);
@@ -368,14 +370,14 @@ try {
   console.log('\n[h) reputation follows FAULT (customer): exonerated unchanged, at-fault DROPS]');
   {
     // customer = test1 (clean of real customer bookings); provider = an SP owned by test2
-    const spC = await mkProvider(test2Id, 'Step8 H provider');
-    const bcExon = await mkBooking({ customer: test1Id, provider: spC, status: 'paid' });
-    const bcFault = await mkBooking({ customer: test1Id, provider: spC, status: 'paid' });
+    const spC = await mkProvider('Step8 H provider');
+    const bcExon = await mkBooking({ customer: test1Id, provider: spC.id, status: 'paid' });
+    const bcFault = await mkBooking({ customer: test1Id, provider: spC.id, status: 'paid' });
     const cBefore = await computeRep('customer', test1Id);
     const frBefore = await faultRate('customer', test1Id);
 
     // exonerate the customer (provider raises; resolved with no customer fault)
-    const rE = await raiseAs(test2Client, bcExon, 'customer_behaviour');
+    const rE = await raiseAs(spC.client, bcExon, 'customer_behaviour');
     await resolveAs(adminClient, disputeIdOf(rE.data), 'no_fault', 'none');
     const cAfterExon = await computeRep('customer', test1Id);
     const frExon = await faultRate('customer', test1Id);
@@ -384,7 +386,7 @@ try {
     else no(`exonerated customer moved: ${cBefore} → ${cAfterExon} (fault_rate ${frBefore}→${frExon})`);
 
     // now find the customer at fault
-    const rF = await raiseAs(test2Client, bcFault, 'customer_behaviour');
+    const rF = await raiseAs(spC.client, bcFault, 'customer_behaviour');
     await resolveAs(adminClient, disputeIdOf(rF.data), 'favor_provider', 'customer');
     const cAfterFault = await computeRep('customer', test1Id);
     const frFault = await faultRate('customer', test1Id);
@@ -397,8 +399,8 @@ try {
   console.log('\n[i) evidence bundle: admin reads a booking it is not party to; a non-admin non-party reads ZERO]');
   {
     // foreign booking whose ONLY party is test1 → test2 is a clean non-admin outsider; test3 is admin & non-party
-    const spF = await mkProvider(test1Id, 'Step8 I provider');
-    const bkF = await mkBooking({ customer: test1Id, provider: spF, status: 'in_progress' });
+    const spF = await mkProvider('Step8 I provider');
+    const bkF = await mkBooking({ customer: test1Id, provider: spF.id, status: 'in_progress' });
     await service.from('disputes').insert({ booking_id: bkF, raised_by: test1Id, raiser_role: 'customer', reason: 'other', status: 'open' });
     await service.from('messages').insert({ booking_id: bkF, sender_id: test1Id, body: 'step8 evidence message' });
     await mkPayTx(bkF, { status: 'captured', amount: 60000 });
@@ -456,6 +458,7 @@ console.log('\n[cleanup]');
   for (const uid of [test1Id, test2Id]) {
     await service.from('reputation_snapshots').delete().eq('subject_type', 'customer').eq('subject_id', uid).gte('computed_at', runStart);
   }
+  for (const uid of throwawayOwners) await service.auth.admin.deleteUser(uid);
   await service.from('profiles').update({ wallet_balance: w1_0, reputation_score: rep1_0 }).eq('id', test1Id);
   await service.from('profiles').update({ wallet_balance: w2_0, reputation_score: rep2_0 }).eq('id', test2Id);
   console.log(`  cleaned up ${bookingIds.length} bookings (+cascaded disputes/paytx/messages/events), ${spIds.length} providers, snapshots + wallet txns; wallet/reputation restored (test1 ₹${w1_0}/${rep1_0}, test2 ₹${w2_0}/${rep2_0}).`);

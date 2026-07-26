@@ -72,22 +72,6 @@ if (!test1Id || !test2Id || !adminId || new Set([test1Id, test2Id, adminId]).siz
 }
 
 
-// Step 9 (uniq_provider_per_user) vs this script's fixture model: it stages SEVERAL provider
-// rows under the SAME owner account, which the unique index now refuses. Unlike step7 the
-// providers here must also be SIGNED-IN parties (raise_dispute) and their OWNER's wallet is
-// what escrow credits/claws back, so the fix is a real fixture rewrite: one throwaway owner
-// account PLUS its session per provider, and every walletOf/notifCount assertion repointed at
-// that owner. Deliberately not hacked in place — a mis-wired wallet assertion would still go
-// green while checking nothing, on the most safety-critical path in the repo (invariants #2/#5).
-{
-  const { data: owned } = await service.from('service_providers').select('id').eq('user_id', test1Id);
-  if ((owned ?? []).length > 0) {
-    console.log(`KNOWN INCOMPATIBILITY: ${'verify-step8-evidence'} stages multiple provider rows per owner, but Step 9 allows`);
-    console.log('one provider profile per user and test1 already owns one. This script needs its fixture');
-    console.log('model rewritten (throwaway owner + session per provider) before it can run again.');
-    process.exit(1);
-  }
-}
 const runStart = new Date().toISOString();
 const walletOf = async (u) => Number((await service.from('profiles').select('wallet_balance').eq('id', u).maybeSingle()).data?.wallet_balance ?? 0);
 const repOf = async (u) => Number((await service.from('profiles').select('reputation_score').eq('id', u).maybeSingle()).data?.reputation_score ?? 0);
@@ -99,12 +83,25 @@ let categoryId = null;
 const uniq = () => `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); // PNG magic; bucket checks declared type
 
+// Step 9 allows ONE provider profile per user and test1 permanently owns one, so the fixture
+// provider gets its own throwaway owner account AND session — it has to be a real signed-in
+// party to attach evidence and to be denied access to the counterparty's files.
+const throwawayOwners = [];
 async function mkProvider(name) {
+  const email = `step85-${Date.now()}-${Math.random().toString(36).slice(2, 7)}@seva.test`;
+  const password = `Pw-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+  const { data: created, error: cErr } = await service.auth.admin.createUser({ email, password, email_confirm: true });
+  if (cErr) throw new Error('mkOwner: ' + cErr.message);
+  const client = createClient(URL, ANON, { auth: { persistSession: false, autoRefreshToken: false } });
+  const { error: sErr } = await client.auth.signInWithPassword({ email, password });
+  if (sErr) throw new Error('mkOwner signIn: ' + sErr.message);
+  throwawayOwners.push(created.user.id);
   const { data, error } = await service.from('service_providers').insert({
-    user_id: test1Id, business_name: name, bio: 'step8.5 seed', hourly_rate: 300, city: 'Mumbai', state: 'MH',
+    user_id: created.user.id, business_name: name, bio: 'step8.5 seed', hourly_rate: 300, city: 'Mumbai', state: 'MH',
   }).select('id').single();
   if (error) throw new Error('mkProvider: ' + error.message);
-  spIds.push(data.id); return data.id;
+  spIds.push(data.id);
+  return { id: data.id, ownerId: created.user.id, client };
 }
 async function mkBooking(sp) {
   const { data, error } = await service.from('bookings').insert({
@@ -125,7 +122,7 @@ const insEvidence = (client, { disputeId, bookingId, role, uploadedBy, kind = 'i
 
 try {
   const sp = await mkProvider('Step8.5 provider');
-  const bk = await mkBooking(sp);
+  const bk = await mkBooking(sp.id);
   const raised = await test2Client.rpc('raise_dispute', { p_booking_id: bk, p_reason: 'work_not_done', p_description: 'seed' });
   const dId = disputeIdOf(raised.data);
   if (!dId) throw new Error('raise_dispute failed: ' + errMsg(raised.error));
@@ -137,7 +134,7 @@ try {
     if (!good1.error) ok('customer (party) can attach evidence while the dispute is open');
     else no('customer insert rejected: ' + errMsg(good1.error));
 
-    const good2 = await insEvidence(test1Client, { disputeId: dId, bookingId: bk, role: 'provider', uploadedBy: test1Id });
+    const good2 = await insEvidence(sp.client, { disputeId: dId, bookingId: bk, role: 'provider', uploadedBy: sp.ownerId });
     if (!good2.error) ok('provider (party) can attach evidence too');
     else no('provider insert rejected: ' + errMsg(good2.error));
 
@@ -145,7 +142,7 @@ try {
     if (rlsDenied(lie.error)) ok('a party CANNOT forge uploader_role (customer claiming provider) — RLS blocks it');
     else no('forged uploader_role not blocked: ' + JSON.stringify(lie.error ?? lie.data));
 
-    const spoof = await insEvidence(test2Client, { disputeId: dId, bookingId: bk, role: 'customer', uploadedBy: test1Id });
+    const spoof = await insEvidence(test2Client, { disputeId: dId, bookingId: bk, role: 'customer', uploadedBy: sp.ownerId });
     if (rlsDenied(spoof.error)) ok('a party CANNOT set uploaded_by to someone else — RLS blocks it');
     else no('forged uploaded_by not blocked: ' + JSON.stringify(spoof.error ?? spoof.data));
 
@@ -158,7 +155,7 @@ try {
   console.log('\n[b) table RLS — read: own-only for parties, all for admin]');
   {
     const asCust = (await test2Client.from('dispute_evidence').select('id, uploader_role').eq('dispute_id', dId)).data ?? [];
-    const asProv = (await test1Client.from('dispute_evidence').select('id, uploader_role').eq('dispute_id', dId)).data ?? [];
+    const asProv = (await sp.client.from('dispute_evidence').select('id, uploader_role').eq('dispute_id', dId)).data ?? [];
     const asAdmin = (await adminClient.from('dispute_evidence').select('id, uploader_role').eq('dispute_id', dId)).data ?? [];
     if (asCust.length === 1 && asCust[0].uploader_role === 'customer') ok('customer sees ONLY their own evidence (1 row)');
     else no('customer read leaked/short: ' + JSON.stringify(asCust));
@@ -190,7 +187,7 @@ try {
     if (adminSign.data?.signedUrl) ok('admin can generate a signed URL for any evidence file');
     else no('admin could not sign evidence file: ' + errMsg(adminSign.error));
 
-    const otherSign = await test1Client.storage.from(BUCKET).createSignedUrl(custPath, 60);
+    const otherSign = await sp.client.storage.from(BUCKET).createSignedUrl(custPath, 60);
     if (!otherSign.data?.signedUrl) ok('the OTHER party cannot read a file that isn\'t theirs (storage RLS)');
     else no('other party WRONGLY signed a counterparty file');
   }
@@ -244,6 +241,7 @@ console.log('\n[cleanup]');
     await service.from('service_providers').delete().in('id', spIds);
   }
   for (const u of [test1Id, test2Id]) await service.from('reputation_snapshots').delete().eq('subject_type', 'customer').eq('subject_id', u).gte('computed_at', runStart);
+  for (const uid of throwawayOwners) await service.auth.admin.deleteUser(uid);
   await service.from('profiles').update({ wallet_balance: w1, reputation_score: r1 }).eq('id', test1Id);
   await service.from('profiles').update({ wallet_balance: w2, reputation_score: r2 }).eq('id', test2Id);
   console.log(`  cleaned ${bookingIds.length} booking(s), ${spIds.length} provider(s), ${objectPaths.filter(Boolean).length} storage object(s); wallet/reputation restored.`);

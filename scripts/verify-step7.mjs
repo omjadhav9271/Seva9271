@@ -7,13 +7,11 @@
   compares scores across constructed cases. Step 6 already proved the submit_review path; here we
   isolate the scoring math + its security envelope.
 
-  KNOWN FAILURES (3) — expectations this script has NOT been re-authored for. Step 8 renamed
-  the breakdown key `dispute` to `dispute_fault_rate` AND changed its meaning: a booking that
-  is merely disputed no longer penalises anyone, only a dispute RESOLVED AGAINST you does
-  (migration 20260728120000, section 6). So the three assertions that read bd.dispute === 0.25
-  now see dispute_fault_rate === 0 and fail. That is the engine behaving correctly and the
-  test being stale — re-author the expected ops values against fault-based semantics before
-  trusting these three again. Everything else here passes.
+  Re-authored for Step 8: the breakdown key `dispute` became `dispute_fault_rate` and changed
+  meaning — a booking that is merely disputed penalises nobody, only a dispute RESOLVED AGAINST
+  you does (migration 20260728120000 §6). The ops assertions below now encode that: P7's
+  disputed booking must cost it NOTHING (the anti-frivolous-dispute property), while its
+  cancellation still counts. The at-fault half of that rule is covered by verify-step8 case (g).
 
   What it checks (the Step-7 "Done when"):
     (a) engine writes: compute_reputation returns a 0–5 score, writes a reputation_snapshots row
@@ -209,7 +207,9 @@ try {
 
     const snap = await latestSnap('provider', p1);
     const bd = snap?.breakdown ?? {};
-    const keys = ['review_score', 'review_count', 'ops_score', 'completion', 'cancellation', 'dispute', 'params'];
+    // Step 8 renamed this key: `dispute` (raw disputed-rate) → `dispute_fault_rate` (disputes
+    // RESOLVED AGAINST the subject).
+    const keys = ['review_score', 'review_count', 'ops_score', 'completion', 'cancellation', 'dispute_fault_rate', 'params'];
     if (snap && Number(snap.score) === s1 && keys.every((k) => k in bd))
       ok(`snapshot written with full breakdown (review_score=${bd.review_score}, review_count=${bd.review_count}, ops_score=${bd.ops_score}, completion=${bd.completion})`);
     else no('snapshot/breakdown not as expected: ' + JSON.stringify(snap));
@@ -295,11 +295,14 @@ try {
     const s6 = await computeRep('provider', p6);
     const s7 = await computeRep('provider', p7);
     const bd7 = (await latestSnap('provider', p7))?.breakdown ?? {};
-    console.log(`  4/4 paid → ${s6} (expected ≈${round2(W_REV * PRIOR + W_OPS * 5)}) | 2 paid + 1 cancelled + 1 disputed → ${s7} (ops_score=${bd7.ops_score}, completion=${bd7.completion}, cancellation=${bd7.cancellation}, dispute=${bd7.dispute})`);
-    if (s7 < s6) ok(`OPS holds: cancellations+disputes lower the score (${s7} < ${s6}) with identical (zero) reviews`);
+    console.log(`  4/4 paid → ${s6} (expected ≈${round2(W_REV * PRIOR + W_OPS * 5)}) | 2 paid + 1 cancelled + 1 disputed → ${s7} (ops_score=${bd7.ops_score}, completion=${bd7.completion}, cancellation=${bd7.cancellation}, dispute_fault_rate=${bd7.dispute_fault_rate})`);
+    if (s7 < s6) ok(`OPS holds: a messy record (cancellations + unfinished work) scores below a clean one (${s7} < ${s6}) with identical (zero) reviews`);
     else no(`OPS violated: messy record (${s7}) should score below clean record (${s6})`);
-    if (Number(bd7.cancellation) === 0.25 && Number(bd7.dispute) === 0.25 && Number(bd7.ops_score) < 5)
-      ok(`breakdown exposes the ops inputs (cancellation=0.25, dispute=0.25, ops_score=${bd7.ops_score})`);
+    // Step 8 made the dispute term FAULT-based: P7's booking is merely `disputed`, with no
+    // dispute resolved against them, so it must NOT be penalised here (that's the
+    // anti-frivolous-dispute property). The at-fault side of this is verify-step8 case (g).
+    if (Number(bd7.cancellation) === 0.25 && Number(bd7.dispute_fault_rate) === 0 && Number(bd7.ops_score) < 5)
+      ok(`breakdown exposes the ops inputs (cancellation=0.25, dispute_fault_rate=0 — merely being disputed costs nothing, ops_score=${bd7.ops_score})`);
     else no('ops breakdown not as expected: ' + JSON.stringify(bd7));
 
     // terminal booking_events trigger: recomputes BOTH parties with no explicit call
@@ -336,9 +339,11 @@ try {
     if (snap && Number(snap.score) === sc && Number(bd.review_count) === expectedReviews)
       ok(`customer snapshot written (review_score=${bd.review_score} from all ${bd.review_count} provider reviews incl. the seeded one)`);
     else no(`customer snapshot not as expected (review_count=${bd.review_count}, DB has ${expectedReviews}): ` + JSON.stringify(snap));
-    if (Number(bd.cancellation) > 0 && Number(bd.dispute) > 0)
-      ok(`customer ops reflect their own record (cancellation=${bd.cancellation}, dispute=${bd.dispute} from the seeded cancelled/disputed bookings)`);
-    else no('customer ops did not pick up their cancelled/disputed bookings: ' + JSON.stringify(bd));
+    // Same Step-8 rule on the customer side: cancellations count, a merely-disputed booking
+    // does not (only a dispute resolved AGAINST the customer would).
+    if (Number(bd.cancellation) > 0 && Number(bd.dispute_fault_rate) === 0)
+      ok(`customer ops reflect their own record (cancellation=${bd.cancellation}; dispute_fault_rate=0 — disputed but never found at fault)`);
+    else no('customer ops did not pick up their cancelled bookings: ' + JSON.stringify(bd));
 
     const { data: prof } = await service.from('profiles').select('reputation_score').eq('id', customerId).maybeSingle();
     if (Number(prof?.reputation_score) === sc) ok(`denormalized profiles.reputation_score = ${sc}`);

@@ -120,6 +120,7 @@ if (customerId === providerId) {
 // ---- provision: a provider profile (as provider) + a booking (as customer) ----
 let providerRowId = null;
 let providerRowCreated = false;  // only tear down a row this run actually created
+let walletBefore = null;         // the confirm step pays the provider for real; restore it after
 let bookingId = null;
 let bk2Id = null;
 let agreedPrice = 600;
@@ -143,7 +144,7 @@ console.log('[setup]');
     const { data: bk, error: bkErr } = await customerClient.from('bookings').insert({
       customer_id: customerId, provider_id: providerRowId, category_id: categoryId,
       service_type: 'one-time', scheduled_date: '2026-08-01', scheduled_time: '11:00',
-      duration_hours: 2, hourly_rate: 300, total_amount: 600, payment_method: 'cod',
+      duration_hours: 2, hourly_rate: 300, total_amount: 600, payment_method: 'upi',
     }).select('id, status, price_agreed').maybeSingle();
     if (bkErr || !bk) { no('create booking: ' + (bkErr?.message ?? 'no row')); }
     else {
@@ -153,6 +154,16 @@ console.log('[setup]');
       else no(`booking default status is '${bk.status}', expected 'requested'`);
       if (bk.price_agreed != null && Number(bk.price_agreed) === 600) ok(`price_agreed set by trigger: ₹${bk.price_agreed}`);
       else no(`price_agreed not set by trigger (got ${bk.price_agreed})`);
+
+      // Step 5 gate: an ONLINE booking can't start work until funds are held, and COD is blocked
+      // platform-wide since Step 5.5 — so escrow has to be staged before the walk. Server-only.
+      if (service) {
+        await service.from('bookings').update({ payment_status: 'held' }).eq('id', bookingId);
+        walletBefore = Number((await service.from('profiles').select('wallet_balance').eq('id', providerId).maybeSingle()).data?.wallet_balance ?? 0);
+        ok('escrow staged (payment_status=held) so the provider may start work');
+      } else {
+        sk('escrow staging needs SUPABASE_SERVICE_ROLE_KEY — the en_route step will be blocked without it');
+      }
     }
   }
 }
@@ -167,7 +178,9 @@ if (bookingId) {
     { who: 'provider', next: 'in_progress' },
     { who: 'provider', next: 'completed' },
     { who: 'customer', next: 'confirmed' },
-    { who: 'customer', next: 'paid' },
+    // 'paid' is deliberately NOT here: since Step 5 it is SYSTEM-only. Confirming inserts a
+    // booking_event, which fires trg_release_escrow, which pays the provider and moves the
+    // booking to 'paid' itself. A client asking for it is rejected — asserted after the walk.
   ];
 
   // baseline: no events yet
@@ -192,20 +205,48 @@ if (bookingId) {
       if (data.price_charged != null && Number(data.price_charged) === agreedPrice) ok(`price_charged set on confirm: ₹${data.price_charged} (== price_agreed)`);
       else no(`price_charged wrong on confirm: charged=${data?.price_charged}, agreed=${agreedPrice}`);
     }
-    if (step.next === 'paid' && data.payment_status === 'paid') ok('payment_status flipped to paid');
 
     // exactly one new event, matching from/to/actor_role
     const { rows, error: evErr } = await events(customerClient, bookingId);
     if (evErr) { no(`read booking_events after ${step.next}: ${evErr.message}`); }
     else {
       const match = rows.find((r) => r.from_status === prev && r.to_status === step.next && r.actor_role === step.who);
-      if (rows.length === n && match) ok(`booking_events row ${prev} → ${step.next} (actor_role=${step.who}); total=${rows.length}`);
-      else if (match) no(`event present but count off: expected ${n}, got ${rows.length}`);
+      // confirming also fires trg_release_escrow, which appends its own system 'paid' event
+      const expectedRows = n + (step.next === 'confirmed' ? 1 : 0);
+      if (rows.length === expectedRows && match) ok(`booking_events row ${prev} → ${step.next} (actor_role=${step.who}); total=${rows.length}`);
+      else if (match) no(`event present but count off: expected ${expectedRows}, got ${rows.length}`);
       else no(`no matching event row for ${prev} → ${step.next} by ${step.who} (${rows.length} rows total)`);
     }
     prev = step.next;
   }
-  if (prev === 'paid') ok('reached terminal state paid via 7 RPC transitions');
+  if (prev === 'confirmed') ok('walked requested → confirmed via 6 RPC transitions');
+
+  // ---- the system finishes the job: confirm releases escrow and moves the booking to 'paid' ----
+  if (prev === 'confirmed') {
+    console.log('\n[terminal state is reached BY THE SYSTEM, not the client]');
+    const { data: after } = await customerClient
+      .from('bookings').select('status, payment_status').eq('id', bookingId).maybeSingle();
+    if (after?.status === 'paid' && after?.payment_status === 'released')
+      ok("confirm auto-released escrow: status → 'paid', payment_status → 'released' (trg_release_escrow)");
+    else no(`confirm did not auto-release escrow: ${JSON.stringify(after)}`);
+
+    const { rows } = await events(customerClient, bookingId);
+    const sysEvent = rows.find((r) => r.to_status === 'paid' && r.actor_role === 'system');
+    if (sysEvent) ok("the confirmed → paid event is recorded with actor_role='system'");
+    else no('no system-actor event for the confirmed → paid transition');
+
+    // and a client asking for 'paid' directly is refused — it is not theirs to grant
+    const { error: paidErr } = await customerClient.rpc('transition_booking', { p_booking_id: bookingId, p_next_status: 'paid' });
+    if (paidErr) ok('a client cannot transition a booking to paid itself: ' + paidErr.message);
+    else no('client was allowed to transition to paid');
+
+    if (walletBefore != null) {
+      const walletAfter = Number((await service.from('profiles').select('wallet_balance').eq('id', providerId).maybeSingle()).data?.wallet_balance ?? 0);
+      if (Math.round((walletAfter - walletBefore) * 100) / 100 === 594)
+        ok(`the provider was actually paid: wallet +₹594 (600 − 1% platform fee)`);
+      else no(`provider payout wrong: expected +594, got +${Math.round((walletAfter - walletBefore) * 100) / 100}`);
+    }
+  }
 }
 
 // ---- negative: a direct status write from the browser must be denied ----
@@ -221,11 +262,12 @@ if (bookingId) {
 // ---- negatives on a fresh booking: illegal jump, wrong role, stranger ----
 if (providerRowId) {
   console.log('\n[rejections: illegal / wrong-role / stranger]');
-  const { data: bk2 } = await customerClient.from('bookings').insert({
+  const { data: bk2, error: bk2Err } = await customerClient.from('bookings').insert({
     customer_id: customerId, provider_id: providerRowId, service_type: 'one-time',
-    hourly_rate: 300, total_amount: 600, payment_method: 'cod',
+    hourly_rate: 300, total_amount: 600, payment_method: 'upi',  // COD blocked since Step 5.5
   }).select('id').maybeSingle();
   bk2Id = bk2?.id ?? null;
+  if (!bk2Id && bk2Err) console.log('    (second booking could not be created: ' + bk2Err.message + ')');
 
   if (!bk2Id) {
     sk('illegal/wrong-role/stranger checks (could not create a second booking)');
@@ -254,6 +296,12 @@ if (providerRowId) {
 }
 
 // ---- cleanup ----
+// the walk moved real money (confirm pays the provider), so undo the ledger + balance
+if (service && bookingId) {
+  await service.from('wallet_transactions').delete().eq('reference_id', bookingId);
+  await service.from('notifications').delete().like('link', `/bookings/${bookingId}%`);
+  if (walletBefore != null) await service.from('profiles').update({ wallet_balance: walletBefore }).eq('id', providerId);
+}
 if (bookingId) await customerClient.from('bookings').delete().eq('id', bookingId);
 if (bk2Id) await customerClient.from('bookings').delete().eq('id', bk2Id);
 if (providerRowCreated && providerRowId) await providerClient.from('service_providers').delete().eq('id', providerRowId);

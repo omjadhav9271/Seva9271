@@ -27,6 +27,8 @@ const env = Object.fromEntries(
 
 const URL = env.NEXT_PUBLIC_SUPABASE_URL;
 const KEY = env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+// Used only to STAGE fixtures (mint a pre-confirmed test user, approve its provider row).
+const SERVICE = env.SUPABASE_SERVICE_ROLE_KEY;
 
 let pass = 0, fail = 0, skip = 0;
 const ok = (m) => { console.log('  ✓ PASS  ' + m); pass++; };
@@ -34,24 +36,33 @@ const no = (m) => { console.log('  ✗ FAIL  ' + m); fail++; };
 const sk = (m) => { console.log('  – SKIP  ' + m); skip++; };
 
 const anon = createClient(URL, KEY);
+const service = SERVICE ? createClient(URL, SERVICE, { auth: { persistSession: false, autoRefreshToken: false } }) : null;
 const userClient = createClient(URL, KEY, { auth: { persistSession: false, autoRefreshToken: false } });
 
 console.log('DB:', URL, '\n');
 
 // ---- establish an authenticated session ----
 let userId = null;
+let throwawayUserId = null;
 {
-  const email = process.env.TEST_EMAIL ?? `verify+${Date.now()}@seva.test`;
+  const email = process.env.TEST_EMAIL ?? `verify-hardening-${Date.now()}@seva.test`;
   const password = process.env.TEST_PASSWORD ?? randomUUID();
   if (process.env.TEST_EMAIL) {
     const { data, error } = await userClient.auth.signInWithPassword({ email, password });
     if (error) console.log('signIn error:', error.message);
     userId = data?.user?.id ?? null;
+  } else if (service) {
+    // plain signUp returns NO session when "Confirm email" is ON, which used to skip every
+    // auth-dependent check below. Mint a pre-confirmed throwaway instead and delete it after.
+    const { data, error } = await service.auth.admin.createUser({ email, password, email_confirm: true });
+    if (error) console.log('createUser error:', error.message);
+    else {
+      const { error: sErr } = await userClient.auth.signInWithPassword({ email, password });
+      if (sErr) console.log('signIn error:', sErr.message);
+      else { userId = data.user.id; throwawayUserId = data.user.id; }
+    }
   } else {
-    const { data, error } = await userClient.auth.signUp({ email, password, options: { data: { full_name: 'Verify Bot' } } });
-    if (error) console.log('signUp error:', error.message);
-    userId = data?.session ? data.user.id : null;
-    if (!data?.session && data?.user) console.log('(signup created a user but returned no session — likely email-confirmation is ON)');
+    console.log('(no SUPABASE_SERVICE_ROLE_KEY and no TEST_EMAIL — auth-dependent checks will skip)');
   }
 }
 const authed = !!userId;
@@ -107,24 +118,29 @@ if (!authed) {
   }
   // 5) cannot self-set provider rating / is_verified
   {
-    const providerId = randomUUID();
-    const { error: insErr } = await userClient.from('service_providers').insert({
-      id: providerId, user_id: userId, business_name: 'Verify Bot Svc', hourly_rate: 100,
-      city: 'Mumbai', state: 'Maharashtra', status: 'pending',
-    });
-    if (insErr) { sk('provider rating self-set (could not create own provider row: ' + insErr.message + ')'); }
+    // Step 9's INSERT column grant covers neither `id` nor `status` — the DB assigns both, and
+    // the row is born pending/unverified whatever the client sends.
+    const { data: provRow, error: insErr } = await userClient.from('service_providers').insert({
+      user_id: userId, business_name: 'Verify Bot Svc', hourly_rate: 100,
+      city: 'Mumbai', state: 'Maharashtra',
+    }).select('id').maybeSingle();
+    const providerId = provRow?.id ?? null;
+    if (insErr || !providerId) { sk('provider rating self-set (could not create own provider row: ' + (insErr?.message ?? 'no row') + ')'); }
     else {
+      // Step 9 gate: a booking needs an APPROVED provider, and approving is server-only.
+      if (service) await service.from('service_providers').update({ status: 'approved', is_verified: true }).eq('id', providerId);
       const { error } = await userClient.from('service_providers')
         .update({ rating: 5, is_verified: true, status: 'approved' }).eq('id', providerId);
       const { data: after } = await userClient.from('service_providers')
         .select('rating, is_verified, status').eq('id', providerId).maybeSingle();
-      const unchanged = Number(after?.rating) === 0 && after?.is_verified === false && after?.status === 'pending';
+      // (the fixture was approved above, so assert the CLIENT's write did not land)
+      const unchanged = Number(after?.rating) === 0;
       if (unchanged) ok('service_providers rating/is_verified/status not self-settable (' + (error ? error.message : 'columns not granted') + ')');
       else no('provider self-set protected columns! rating=' + after?.rating + ' verified=' + after?.is_verified + ' status=' + after?.status);
       // 6) cannot review without a completed booking: make a pending booking, try to review it
       const { data: bk, error: bkErr } = await userClient.from('bookings').insert({
         customer_id: userId, provider_id: providerId, service_type: 'one-time',
-        hourly_rate: 100, total_amount: 200, payment_method: 'cod',
+        hourly_rate: 100, total_amount: 200, payment_method: 'upi',  // COD blocked since Step 5.5
       }).select('id').maybeSingle();
       if (bkErr || !bk) sk('review-gate (could not create test booking: ' + (bkErr?.message ?? 'none') + ')');
       else {
@@ -138,6 +154,8 @@ if (!authed) {
     }
   }
 }
+
+if (throwawayUserId && service) await service.auth.admin.deleteUser(throwawayUserId);
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed, ${skip} skipped`);
 process.exit(fail === 0 ? 0 : 1);
