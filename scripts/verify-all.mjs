@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs';
 const DB_SCRIPTS = [
   'verify-hardening', 'verify-provider-pii', 'verify-step2', 'verify-step3', 'verify-step4',
   'verify-step5', 'verify-step6', 'verify-step7', 'verify-step8', 'verify-step8-evidence',
-  'verify-step9',
+  'verify-step9', 'verify-step9-5',
 ];
 const UI_SCRIPT = 'ui-check-step9';
 const withUi = !process.argv.includes('--no-ui');

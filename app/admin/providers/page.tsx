@@ -105,7 +105,7 @@ export default function AdminProvidersPage() {
                   <p className="text-xs text-gray-400 mt-0.5 truncate">
                     {[r.city, r.state].filter(Boolean).join(', ') || 'No location'}
                     {r.hourly_rate > 0 && <> · ₹{Number(r.hourly_rate).toLocaleString('en-IN')}/hr</>}
-                    {' · '}{r.document_count} doc{r.document_count === 1 ? '' : 's'}
+                    {' · '}{r.documents_verified}/{r.documents_required} docs verified
                   </p>
                 </div>
                 <div className="text-right flex-shrink-0">

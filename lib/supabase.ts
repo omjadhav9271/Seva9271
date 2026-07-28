@@ -67,17 +67,98 @@ export type ServiceProvider = {
   // a provider reads their own via the my_provider_profile view, admins via the service-role
   // route /api/admin/provider-applications.
   kyc_status: KycStatus;
-  kyc_documents: KycDocument[];
+  kyc_documents: KycDocument[];   // Step 9 legacy; superseded by the provider_documents table
   rejection_reason: string | null;
   applied_at: string | null;
   reviewed_by: string | null;
   reviewed_at: string | null;
+  // Step 9.5: 1 identity-verified · 2 credential/experience-verified · 3 background-verified.
+  // Server-computed from verified documents — never client-writable.
+  trust_tier: number;
   // Joined fields
   profiles?: Profile;
   service_categories?: ServiceCategory;
 };
 
 export type KycStatus = 'unsubmitted' | 'submitted' | 'verified' | 'rejected';
+
+/* ── Step 9.5: category-aware KYC ─────────────────────────────────────────────
+   Requirements live in data (category_kyc_requirements), so adding a category or a document
+   type is an insert, not a deploy. Documents are RPC-written and server-verified. */
+
+export type CaptureMethod = 'digilocker' | 'api_number' | 'upload' | 'vendor';
+
+// 'required' blocks approval · 'badge' never blocks, it unlocks a trust tier ·
+// 'payout' is required before the first payout, not before going live.
+export type RequirementKind = 'required' | 'badge' | 'payout' | 'optional';
+
+export type DocumentStatus = 'pending' | 'verified' | 'rejected' | 'expired';
+
+export type KycDocumentType = {
+  code: string;
+  label: string;
+  description: string | null;
+  capture_method: CaptureMethod;
+  carries_expiry: boolean;
+  is_sensitive: boolean;
+  retention_days: number | null;
+};
+
+export type CategoryKycRequirement = {
+  id: string;
+  category_id: string;
+  doc_code: string;
+  requirement: RequirementKind;
+  unlocks_tier: number | null;
+  note: string | null;
+  kyc_document_types?: KycDocumentType;
+};
+
+export type ProviderDocument = {
+  id: string;
+  provider_id: string;
+  doc_code: string;
+  file_path: string | null;
+  reference_number: string | null;   // masked — last 4 only
+  verification_status: DocumentStatus;
+  verified_source: 'digilocker' | 'api' | 'admin' | 'vendor' | null;
+  issued_at: string | null;
+  expires_at: string | null;
+  meta: Record<string, unknown>;
+  created_at: string;
+  verified_at: string | null;
+  verified_by: string | null;
+};
+
+// One row of provider_document_checklist(): what this category asks for, plus what's supplied.
+export type DocumentChecklistItem = {
+  doc_code: string;
+  label: string;
+  description: string | null;
+  requirement: RequirementKind;
+  capture_method: CaptureMethod;
+  carries_expiry: boolean;
+  unlocks_tier: number | null;
+  note: string | null;
+  document_id: string | null;
+  verification_status: DocumentStatus | null;
+  expires_at: string | null;
+  file_path: string | null;
+};
+
+// CAPABILITY, never reputation. compute_reputation must not read this (§7.3 — the moat).
+export type ProviderExperience = {
+  id: string;
+  provider_id: string;
+  employer_name: string;
+  role: string | null;
+  from_date: string | null;
+  to_date: string | null;
+  source: 'epfo' | 'employer_ref' | 'rpl' | 'self_declared';
+  verified: boolean;
+  verified_at: string | null;
+  created_at: string;
+};
 
 export type Booking = {
   id: string;

@@ -149,10 +149,20 @@ export default function ProvidersPage() {
                             {p.is_verified && <CheckCircle className="w-4 h-4 text-[#138808] flex-shrink-0" />}
                           </div>
                           <p className="text-xs text-[#FF9933] font-medium mt-0.5">{p.service_categories?.name ?? 'Service'}</p>
+                          {/* Step 9.5: an unrated provider is NEW, not 0.0 — the engine already
+                              starts them at the Bayesian prior, the card just never said so. */}
                           <div className="flex items-center gap-1 mt-1">
-                            <Star className="w-3 h-3 fill-[#FF9933] text-[#FF9933]" />
-                            <span className="text-xs font-semibold text-white">{Number(p.rating).toFixed(1)}</span>
-                            <span className="text-xs text-gray-500">({p.total_reviews} reviews)</span>
+                            {p.total_reviews > 0 ? (
+                              <>
+                                <Star className="w-3 h-3 fill-[#FF9933] text-[#FF9933]" />
+                                <span className="text-xs font-semibold text-white">{Number(p.rating).toFixed(1)}</span>
+                                <span className="text-xs text-gray-500">({p.total_reviews} reviews)</span>
+                              </>
+                            ) : (
+                              <span className="text-xs font-semibold text-[#5da9ff] bg-[#054187]/20 border border-[#054187]/40 rounded-full px-2 py-0.5">
+                                New on Seva
+                              </span>
+                            )}
                           </div>
                         </div>
                       </div>

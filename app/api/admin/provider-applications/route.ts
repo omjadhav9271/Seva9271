@@ -18,15 +18,14 @@ export const dynamic = 'force-dynamic';
 const DOC_URL_TTL = 600; // 10 minutes — long enough to review, short enough not to leak
 
 const LIST_COLUMNS =
-  'id, user_id, business_name, city, state, status, kyc_status, kyc_documents, hourly_rate, ' +
-  'applied_at, reviewed_at, service_categories(name)';
+  'id, user_id, category_id, business_name, city, state, status, kyc_status, kyc_documents, ' +
+  'hourly_rate, trust_tier, applied_at, reviewed_at, service_categories(name)';
 
 const DETAIL_COLUMNS =
   'id, user_id, category_id, business_name, bio, experience_years, hourly_rate, city, state, ' +
   'address, status, is_verified, kyc_status, kyc_documents, rejection_reason, applied_at, ' +
   'reviewed_by, reviewed_at, created_at, service_categories(name)';
 
-type KycDoc = { path?: string; label?: string; name?: string; mime?: string };
 
 // The select strings are built by concatenation, so supabase-js can't infer a row shape from
 // them — these are the shapes we actually read back.
@@ -61,25 +60,66 @@ export async function GET(req: Request) {
       .eq('id', app.user_id).maybeSingle();
     const { data: authUser } = await admin.auth.admin.getUserById(app.user_id);
 
-    const docs = Array.isArray(app.kyc_documents) ? (app.kyc_documents as KycDoc[]) : [];
+    // Step 9.5: documents are typed rows now, each with its own verification status and expiry.
+    // The requirement comes from the provider's CATEGORY, so the admin sees required vs supplied.
+    const { data: docRows } = await admin
+      .from('provider_documents')
+      .select('id, doc_code, file_path, reference_number, verification_status, verified_source, expires_at, created_at, verified_at')
+      .eq('provider_id', id);
+    const { data: reqRows } = await admin
+      .from('category_kyc_requirements')
+      .select('doc_code, requirement, unlocks_tier, note, kyc_document_types(label, description, capture_method, carries_expiry)')
+      .eq('category_id', app.category_id as string);
+
+    type ReqRow = { doc_code: string; requirement: string; unlocks_tier: number | null; note: string | null;
+                    kyc_document_types: { label: string; description: string | null; capture_method: string; carries_expiry: boolean } | null };
+    const supplied = new Map((docRows ?? []).map((d) => [d.doc_code as string, d]));
+
     const documents = await Promise.all(
-      docs.map(async (doc) => {
-        const path = typeof doc?.path === 'string' ? doc.path : null;
-        if (!path) return { ...doc, url: null as string | null };
-        const { data: signed } = await admin.storage.from('kyc-docs').createSignedUrl(path, DOC_URL_TTL);
-        return {
-          path,
-          label: doc.label ?? 'Document',
-          name: doc.name ?? null,
-          mime: doc.mime ?? null,
-          url: signed?.signedUrl ?? null,
-        };
-      }),
+      ((reqRows ?? []) as unknown as ReqRow[])
+        .filter((r) => r.requirement === 'required' || r.requirement === 'badge')
+        .map(async (r) => {
+          const row = supplied.get(r.doc_code);
+          let url: string | null = null;
+          if (row?.file_path) {
+            const { data: signed } = await admin.storage.from('kyc-docs').createSignedUrl(row.file_path as string, DOC_URL_TTL);
+            url = signed?.signedUrl ?? null;
+          }
+          return {
+            doc_code: r.doc_code,
+            label: r.kyc_document_types?.label ?? r.doc_code,
+            description: r.kyc_document_types?.description ?? null,
+            capture_method: r.kyc_document_types?.capture_method ?? 'upload',
+            carries_expiry: r.kyc_document_types?.carries_expiry ?? false,
+            requirement: r.requirement,
+            note: r.note,
+            document_id: row?.id ?? null,
+            verification_status: row?.verification_status ?? null,
+            verified_source: row?.verified_source ?? null,
+            reference_number: row?.reference_number ?? null,
+            expires_at: row?.expires_at ?? null,
+            url,
+          };
+        }),
     );
+    // required first, then badges
+    documents.sort((a, b) => (a.requirement === 'required' ? 0 : 1) - (b.requirement === 'required' ? 0 : 1));
+
+    const { data: experience } = await admin
+      .from('provider_experience')
+      .select('id, employer_name, role, from_date, to_date, source, verified, verified_at')
+      .eq('provider_id', id)
+      .order('from_date', { ascending: false });
+
+    const blocking = documents
+      .filter((d) => d.requirement === 'required' && d.verification_status !== 'verified')
+      .map((d) => d.label);
 
     return NextResponse.json({
       application: { ...app, kyc_documents: undefined },
       documents,
+      experience: experience ?? [],
+      blocking,   // approval is refused by the RPC while this is non-empty
       owner: {
         name: owner?.full_name ?? null,
         phone: owner?.phone ?? null,
@@ -100,9 +140,31 @@ export async function GET(req: Request) {
     .order('applied_at', { ascending: false });
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const applications = ((data ?? []) as unknown as ApplicationRow[]).map((row) => ({
+  const rows = (data ?? []) as unknown as ApplicationRow[];
+
+  // Step 9.5: completeness comes from the typed documents vs what the CATEGORY requires, so the
+  // queue can show "2 of 5 verified" instead of a meaningless file count.
+  const ids = rows.map((r) => r.id);
+  const [{ data: docs }, { data: reqs }] = await Promise.all([
+    admin.from('provider_documents').select('provider_id, doc_code, verification_status').in('provider_id', ids.length ? ids : ['00000000-0000-0000-0000-000000000000']),
+    admin.from('category_kyc_requirements').select('category_id, doc_code, requirement').eq('requirement', 'required'),
+  ]);
+  const requiredByCat = new Map<string, number>();
+  for (const r of reqs ?? []) {
+    const key = r.category_id as string;
+    requiredByCat.set(key, (requiredByCat.get(key) ?? 0) + 1);
+  }
+  const verifiedByProvider = new Map<string, number>();
+  for (const d of docs ?? []) {
+    if (d.verification_status !== 'verified') continue;
+    const key = d.provider_id as string;
+    verifiedByProvider.set(key, (verifiedByProvider.get(key) ?? 0) + 1);
+  }
+
+  const applications = rows.map((row) => ({
     ...row,
-    document_count: Array.isArray(row.kyc_documents) ? row.kyc_documents.length : 0,
+    documents_required: requiredByCat.get((row as unknown as { category_id: string }).category_id) ?? 0,
+    documents_verified: verifiedByProvider.get(row.id) ?? 0,
     kyc_documents: undefined,
   }));
 

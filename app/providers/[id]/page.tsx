@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import {
-  Star, MapPin, Clock, CheckCircle, ArrowLeft, Heart, Share2,
+  Star, MapPin, Clock, CheckCircle, ArrowLeft, Heart, Share2, Briefcase,
   Calendar, Shield, ShieldCheck, Award
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
@@ -31,6 +31,23 @@ type ProviderDetail = {
 
 // Latest reputation snapshot — the explainable breakdown behind the trust score (Step 7).
 type SnapshotSlim = Pick<ReputationSnapshot, 'score' | 'breakdown' | 'computed_at'>;
+
+// Step 9.5: verified off-platform history. Displayed as CAPABILITY — it is deliberately not an
+// input to the rating or the trust score (§7.3: reputation accrues only on-platform).
+type VerifiedExperience = {
+  id: string; employer_name: string; role: string | null;
+  from_date: string | null; to_date: string | null; source: string; verified: boolean;
+};
+
+function totalVerifiedYears(rows: VerifiedExperience[]): number {
+  const months = rows.reduce((sum, r) => {
+    if (!r.from_date) return sum;
+    const from = new Date(r.from_date);
+    const to = r.to_date ? new Date(r.to_date) : new Date();
+    return sum + Math.max(0, (to.getFullYear() - from.getFullYear()) * 12 + (to.getMonth() - from.getMonth()));
+  }, 0);
+  return Math.floor(months / 12);
+}
 
 type ReviewRow = {
   id: string;
@@ -110,6 +127,7 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
   const [provider, setProvider] = useState<ProviderDetail | null>(null);
   const [snapshot, setSnapshot] = useState<SnapshotSlim | null>(null);
   const [reviews, setReviews] = useState<ReviewRow[]>([]);
+  const [experience, setExperience] = useState<VerifiedExperience[]>([]);
   const [loading, setLoading] = useState(true);
   const [bookingDate, setBookingDate] = useState('');
   const [bookingTime, setBookingTime] = useState('');
@@ -158,6 +176,17 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
         .limit(10);
       if (!mounted) return;
       setReviews((reviewData ?? []) as ReviewRow[]);
+
+      // Step 9.5: verified work history is public (RLS) — capability, shown so an experienced
+      // provider isn't indistinguishable from a novice. It never feeds the rating.
+      const { data: expData } = await supabase
+        .from('provider_experience')
+        .select('id, employer_name, role, from_date, to_date, source, verified')
+        .eq('provider_id', params.id)
+        .eq('verified', true)
+        .order('from_date', { ascending: false });
+      if (!mounted) return;
+      setExperience((expData ?? []) as VerifiedExperience[]);
       setLoading(false);
     })();
     return () => { mounted = false; };
@@ -255,11 +284,18 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                     </div>
                     <p className="text-[#FF9933] font-semibold mb-2">{provider.service_categories?.name ?? 'Service'}</p>
                     <div className="flex items-center gap-3 flex-wrap">
-                      <div className="flex items-center gap-1.5">
-                        <StarRating rating={provider.rating} size="sm" />
-                        <span className="font-bold text-white">{Number(provider.rating).toFixed(1)}</span>
-                        <span className="text-gray-500 text-sm">({provider.total_reviews} reviews)</span>
-                      </div>
+                      {/* Unrated ≠ zero-rated: a brand-new provider shows "New", not 0.0 stars. */}
+                      {provider.total_reviews > 0 ? (
+                        <div className="flex items-center gap-1.5">
+                          <StarRating rating={provider.rating} size="sm" />
+                          <span className="font-bold text-white">{Number(provider.rating).toFixed(1)}</span>
+                          <span className="text-gray-500 text-sm">({provider.total_reviews} reviews)</span>
+                        </div>
+                      ) : (
+                        <span className="text-sm font-semibold text-[#5da9ff] bg-[#054187]/20 border border-[#054187]/40 rounded-full px-3 py-0.5">
+                          New on Seva
+                        </span>
+                      )}
                       {/* Trust score = the Step-7 engine's number, separate from the star average. */}
                       {Number(provider.reputation_score) > 0 && (
                         <span
@@ -300,7 +336,9 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                   <p className="text-xs text-gray-400 mt-0.5">Jobs Done</p>
                 </div>
                 <div className="bg-[#1e1e1e] rounded-xl p-4 text-center">
-                  <p className="text-xl font-black text-[#FF9933]">{Number(provider.rating).toFixed(1)}</p>
+                  <p className="text-xl font-black text-[#FF9933]">
+                    {provider.total_reviews > 0 ? Number(provider.rating).toFixed(1) : '—'}
+                  </p>
                   <p className="text-xs text-gray-400 mt-0.5">Avg Rating</p>
                 </div>
                 <div className="bg-[#1e1e1e] rounded-xl p-4 text-center">
@@ -350,6 +388,33 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
 
               {/* Bio */}
               {provider.bio && <p className="text-gray-300 text-sm leading-relaxed">{provider.bio}</p>}
+
+              {/* Verified work history — so an experienced provider doesn't look like a novice */}
+              {experience.length > 0 && (
+                <div className="mt-5 pt-5 border-t border-[#222]">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Briefcase className="w-4 h-4 text-[#138808]" />
+                    <span className="text-sm font-semibold text-[#138808]">
+                      {totalVerifiedYears(experience)} yrs verified experience
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {experience.map((e) => (
+                      <p key={e.id} className="text-xs text-gray-400">
+                        <span className="text-gray-200">{e.employer_name}</span>
+                        {e.role ? ` · ${e.role}` : ''}
+                        <span className="text-gray-500">
+                          {' · '}{e.from_date ? new Date(e.from_date).getFullYear() : '—'}
+                          –{e.to_date ? new Date(e.to_date).getFullYear() : 'present'}
+                        </span>
+                      </p>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-600 mt-2">
+                    Verified work history. Ratings on Seva come only from jobs completed here.
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Reviews */}

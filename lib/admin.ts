@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import {
   supabase, type DisputeReason, type DisputeOutcome, type KycStatus, type ServiceProvider,
+  type DocumentStatus, type ProviderExperience,
 } from '@/lib/supabase';
 
 // Redirects non-admins away. Returns 'ok' only for a confirmed admin; render nothing (or a
@@ -75,23 +76,36 @@ export async function fetchDisputeContacts(
 export type ProviderApplicationRow = {
   id: string;
   user_id: string;
+  category_id: string | null;
   business_name: string | null;
   city: string | null;
   state: string | null;
   status: ServiceProvider['status'];
   kyc_status: KycStatus;
   hourly_rate: number;
+  trust_tier: number;
   applied_at: string | null;
   reviewed_at: string | null;
-  document_count: number;
+  // Step 9.5: completeness against what this provider's CATEGORY requires
+  documents_required: number;
+  documents_verified: number;
   service_categories: { name: string } | null;
 };
 
+// One row of the admin checklist: what the category asks for, plus whatever was supplied.
 export type ProviderApplicationDocument = {
-  path: string;
+  doc_code: string;
   label: string;
-  name: string | null;
-  mime: string | null;
+  description: string | null;
+  capture_method: string;
+  carries_expiry: boolean;
+  requirement: 'required' | 'badge';
+  note: string | null;
+  document_id: string | null;
+  verification_status: DocumentStatus | null;
+  verified_source: string | null;
+  reference_number: string | null;
+  expires_at: string | null;
   url: string | null;   // short-lived signed URL, minted server-side
 };
 
@@ -106,6 +120,8 @@ export type ProviderApplicationDetail = {
     created_at: string;
   };
   documents: ProviderApplicationDocument[];
+  experience: ProviderExperience[];
+  blocking: string[];   // required documents not yet verified — approval is refused while non-empty
   owner: {
     name: string | null;
     phone: string | null;
@@ -133,6 +149,35 @@ export function fetchProviderApplication(id: string) {
   return adminGet<ProviderApplicationDetail>(
     `/api/admin/provider-applications?id=${encodeURIComponent(id)}`,
   );
+}
+
+// Step 9.5: mark an individual document verified (with an expiry where it carries one) or
+// rejected. Approval of the APPLICATION is refused by the DB until every required document here
+// is verified — so this is the real gate, not the Approve button.
+export async function reviewProviderDocument(
+  documentId: string,
+  status: 'verified' | 'rejected',
+  expiresAt?: string | null,
+  note?: string,
+): Promise<{ ok: true } | { error: string }> {
+  const { error } = await supabase.rpc('review_provider_document', {
+    p_document_id: documentId,
+    p_status: status,
+    p_expires_at: expiresAt || null,
+    p_note: note?.trim() || null,
+  });
+  if (error) return { error: error.message };
+  return { ok: true };
+}
+
+// Confirm a provider's claimed work history. CAPABILITY only — it never moves their score.
+export async function verifyProviderExperience(
+  id: string,
+  source: 'epfo' | 'employer_ref' | 'rpl' = 'employer_ref',
+): Promise<{ ok: true } | { error: string }> {
+  const { error } = await supabase.rpc('verify_provider_experience', { p_id: id, p_source: source });
+  if (error) return { error: error.message };
+  return { ok: true };
 }
 
 // Approve → approved + verified + notified + bookable. Reject → reason recorded + notified, and

@@ -111,6 +111,39 @@ const rowOf = async (id) => (await service.from('service_providers')
   .select('id, user_id, status, is_verified, kyc_status, kyc_documents, rejection_reason, applied_at, reviewed_by, reviewed_at, rating, business_name')
   .eq('id', id).maybeSingle()).data;
 
+/* Step 9.5 made approval conditional on every document the CATEGORY requires being VERIFIED.
+   This script is about the Step-9 gate (born pending, admin-only review, not bookable until
+   approved), so it stages the paperwork rather than testing it — verify-step9-5.mjs owns that.
+   Records anything missing and has the admin verify it, skipping what's already verified. */
+async function satisfyRequiredDocuments() {
+  const { data: sp } = await service.from('service_providers')
+    .select('category_id').eq('id', providerId).maybeSingle();
+  const { data: reqs } = await service.from('category_kyc_requirements')
+    .select('doc_code').eq('category_id', sp.category_id).eq('requirement', 'required');
+  const { data: have } = await service.from('provider_documents')
+    .select('doc_code, verification_status').eq('provider_id', providerId);
+  const verified = new Set((have ?? []).filter((d) => d.verification_status === 'verified').map((d) => d.doc_code));
+
+  for (const r of reqs ?? []) {
+    if (verified.has(r.doc_code)) continue;
+    const rec = await applicant.rpc('record_provider_document', {
+      p_doc_code: r.doc_code, p_file_path: `${applicantId}/${r.doc_code}.png`,
+      p_reference_number: null, p_issued_at: null, p_expires_at: null, p_meta: {},
+    });
+    if (rec.error) no(`stage ${r.doc_code}: ` + errMsg(rec.error));
+  }
+  const future = new Date(Date.now() + 365 * 864e5).toISOString().slice(0, 10);
+  const { data: docs } = await service.from('provider_documents')
+    .select('id, verification_status').eq('provider_id', providerId);
+  for (const d of docs ?? []) {
+    if (d.verification_status === 'verified') continue;
+    const res = await adminClient.rpc('review_provider_document', {
+      p_document_id: d.id, p_status: 'verified', p_expires_at: future, p_note: null,
+    });
+    if (res.error) no('stage verify: ' + errMsg(res.error));
+  }
+}
+
 const mkBooking = (client, customerId, provId) => client.from('bookings').insert({
   customer_id: customerId, provider_id: provId, category_id: categoryId, service_type: 'one-time',
   scheduled_date: '2026-09-20', scheduled_time: '11:00', duration_hours: 2, hourly_rate: 300,
@@ -339,7 +372,8 @@ try {
       else no('resubmit made the provider live: ' + r.status);
     }
 
-    // --- approve
+    // --- approve (Step 9.5: the paperwork must be verified first)
+    await satisfyRequiredDocuments();
     const app = await adminClient.rpc('review_provider_application', { p_provider_id: providerId, p_decision: 'approve' });
     if (app.error) no('admin approve failed: ' + errMsg(app.error));
     else {
@@ -422,6 +456,8 @@ try {
       else no('provider not notified they went offline: ' + JSON.stringify(notes));
 
       // the badge must survive ordinary edits, or providers get knocked offline for a typo fix
+      // (the new category may require different documents — stage them first)
+      await satisfyRequiredDocuments();
       await adminClient.rpc('review_provider_application', { p_provider_id: providerId, p_decision: 'approve' });
       // note the SWAPPED document: an approved provider must not be able to substitute the
       // evidence an admin actually looked at.

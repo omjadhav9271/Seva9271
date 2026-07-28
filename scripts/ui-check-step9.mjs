@@ -137,7 +137,8 @@ async function signInAs(email, password, label) {
 }
 
 // ---------------------------------------------------------------- run
-let chrome = null, providerId = null, docPath = null;
+let chrome = null, providerId = null;
+let docPaths = [];
 try {
   if (!CHROME) { console.log('Cannot run: Chrome not found.'); process.exit(0); }
   try {
@@ -198,7 +199,9 @@ try {
   await waitFor("document.body.innerText.includes('What do you do?')", { label: 'the application form', timeout: 25000 });
   await sleep(2500); // hydration + the categories fetch
   const body = await text();
-  for (const marker of ['Work for yourself', 'What do you do?', 'Name customers will see', 'Proof of identity', 'Photo ID']) {
+  // Step 9.5: the document slots are category-driven, so they only appear after a category is
+  // chosen — asserted below, once one is picked.
+  for (const marker of ['Work for yourself', 'What do you do?', 'Name customers will see']) {
     if (body.includes(marker)) ok(`form renders: “${marker}”`);
     else no(`form is MISSING: “${marker}”`);
   }
@@ -215,6 +218,19 @@ try {
   if (picked) ok(`picked a category chip (${picked})`);
   else no('could not pick a category chip');
 
+  // The requirements are fetched after the chip is clicked, so wait for an actual SLOT — the
+  // "Proof of identity" heading renders instantly and would let us read an empty section.
+  await waitFor("document.querySelectorAll('input[type=file]').length > 0",
+    { label: 'the category\'s document slots', timeout: 20000 });
+  await sleep(500);
+  const slots = await text();
+  for (const marker of ['Proof of identity', 'Government photo ID', 'Selfie']) {
+    if (slots.includes(marker)) ok(`category-driven slot appears: “${marker}”`);
+    else no(`slot MISSING for this category: “${marker}”`);
+  }
+  if (!/Driving licence|Vehicle RC/.test(slots)) ok('...and an electrician is NOT asked for a driving licence');
+  else no('electrician was asked for driving documents');
+
   await fillByLabel('Name customers will see', 'CDP Smoke Electricals');
   await fillByLabel('City', 'Mumbai');
   await fillByLabel('Area you cover', 'Andheri');
@@ -223,13 +239,20 @@ try {
   await fillByLabel('A line about your work', 'Wiring, repairs and installations across the western suburbs.');
   ok('filled every field on the form');
 
-  // real file upload into the hidden input
+  // Step 9.5: the slots are driven by the CATEGORY, so there is one file input per required
+  // document (an electrician needs a photo ID and a selfie). Fill every one of them.
   const doc = await send('DOM.getDocument');
-  const node = await send('DOM.querySelector', { nodeId: doc.root.nodeId, selector: 'input[type=file]' });
-  if (!node.nodeId) throw new Error('no file input on the page');
-  await send('DOM.setFileInputFiles', { nodeId: node.nodeId, files: [pngPath] });
-  await waitFor("document.body.innerText.includes('uploaded')", { label: 'the upload to complete', timeout: 30000 });
-  ok('uploaded an ID document to the private bucket from the browser');
+  const nodes = await send('DOM.querySelectorAll', { nodeId: doc.root.nodeId, selector: 'input[type=file]' });
+  const inputs = nodes.nodeIds ?? [];
+  if (inputs.length === 0) throw new Error('no file inputs on the page');
+  for (const nodeId of inputs) {
+    await send('DOM.setFileInputFiles', { nodeId, files: [pngPath] });
+    await sleep(1500); // each upload hits storage
+  }
+  await waitFor(
+    `(document.body.innerText.match(/ready to submit/g) || []).length >= ${inputs.length}`,
+    { label: `all ${inputs.length} documents to upload`, timeout: 45000 });
+  ok(`uploaded ${inputs.length} required document(s) to the private bucket from the browser`);
 
   const submitted = await clickText('Submit application');
   if (!submitted) throw new Error('no "Submit application" button');
@@ -246,7 +269,9 @@ try {
   else no('pending screen copy not found. Body was:\n' + after.slice(0, 400));
   if (after.includes('CDP Smoke Electricals')) ok('the status screen reflects what was submitted');
   else no('submitted details missing from the status screen');
-  if (/1 uploaded|documents/i.test(after)) ok('it reports the uploaded document');
+  if (/Your documents/i.test(after)) ok('the status screen lists the documents this category needs');
+  else no('document checklist missing from the status screen');
+  if (/Your work history/i.test(after)) ok('...and offers to add verifiable work history');
 
   // ---- and the row the UI created is born pending ----
   console.log('\n[what the UI actually wrote]');
@@ -256,15 +281,24 @@ try {
   if (!row) { no('the UI did not create a provider row'); }
   else {
     providerId = row.id;
-    docPath = (row.kyc_documents ?? [])[0]?.path ?? null;
+    // every uploaded file, so cleanup removes them all (the form uploads one per required doc)
+    docPaths = (row.kyc_documents ?? []).map((d) => d?.path).filter(Boolean);
     if (row.status === 'pending' && row.is_verified === false && row.kyc_status === 'submitted')
       ok('the row is born pending + unverified + kyc submitted — through the real UI');
     else no('row state wrong: ' + JSON.stringify(row));
     if (row.business_name === 'CDP Smoke Electricals' && Number(row.hourly_rate) === 450 && Number(row.experience_years) === 7 && row.city === 'Mumbai')
       ok('every typed field persisted correctly (name, rate, experience, city)');
     else no('fields did not persist: ' + JSON.stringify(row));
-    if ((row.kyc_documents ?? []).length === 1) ok('the uploaded document is recorded on the row');
-    else no('document not recorded: ' + JSON.stringify(row.kyc_documents));
+    // Step 9.5: documents are typed rows now, one per required doc_code — born unverified.
+    const { data: pdocs } = await service.from('provider_documents')
+      .select('doc_code, verification_status, file_path').eq('provider_id', providerId);
+    const codes = (pdocs ?? []).map((d) => d.doc_code).sort();
+    if (codes.join(',') === 'photo_id,selfie')
+      ok('both uploads were recorded as TYPED documents (photo_id, selfie)');
+    else no('documents not recorded as typed rows: ' + JSON.stringify(codes));
+    if ((pdocs ?? []).every((d) => d.verification_status === 'pending'))
+      ok('...and each is born pending — the browser cannot self-verify a document');
+    else no('a document was not born pending: ' + JSON.stringify(pdocs));
   }
 
   // ---- reload: the status must survive, driven by the row ----
@@ -292,10 +326,10 @@ try {
     if (!link) return false; link.click(); return true;
   })()`);
   if (!opened) throw new Error('could not open the application from the queue');
-  await waitFor("document.body.innerText.includes('Identity documents')", { label: 'the application detail page', timeout: 25000 });
+  await waitFor("document.body.innerText.includes('Documents for')", { label: 'the application detail page', timeout: 25000 });
   await sleep(1500);
   const detail = await text();
-  for (const marker of ['CDP Smoke Electricals', 'Identity documents', 'Decision']) {
+  for (const marker of ['CDP Smoke Electricals', 'Documents for', 'Decision']) {
     if (detail.includes(marker)) ok(`detail page shows “${marker}”`);
     else no(`detail page missing “${marker}”`);
   }
@@ -303,6 +337,32 @@ try {
   const docLink = await evaluate(`[...document.querySelectorAll('a')].filter(a => /kyc-docs|supabase/.test(a.href)).length`);
   if (docLink > 0) ok('the KYC document is linked via a signed URL');
   else no('no signed document link on the detail page');
+
+  // Step 9.5: Approve is disabled until every required document is verified.
+  const blockedBefore = await evaluate(`(() => {
+    const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim() === 'Approve');
+    return b ? b.disabled : null;
+  })()`);
+  if (blockedBefore === true) ok('Approve is DISABLED while required documents are unverified');
+  else no('Approve was not gated on the documents (disabled=' + blockedBefore + ')');
+
+  // verify each document the way an admin would
+  let verifyClicks = 0;
+  for (let i = 0; i < 6; i++) {
+    const clicked = await evaluate(`(() => {
+      const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim() === 'Verify');
+      if (!b) return false; b.click(); return true;
+    })()`);
+    if (!clicked) break;
+    verifyClicks++;
+    await sleep(2500); // the page reloads its detail after each decision
+  }
+  if (verifyClicks > 0) ok(`admin verified ${verifyClicks} document(s) from the console`);
+  else no('no Verify buttons found on the detail page');
+
+  await waitFor(`(() => { const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim() === 'Approve'); return b && !b.disabled; })()`,
+    { label: 'Approve to become enabled', timeout: 20000 });
+  ok('...and Approve unlocks once they are all verified');
 
   const approved = await clickText('Approve');
   if (!approved) throw new Error('no Approve button');
@@ -332,7 +392,7 @@ try {
   no('unexpected error: ' + (e?.message ?? e));
 } finally {
   console.log('\n[cleanup]');
-  if (docPath) await service.storage.from('kyc-docs').remove([docPath]);
+  if (docPaths.length) await service.storage.from('kyc-docs').remove(docPaths);
   if (providerId) {
     await service.from('service_providers').delete().eq('id', providerId);
     // approving/rejecting notifies the provider — drop what this run generated
