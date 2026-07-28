@@ -35,18 +35,20 @@ const topProviders = [
   { name: 'Ravi Kumar', category: 'Plumber', rating: 4.9, reviews: 89, available: true, avatar: 'RK', color: 'from-blue-500 to-cyan-600' },
 ];
 
+// Claims here must be literally true — a number we can't evidence is an unfair trade practice
+// under the Consumer Protection Act, and a safety claim we don't perform is far worse.
 const stats = [
-  { icon: Users, value: '10,000+', label: 'Verified Providers', color: '#FF9933', bg: 'rgba(255,153,51,0.25)' },
-  { icon: Award, value: '1M+', label: 'Services Completed', color: '#FF9933', bg: 'rgba(255,153,51,0.25)' },
-  { icon: MapPin, value: '50+', label: 'Cities Covered', color: '#138808', bg: 'rgba(19,136,8,0.3)' },
-  { icon: Star, value: '4.8/5', label: 'Average Rating', color: '#138808', bg: 'rgba(19,136,8,0.3)' },
+  { icon: Users, value: '25', label: 'Service Categories', color: '#FF9933', bg: 'rgba(255,153,51,0.25)' },
+  { icon: Shield, value: 'ID', label: 'Verified Providers', color: '#FF9933', bg: 'rgba(255,153,51,0.25)' },
+  { icon: MapPin, value: 'Mumbai', label: 'Live Now', color: '#138808', bg: 'rgba(19,136,8,0.3)' },
+  { icon: Award, value: 'Escrow', label: 'Payment Protection', color: '#138808', bg: 'rgba(19,136,8,0.3)' },
 ];
 
 const features = [
-  { icon: Shield, title: 'Verified Professionals', desc: 'All service providers undergo thorough background checks and KYC verification for your safety.', bg: '#22c55e' },
+  { icon: Shield, title: 'ID-Verified Providers', desc: 'Every provider submits a government photo ID that our team checks before they can take a booking.', bg: '#22c55e' },
   { icon: Clock, title: 'Quick Booking', desc: 'Book services instantly or schedule for later. Get confirmed appointments within minutes.', bg: '#3b82f6' },
-  { icon: CreditCard, title: 'Secure Payments', desc: 'Pay safely through our wallet system with 8% APR rewards. Multiple payment options available.', bg: '#a855f7' },
-  { icon: Star, title: 'Quality Guaranteed', desc: 'Read real reviews from verified customers. Money-back guarantee on unsatisfactory services.', bg: '#f59e0b' },
+  { icon: CreditCard, title: 'Secure Payments', desc: 'Pay by UPI or Seva Wallet. Your money is held in escrow, not passed on until you confirm the work.', bg: '#a855f7' },
+  { icon: Star, title: 'Reviews You Can Trust', desc: 'Only customers who actually paid for a booking can leave a review. Every booking can be disputed.', bg: '#f59e0b' },
   { icon: MapPin, title: 'Location-Based', desc: 'Find service providers in your exact area. Filter by distance and availability.', bg: '#ef4444' },
   { icon: MessageCircle, title: 'Real-Time Chat', desc: 'Communicate directly with service providers through our in-app messaging system.', bg: '#14b8a6' },
   { icon: Award, title: 'Tier Benefits', desc: 'Unlock exclusive benefits with Silver, Gold, and Platinum wallet tiers.', bg: '#f97316' },
@@ -101,7 +103,7 @@ export default function Home() {
               </h2>
 
               <p className="text-lg text-gray-400 leading-relaxed mb-10 max-w-lg">
-                From electricians to home cooks, find verified professionals for all your needs. Safe, reliable, and highly rated services.
+                From electricians to home cooks, book independent professionals whose ID we've verified — with your payment held safely until the job is done.
               </p>
 
               {/* Search Bar */}

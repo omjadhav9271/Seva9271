@@ -84,7 +84,7 @@ export default function ProvidersPage() {
             <Users className="w-8 h-8 text-[#FF9933]" />
             <h1 className="text-3xl font-black text-white">All Providers</h1>
           </div>
-          <p className="text-gray-400 mb-6">Browse all verified service professionals on Seva</p>
+          <p className="text-gray-400 mb-6">Browse independent professionals on Seva — every one ID-verified before approval</p>
 
           <div className="flex flex-col sm:flex-row gap-3 max-w-2xl">
             <div className="flex-1 flex items-center gap-3 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3">

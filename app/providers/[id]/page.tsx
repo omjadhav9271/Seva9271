@@ -334,7 +334,7 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
               <div className="flex items-center gap-2 mb-4 flex-wrap">
                 {provider.is_verified && (
                   <span className="flex items-center gap-1.5 bg-[#138808]/10 border border-[#138808]/20 rounded-full px-3 py-1 text-sm font-medium text-[#138808]">
-                    <Shield className="w-4 h-4" />Verified
+                    <Shield className="w-4 h-4" />ID Verified
                   </span>
                 )}
                 {provider.total_bookings > 500 && (
@@ -516,7 +516,7 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
 
                   <div className="flex items-center gap-2 mt-4 justify-center">
                     <Shield className="w-4 h-4 text-[#138808]" />
-                    <p className="text-xs text-gray-500">Secure booking · Money-back guarantee</p>
+                    <p className="text-xs text-gray-500">Payment held in escrow until you confirm the work</p>
                   </div>
                 </>
               ) : (

@@ -5,24 +5,25 @@ import {
 } from 'lucide-react';
 
 const customerSteps = [
-  { icon: Search, title: 'Search Your Service', desc: 'Browse 14+ service categories or use smart search to find exactly what you need in your city.', color: '#FF9933' },
-  { icon: Star, title: 'Choose a Provider', desc: 'Compare ratings, reviews, experience, and pricing. Read genuine reviews from verified customers.', color: '#138808' },
+  { icon: Search, title: 'Search Your Service', desc: 'Browse 25 service categories or use smart search to find exactly what you need in your city.', color: '#FF9933' },
+  { icon: Star, title: 'Choose a Provider', desc: 'Compare ratings, reviews, experience, and pricing. Reviews come only from customers who paid for a booking.', color: '#138808' },
   { icon: CheckCircle, title: 'Book & Confirm', desc: 'Select your preferred date, time, and service duration. Choose one-time, weekly, or monthly plans.', color: '#054187' },
-  { icon: Wallet, title: 'Secure Payment', desc: 'Pay via UPI (GPay, PhonePe), Seva Wallet, or Cash on Delivery. Money-back guarantee.', color: '#FF9933' },
+  { icon: Wallet, title: 'Secure Payment', desc: 'Pay via UPI (GPay, PhonePe) or Seva Wallet. Your money is held in escrow until you confirm the work.', color: '#FF9933' },
 ];
 
 const providerSteps = [
-  { icon: Award, title: 'Apply & Verify', desc: 'Submit your application with documents. Background verification completed within 24 hours.', color: '#FF9933' },
+  { icon: Award, title: 'Apply & Verify', desc: 'Submit a short application with a photo ID. Our team reviews it, usually within 24–48 hours.', color: '#FF9933' },
   { icon: Bell, title: 'Receive Bookings', desc: 'Get instant notifications when customers book your service. Accept or decline as per availability.', color: '#138808' },
   { icon: Clock, title: 'Deliver Service', desc: 'Arrive on time, deliver quality service, and mark the job as complete through the app.', color: '#054187' },
   { icon: TrendingUp, title: 'Earn & Grow', desc: 'Get paid instantly after service completion. Build reviews and earn more over time.', color: '#FF9933' },
 ];
 
 const faqs = [
-  { q: 'How are providers verified?', a: 'Every provider undergoes identity verification (Aadhaar check), background screening, and skill assessment before being approved on the platform.' },
-  { q: 'What payment methods are accepted?', a: 'We accept UPI (GPay, PhonePe, Paytm), Debit/Credit Cards, Seva Wallet, and Cash on Delivery for eligible services.' },
-  { q: 'What is the Seva Wallet?', a: 'Seva Wallet is a digital wallet that earns 8% APR rewards on your balance. Upgrade to Gold or Platinum tier for exclusive benefits like priority booking and cashback.' },
-  { q: 'Is there a money-back guarantee?', a: 'Yes! If you are unsatisfied with the service, contact support within 24 hours and we will arrange a refund or re-service at no extra cost.' },
+  { q: 'How are providers verified?', a: 'Every provider submits a government photo ID, which our team checks before approving them — so the person on the profile is who they say they are. We do not currently run police background checks, and we never claim a provider has one unless they do.' },
+  { q: 'Are providers employed by Seva?', a: 'No. Providers on Seva are independent professionals. They set their own prices and choose which bookings to accept. Seva verifies their identity, holds your payment in escrow, and resolves disputes — but does not employ or supervise them.' },
+  { q: 'What payment methods are accepted?', a: 'UPI (GPay, PhonePe, Paytm), debit/credit cards, and the Seva Wallet. Cash payments are not currently supported, so that every booking stays protected by escrow.' },
+  { q: 'What is the Seva Wallet?', a: 'Seva Wallet holds your balance for faster checkout and receives any refunds from a resolved dispute. It is not a savings or investment product and does not pay interest.' },
+  { q: 'What if I am unhappy with the service?', a: 'Your payment stays in escrow until you confirm the work is done. If something goes wrong, raise a dispute on the booking — our team reviews the full history (chat, timings, photos, payments) and decides the outcome, which can include a full or partial refund.' },
   { q: 'Can I book recurring services?', a: 'Absolutely! Choose from one-time, weekly, monthly, or yearly plans. Great for tiffin service, house cleaning, or caretaker needs.' },
   { q: 'How do delivery gigs work?', a: 'Service providers who need delivery support can post gig listings. Delivery partners nearby can accept and earn by completing the delivery.' },
 ];
@@ -107,7 +108,7 @@ export default function HowItWorksPage() {
         <h2 className="text-3xl font-black text-white text-center mb-12">Platform Features</h2>
         <div className="grid md:grid-cols-3 gap-6">
           {[
-            { icon: Shield, title: 'Background Verified', desc: 'Every provider is ID-verified and background checked before approval.', color: '#FF9933' },
+            { icon: Shield, title: 'ID Verified', desc: 'Every provider\'s government photo ID is checked by our team before approval.', color: '#FF9933' },
             { icon: Star, title: 'Genuine Reviews', desc: 'Only customers who actually booked can leave reviews. No fake ratings.', color: '#138808' },
             { icon: MapPin, title: 'Location Matching', desc: 'See providers near you first, sorted by distance and availability.', color: '#054187' },
             { icon: Wallet, title: 'Secure Payments', desc: 'Pay via UPI, wallet, or cash. Your money is protected until service is delivered.', color: '#FF9933' },
@@ -153,7 +154,7 @@ export default function HowItWorksPage() {
       {/* CTA */}
       <section className="py-20 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
         <h2 className="text-3xl font-black text-white mb-4">Ready to Get Started?</h2>
-        <p className="text-gray-400 mb-8">Join millions of Indians using Seva for trusted home services.</p>
+        <p className="text-gray-400 mb-8">Book independent, ID-verified professionals in Mumbai — with your payment protected until the job is done.</p>
         <div className="flex flex-wrap gap-4 justify-center">
           <Link href="/auth/signup" className="saffron-btn rounded-xl px-8 py-4 font-semibold">
             Create Free Account

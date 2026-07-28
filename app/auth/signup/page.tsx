@@ -43,10 +43,10 @@ export default function SignUpPage() {
   };
 
   const benefits = [
-    'Book verified service providers',
-    'Earn 8% APR on wallet balance',
+    'Book ID-verified independent professionals',
+    'Payment held in escrow until you confirm',
     'Real-time tracking & updates',
-    'Money-back guarantee',
+    'Raise a dispute on any booking',
   ];
 
   return (

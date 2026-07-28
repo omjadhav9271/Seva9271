@@ -79,7 +79,10 @@ export default function WalletPage() {
   const balance = profile?.wallet_balance ?? 0;
   const tier = profile?.wallet_tier ?? 'silver';
   const tierData = tierInfo[tier];
-  const monthlyReward = ((balance * 0.08) / 12).toFixed(0);
+  // NOTE: the "8% APR" reward projection that used to live here has been removed. Paying a return
+  // on a stored balance is deposit-taking (RBI/BUDS Act), and prepaid balances may not earn
+  // interest — and nothing in the codebase ever credited it, so it was also simply untrue.
+  // A rewards programme, if wanted, must be CASHBACK ON SPEND, not interest on balance.
   const progress = tier === 'platinum' ? 100 : tier === 'gold'
     ? ((balance - 10000) / (50000 - 10000)) * 100
     : (balance / 10000) * 100;
@@ -143,7 +146,7 @@ export default function WalletPage() {
                 </div>
 
                 <div className="flex items-center gap-4 text-sm opacity-80">
-                  <span className="flex items-center gap-1"><TrendingUp className="w-3.5 h-3.5" />8% APR rewards</span>
+                  <span className="flex items-center gap-1"><Shield className="w-3.5 h-3.5" />Refunds land here</span>
                   <span className="flex items-center gap-1"><Award className="w-3.5 h-3.5" />{tierData.label} member</span>
                 </div>
               </div>
@@ -171,10 +174,10 @@ export default function WalletPage() {
               </button>
               <div className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-4 text-center">
                 <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center mx-auto mb-2">
-                  <TrendingUp className="w-5 h-5 text-blue-400" />
+                  <Shield className="w-5 h-5 text-blue-400" />
                 </div>
-                <p className="text-xs text-gray-400">Monthly Reward</p>
-                <p className="text-sm font-bold text-blue-400">+₹{monthlyReward}</p>
+                <p className="text-xs text-gray-400">In escrow</p>
+                <p className="text-sm font-bold text-blue-400">Protected</p>
               </div>
             </div>
 
@@ -321,17 +324,24 @@ export default function WalletPage() {
               </div>
             </div>
 
-            {/* Reward Calculator */}
+            {/* How the wallet works — replaces the old "8% APR" projection (see the note at the
+                top of this file). Describes what the wallet actually does. */}
             <div className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-5">
               <h3 className="font-bold text-white mb-3 flex items-center gap-2">
-                <TrendingUp className="w-4 h-4 text-[#FF9933]" />Monthly Rewards
+                <Shield className="w-4 h-4 text-[#FF9933]" />How your money is held
               </h3>
-              <p className="text-3xl font-black text-[#FF9933]">+₹{monthlyReward}</p>
-              <p className="text-xs text-gray-400 mt-1">At 8% APR on ₹{balance.toLocaleString('en-IN')} balance</p>
+              <p className="text-sm text-gray-300 leading-relaxed">
+                When you book, your payment is held in escrow — the provider is not paid until you
+                confirm the work is done.
+              </p>
               <div className="mt-3 p-3 bg-[#1e1e1e] rounded-xl">
-                <p className="text-xs text-gray-500">Annual projection</p>
-                <p className="text-sm font-bold text-white">+₹{(balance * 0.08).toFixed(0)}</p>
+                <p className="text-xs text-gray-500">If a dispute is resolved in your favour</p>
+                <p className="text-sm font-bold text-white">Your refund arrives in this wallet</p>
               </div>
+              <p className="text-xs text-gray-600 mt-3">
+                The Seva Wallet is for payments and refunds. It is not a savings product and does
+                not earn interest.
+              </p>
             </div>
           </div>
         </div>
