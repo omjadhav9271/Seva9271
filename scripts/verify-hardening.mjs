@@ -150,6 +150,38 @@ if (!authed) {
         else no('review insert SUCCEEDED without a completed booking');
         await userClient.from('bookings').delete().eq('id', bk.id);
       }
+
+      // 7) a booking cannot be BORN in a forged state (migration 20260803120000).
+      //    Step 2 revoked UPDATE on bookings but never INSERT, so a customer could create a row
+      //    already 'held' — passing the escrow gate with no payment, and having the platform fund
+      //    the provider's payout on confirm. Invariants #4 and #5.
+      {
+        const forge = async (label, extra) => {
+          const { data, error } = await userClient.from('bookings').insert({
+            customer_id: userId, provider_id: providerId, service_type: 'one-time',
+            hourly_rate: 100, total_amount: 200, payment_method: 'upi', ...extra,
+          }).select('id').maybeSingle();
+          if (error) ok(`booking cannot be born with ${label}: ` + error.message);
+          else {
+            no(`booking WAS born with ${label} — escrow/state can be forged at insert`);
+            if (data?.id) await service?.from('bookings').delete().eq('id', data.id);
+          }
+        };
+        await forge("payment_status='held' (unpaid work)", { payment_status: 'held' });
+        await forge("status='paid'", { status: 'paid' });
+        await forge('a client-set price_charged', { price_charged: 1 });
+
+        // …while an ordinary booking still works and starts clean
+        const { data: okBk } = await userClient.from('bookings').insert({
+          customer_id: userId, provider_id: providerId, service_type: 'one-time',
+          hourly_rate: 100, total_amount: 200, payment_method: 'upi',
+        }).select('id, status, payment_status').maybeSingle();
+        if (okBk?.status === 'requested' && okBk?.payment_status === 'pending')
+          ok('a legitimate booking is still created, and starts requested/pending');
+        else no('legitimate booking blocked or born wrong: ' + JSON.stringify(okBk));
+        if (okBk?.id) await userClient.from('bookings').delete().eq('id', okBk.id);
+      }
+
       await userClient.from('service_providers').delete().eq('id', providerId);
     }
   }
