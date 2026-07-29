@@ -1,13 +1,13 @@
 /*
   Runs the whole Seva verification suite in one command and prints a single summary.
 
-  Why: the suite is 11 DB scripts + a browser check, each wanting the same six env vars, and
+  Why: the suite is 13 DB scripts + 2 browser checks, each wanting the same six env vars, and
   three of them quietly degrade when the dev server is down (verify-step5 bails outright, the
   admin contact-route and realtime checks skip). Run piecemeal it is easy to read a green-looking
   run that silently verified less than you think. This checks the preconditions first and says so.
 
   Usage (from the repo root):
-    node scripts/verify-all.mjs            # everything, including the browser check
+    node scripts/verify-all.mjs            # everything, including the browser checks
     node scripts/verify-all.mjs --no-ui    # DB suite only (no Chrome needed)
 
   Credentials default to the three live test accounts and can be overridden with the usual
@@ -19,9 +19,9 @@ import { readFileSync } from 'node:fs';
 const DB_SCRIPTS = [
   'verify-hardening', 'verify-provider-pii', 'verify-step2', 'verify-step3', 'verify-step4',
   'verify-step5', 'verify-step6', 'verify-step7', 'verify-step8', 'verify-step8-evidence',
-  'verify-step9', 'verify-step9-5',
+  'verify-step9', 'verify-step9-5', 'verify-step10',
 ];
-const UI_SCRIPT = 'ui-check-step9';
+const UI_SCRIPTS = ['ui-check-step9', 'ui-check-step10'];
 const withUi = !process.argv.includes('--no-ui');
 
 const creds = {
@@ -56,7 +56,7 @@ if (!serverUp) {
   console.log('  ⚠ verify-step5 will not run at all, and the admin contact-route + realtime');
   console.log('    checks will skip. Start `npm run dev` for full coverage.');
 }
-console.log('browser check:', withUi ? (serverUp ? 'yes' : 'skipped (needs the dev server)') : 'off (--no-ui)');
+console.log('browser checks:', withUi ? (serverUp ? 'yes' : 'skipped (needs the dev server)') : 'off (--no-ui)');
 console.log('');
 
 // ---- run ----
@@ -71,7 +71,7 @@ const run = (script) => new Promise((resolve) => {
 const rows = [];
 let totalPass = 0, totalFail = 0, totalSkip = 0, missing = 0;
 
-const scripts = [...DB_SCRIPTS, ...(withUi && serverUp ? [UI_SCRIPT] : [])];
+const scripts = [...DB_SCRIPTS, ...(withUi && serverUp ? UI_SCRIPTS : [])];
 for (const script of scripts) {
   process.stdout.write(script.padEnd(24) + ' … ');
   const { out, code } = await run(script);

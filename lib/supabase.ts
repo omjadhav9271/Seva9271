@@ -75,6 +75,12 @@ export type ServiceProvider = {
   // Step 9.5: 1 identity-verified · 2 credential/experience-verified · 3 background-verified.
   // Server-computed from verified documents — never client-writable.
   trust_tier: number;
+  // Step 10: public pricing. NOTE floor_price is deliberately NOT here — it has no select grant
+  // and must never reach a client. The owner reads it via ProviderPricing / my_provider_profile.
+  pricing_mode: PricingMode;
+  list_price: number | null;
+  auto_accept_threshold: number | null;
+  max_counter_rounds: number;
   // Joined fields
   profiles?: Profile;
   service_categories?: ServiceCategory;
@@ -192,6 +198,39 @@ export type Booking = {
   address: string | null;
   created_at: string;
   updated_at: string;
+};
+
+/* ── Step 10: structured bargaining ───────────────────────────────────────────
+   Pricing lives on the provider (a provider today IS one listing). `floor_price` is the
+   provider's reservation price: it carries NO select grant, is never returned by an RPC, and is
+   readable only by its owner through the my_provider_profile view. It is deliberately absent
+   from the public ServiceProvider shape below. */
+
+export type PricingMode = 'fixed' | 'negotiable';
+
+export type OfferStatus = 'pending' | 'accepted' | 'declined' | 'countered' | 'expired';
+
+export type Offer = {
+  id: string;
+  booking_id: string;
+  round: number;
+  made_by: string;
+  actor_role: 'customer' | 'provider';
+  amount: number;
+  status: OfferStatus;
+  expires_at: string;
+  created_at: string;
+  responded_at: string | null;
+};
+
+// What a provider sets on themselves. Read via my_provider_profile — floor_price included,
+// because that view is filtered to auth.uid().
+export type ProviderPricing = {
+  pricing_mode: PricingMode;
+  list_price: number | null;
+  floor_price: number | null;
+  auto_accept_threshold: number | null;
+  max_counter_rounds: number;
 };
 
 export type ReviewDirection = 'customer_to_provider' | 'provider_to_customer';

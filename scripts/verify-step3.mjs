@@ -307,7 +307,8 @@ if (customerMsgId) {
 
 // ---- cleanup (deleting the booking cascades to its messages) ----
 if (throwawayStranger && service) await service.auth.admin.deleteUser(throwawayStranger);
-if (bookingId) await customerClient.from('bookings').delete().eq('id', bookingId);
+// Step 10 hardening dropped delete_own_booking, so cleanup goes through the service role.
+if (bookingId) await (service ?? customerClient).from('bookings').delete().eq('id', bookingId);
 if (providerRowCreated && providerRowId) await providerClient.from('service_providers').delete().eq('id', providerRowId);
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed, ${skip} skipped`);

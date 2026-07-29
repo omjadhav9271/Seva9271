@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import {
   CheckCircle, Clock, AlertTriangle, ShieldCheck, Upload, X, FileText, Loader2, Ban,
-  Download, Briefcase, Plus, BadgeCheck,
+  Download, Briefcase, Plus, BadgeCheck, Handshake,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { supabase } from '@/lib/supabase';
@@ -14,8 +14,10 @@ import {
   fetchExperience, addExperience, removeExperience, requestEpfoHistory, verifiedYears,
   KYC_ACCEPT, type MyApplication,
 } from '@/lib/provider-application';
+import { fetchMyPricing, saveMyPricing } from '@/lib/bargaining';
 import type {
   KycDocument, CategoryKycRequirement, DocumentChecklistItem, ProviderExperience,
+  ProviderPricing,
 } from '@/lib/supabase';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
@@ -211,6 +213,9 @@ export default function BecomeProviderPage() {
               Go to my bookings
             </Link>
           </div>
+          {/* Step 10: only an approved provider can be booked, so only they can be haggled with —
+              start_negotiation refuses anyone else. */}
+          <PricingSection providerId={application.id} />
           <DocumentSection checklist={checklist} uploading={uploading} fileInputs={fileInputs}
             onFile={handleFile} onDigiLocker={tryDigiLocker} />
           <ExperienceSection rows={experience} form={expForm} setForm={setExpForm}
@@ -628,6 +633,111 @@ function ExperienceSection({ rows, form, setForm, onAdd, onRemove }: {
             </button>
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* Step 10: the provider's own pricing. The FLOOR is the sensitive one — it has no select grant
+   on service_providers and is readable only here, through my_provider_profile (filtered to
+   auth.uid()). Customers never see it, and no RPC returns it. */
+function PricingSection({ providerId }: { providerId: string }) {
+  const [pricing, setPricing] = useState<ProviderPricing | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    (async () => { const p = await fetchMyPricing(); if (active) setPricing(p); })();
+    return () => { active = false; };
+  }, []);
+
+  if (!pricing) return null;
+  const negotiable = pricing.pricing_mode === 'negotiable';
+  const set = (patch: Partial<ProviderPricing>) => setPricing({ ...pricing, ...patch });
+  const num = (v: string) => (v === '' ? null : Number(v));
+
+  const save = async () => {
+    if (pricing.floor_price != null && pricing.list_price != null && pricing.floor_price > pricing.list_price) {
+      toast.error('Your minimum can’t be above your listed price.'); return;
+    }
+    if (pricing.auto_accept_threshold != null && pricing.floor_price != null
+        && pricing.auto_accept_threshold < pricing.floor_price) {
+      toast.error('Instant-accept can’t be below your minimum.'); return;
+    }
+    setSaving(true);
+    const res = await saveMyPricing(providerId, pricing);
+    setSaving(false);
+    if ('error' in res) { toast.error(res.error); return; }
+    toast.success('Pricing saved.');
+  };
+
+  return (
+    <div className="text-left mt-8">
+      <h3 className="font-bold text-white mb-1 flex items-center gap-2">
+        <Handshake className="w-4 h-4 text-[#FF9933]" /> Your pricing
+      </h3>
+      <p className="text-xs text-gray-500 mb-3">
+        Let customers offer a price, or keep it fixed. You stay in control — nothing is agreed
+        without you accepting it.
+      </p>
+
+      <div className="bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl p-4 space-y-3">
+        <div className="flex gap-2">
+          {(['fixed', 'negotiable'] as const).map((m) => (
+            <button key={m} type="button" onClick={() => set({ pricing_mode: m })}
+              className={`flex-1 py-2.5 rounded-xl text-xs font-medium capitalize transition-all ${
+                pricing.pricing_mode === m
+                  ? 'bg-[#FF9933] text-white'
+                  : 'bg-[#161616] border border-[#2a2a2a] text-gray-400 hover:border-[#FF9933]/40'
+              }`}>
+              {m === 'fixed' ? 'Fixed price' : 'Open to offers'}
+            </button>
+          ))}
+        </div>
+
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">Your listed price (₹/hr)</label>
+          <input type="number" inputMode="numeric" value={pricing.list_price ?? ''}
+            onChange={(e) => set({ list_price: num(e.target.value) })}
+            className={inputClass} placeholder="600" />
+        </div>
+
+        {negotiable && (
+          <>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Accept instantly at or above (₹)
+              </label>
+              <input type="number" inputMode="numeric" value={pricing.auto_accept_threshold ?? ''}
+                onChange={(e) => set({ auto_accept_threshold: num(e.target.value) })}
+                className={inputClass} placeholder="550" />
+              <p className="text-xs text-gray-600 mt-1">Offers this high are accepted for you, straight away.</p>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Your minimum — never shown to anyone (₹)
+              </label>
+              <input type="number" inputMode="numeric" value={pricing.floor_price ?? ''}
+                onChange={(e) => set({ floor_price: num(e.target.value) })}
+                className={inputClass} placeholder="400" />
+              <p className="text-xs text-gray-600 mt-1">
+                Anything below this is declined automatically. Customers are never told what it is,
+                or how close they were.
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Counter rounds allowed</label>
+              <input type="number" inputMode="numeric" value={pricing.max_counter_rounds}
+                onChange={(e) => set({ max_counter_rounds: Number(e.target.value) || 3 })}
+                className={inputClass} placeholder="3" />
+            </div>
+          </>
+        )}
+
+        <button onClick={save} disabled={saving}
+          className="saffron-btn w-full rounded-xl py-2.5 font-semibold text-sm disabled:opacity-60">
+          {saving ? 'Saving…' : 'Save pricing'}
+        </button>
       </div>
     </div>
   );

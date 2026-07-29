@@ -148,7 +148,9 @@ if (!authed) {
           .insert({ booking_id: bk.id, customer_id: userId, provider_id: providerId, rating: 5, comment: 'x' });
         if (rvErr) ok('review insert denied for non-completed booking: ' + rvErr.message);
         else no('review insert SUCCEEDED without a completed booking');
-        await userClient.from('bookings').delete().eq('id', bk.id);
+        // Step 10 hardening dropped delete_own_booking (a booking is a financial record, and
+        // deleting one reset the anti-probe cap), so cleanup goes through the service role.
+        await service?.from('bookings').delete().eq('id', bk.id);
       }
 
       // 7) a booking cannot be BORN in a forged state (migration 20260803120000).
@@ -179,7 +181,7 @@ if (!authed) {
         if (okBk?.status === 'requested' && okBk?.payment_status === 'pending')
           ok('a legitimate booking is still created, and starts requested/pending');
         else no('legitimate booking blocked or born wrong: ' + JSON.stringify(okBk));
-        if (okBk?.id) await userClient.from('bookings').delete().eq('id', okBk.id);
+        if (okBk?.id) await service?.from('bookings').delete().eq('id', okBk.id);
       }
 
       await userClient.from('service_providers').delete().eq('id', providerId);

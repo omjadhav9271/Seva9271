@@ -4,13 +4,13 @@
    neither decides what a role may do or how a transition is issued. */
 
 import {
-  Star, CheckCircle, XCircle, AlertCircle, RefreshCw, Truck, Wallet, MapPin, Clock, Shield,
+  Star, CheckCircle, XCircle, AlertCircle, RefreshCw, Truck, Wallet, MapPin, Clock, Shield, Handshake,
   type LucideIcon,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 export type BookingStatus =
-  | 'requested' | 'accepted' | 'en_route' | 'arrived' | 'in_progress'
+  | 'requested' | 'negotiating' | 'accepted' | 'en_route' | 'arrived' | 'in_progress'
   | 'completed' | 'confirmed' | 'paid' | 'reviewed'
   | 'cancelled' | 'disputed' | 'expired';
 
@@ -44,6 +44,9 @@ export const BOOKING_SELECT =
 
 export const statusConfig: Record<BookingStatus, { label: string; color: string; bg: string; icon: LucideIcon }> = {
   requested:   { label: 'Requested',   color: 'text-yellow-400',  bg: 'bg-yellow-900/20 border-yellow-700/30',   icon: AlertCircle },
+  // Step 10: a bounded offer/counter phase in front of Accepted. statusConfig is indexed
+  // directly by the detail page, so a missing entry here would crash it.
+  negotiating: { label: 'Negotiating', color: 'text-[#FF9933]',   bg: 'bg-[#FF9933]/10 border-[#FF9933]/30',     icon: Handshake },
   accepted:    { label: 'Accepted',    color: 'text-blue-400',    bg: 'bg-blue-900/20 border-blue-700/30',       icon: CheckCircle },
   en_route:    { label: 'On the way',  color: 'text-sky-400',     bg: 'bg-sky-900/20 border-sky-700/30',         icon: Truck },
   arrived:     { label: 'Arrived',     color: 'text-teal-400',    bg: 'bg-teal-900/20 border-teal-700/30',       icon: MapPin },

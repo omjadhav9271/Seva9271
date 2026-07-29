@@ -302,8 +302,9 @@ if (service && bookingId) {
   await service.from('notifications').delete().like('link', `/bookings/${bookingId}%`);
   if (walletBefore != null) await service.from('profiles').update({ wallet_balance: walletBefore }).eq('id', providerId);
 }
-if (bookingId) await customerClient.from('bookings').delete().eq('id', bookingId);
-if (bk2Id) await customerClient.from('bookings').delete().eq('id', bk2Id);
+// Step 10 hardening dropped delete_own_booking, so cleanup goes through the service role.
+if (bookingId) await (service ?? customerClient).from('bookings').delete().eq('id', bookingId);
+if (bk2Id) await (service ?? customerClient).from('bookings').delete().eq('id', bk2Id);
 if (providerRowCreated && providerRowId) await providerClient.from('service_providers').delete().eq('id', providerRowId);
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed, ${skip} skipped`);

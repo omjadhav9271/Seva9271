@@ -9,6 +9,7 @@ import { supabase, type Dispute, type DisputeReason } from '@/lib/supabase';
 import BookingChat from '@/components/booking-chat';
 import BookingReview from '@/components/booking-review';
 import DisputeEvidencePanel from '@/components/dispute-evidence-panel';
+import BookingNegotiation from '@/components/booking-negotiation';
 import {
   type BookingRow, type BookingStatus, type PaymentStatus, type Role,
   BOOKING_SELECT, statusConfig, paymentStatusConfig, actionsFor, runTransition,
@@ -368,6 +369,14 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
         <Link href="/bookings" className="inline-flex items-center gap-2 text-sm text-gray-400 hover:text-white mb-6">
           <ArrowLeft className="w-4 h-4" />Back to My Bookings
         </Link>
+
+        {/* Step 10: while a price is being negotiated, the offer panel IS the action area —
+            actionsFor() deliberately returns nothing for 'negotiating'. */}
+        {booking.status === 'negotiating' && role && (
+          <div className="mb-6">
+            <BookingNegotiation bookingId={booking.id} role={role} onSettled={refetchBooking} />
+          </div>
+        )}
 
         {/* Dispute banner — replaces the normal action emphasis while a dispute is live. */}
         {dispute && dispute.status !== 'resolved' && (

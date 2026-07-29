@@ -3,12 +3,13 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import {
-  Star, MapPin, Clock, CheckCircle, ArrowLeft, Heart, Share2, Briefcase,
+  Star, MapPin, Clock, CheckCircle, ArrowLeft, Heart, Share2, Briefcase, Handshake,
   Calendar, Shield, ShieldCheck, Award
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { useRouter } from 'next/navigation';
 import { supabase, type ReputationSnapshot } from '@/lib/supabase';
+import { makeOffer } from '@/lib/bargaining';
 import { toast } from 'sonner';
 
 type ProviderDetail = {
@@ -26,6 +27,11 @@ type ProviderDetail = {
   is_available: boolean;
   city: string | null;
   state: string | null;
+  // Step 10: public pricing. floor_price is absent by design — it has no select grant.
+  pricing_mode: 'fixed' | 'negotiable';
+  list_price: number | null;
+  auto_accept_threshold: number | null;
+  max_counter_rounds: number;
   service_categories: { name: string; slug: string } | null;
 };
 
@@ -135,6 +141,9 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
   const [paymentMethod, setPaymentMethod] = useState('upi');
   const [isFavorited, setIsFavorited] = useState(false);
   const [bookingStep, setBookingStep] = useState<'form' | 'confirm'>('form');
+  const [offerOpen, setOfferOpen] = useState(false);
+  const [offerAmount, setOfferAmount] = useState('');
+  const [offering, setOffering] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -145,7 +154,7 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
       // if someone posts around this page.
       const { data, error } = await supabase
         .from('service_providers')
-        .select('id, category_id, business_name, bio, experience_years, hourly_rate, rating, total_reviews, total_bookings, reputation_score, is_verified, is_available, city, state, service_categories(name, slug)')
+        .select('id, category_id, business_name, bio, experience_years, hourly_rate, rating, total_reviews, total_bookings, reputation_score, is_verified, is_available, city, state, pricing_mode, list_price, auto_accept_threshold, max_counter_rounds, service_categories(name, slug)')
         .eq('id', params.id)
         .eq('status', 'approved')
         .maybeSingle();
@@ -191,6 +200,27 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
     })();
     return () => { mounted = false; };
   }, [params.id]);
+
+  // Structured offer → creates the booking in 'negotiating' and lands the customer on it.
+  const handleOffer = async () => {
+    if (!user || !provider) { router.push('/auth/signin'); return; }
+    const amount = Number(offerAmount);
+    if (!amount || amount <= 0) { toast.error('Enter an amount'); return; }
+    setOffering(true);
+    const res = await makeOffer({
+      providerId: provider.id, amount,
+      serviceType, scheduledDate: bookingDate || null, scheduledTime: bookingTime || null,
+      durationHours: DURATION_HOURS,
+    });
+    setOffering(false);
+    if ('error' in res) { toast.error(res.error); return; }
+    // The RPC may have settled it already: at/above the instant-accept price, or below the
+    // provider's hidden floor. We never say which — only what happened.
+    if (res.data.status === 'accepted') toast.success('Accepted! Pay to confirm your booking.');
+    else if (res.data.status === 'declined') toast.info('That offer was not accepted. You can book at the listed price any time.');
+    else toast.success('Offer sent — they have 24 hours to respond.');
+    router.push('/bookings/' + res.data.booking_id);
+  };
 
   const handleBook = () => {
     if (!user) {
@@ -576,8 +606,44 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                     onClick={handleBook}
                     className="saffron-btn w-full rounded-xl py-3.5 font-semibold text-sm"
                   >
-                    {user ? 'Book Now' : 'Sign In to Book'}
+                    {user ? `Book at ₹${totalAmount}` : 'Sign In to Book'}
                   </button>
+
+                  {/* Step 10: haggling is OPTIONAL and secondary — the one-tap path above stays
+                      the default. Structured offers only; never free-text price talk (§7.3). */}
+                  {provider.pricing_mode === 'negotiable' && user && (
+                    <div className="mt-2">
+                      {!offerOpen ? (
+                        <button onClick={() => setOfferOpen(true)}
+                          className="w-full flex items-center justify-center gap-2 border border-[#FF9933]/40 text-[#FF9933] hover:bg-[#FF9933]/10 rounded-xl py-3 font-semibold text-sm transition-all">
+                          <Handshake className="w-4 h-4" /> Make an offer
+                        </button>
+                      ) : (
+                        <div className="border border-[#FF9933]/30 rounded-xl p-3 space-y-2">
+                          <p className="text-xs text-gray-400">
+                            Listed at ₹{provider.list_price ?? provider.hourly_rate}/hr. Offer what you
+                            think it&apos;s worth — they can accept, counter or decline.
+                          </p>
+                          <input type="number" inputMode="numeric" value={offerAmount} autoFocus
+                            onChange={(e) => setOfferAmount(e.target.value)}
+                            placeholder={`Your offer for ${DURATION_HOURS} hours (₹)`}
+                            className="w-full bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-[#FF9933]" />
+                          <div className="flex gap-2">
+                            <button onClick={handleOffer} disabled={offering || !Number(offerAmount)}
+                              className="saffron-btn flex-1 rounded-xl py-2.5 font-semibold text-sm disabled:opacity-40">
+                              {offering ? 'Sending…' : 'Send offer'}
+                            </button>
+                            <button onClick={() => { setOfferOpen(false); setOfferAmount(''); }}
+                              className="px-3 text-sm text-gray-400 hover:text-white transition-colors">Cancel</button>
+                          </div>
+                          <p className="text-xs text-gray-600">
+                            One offer at a time, and it expires in 24 hours. Your payment is only taken
+                            once a price is agreed.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <div className="flex items-center gap-2 mt-4 justify-center">
                     <Shield className="w-4 h-4 text-[#138808]" />
