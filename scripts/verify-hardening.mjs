@@ -109,12 +109,20 @@ if (!authed) {
   }
   // 4) cannot set own wallet_balance
   {
+    // Compare against the balance we started with, not against 0. Hardcoding 0 only held for the
+    // throwaway user this script mints; pass TEST_EMAIL for an account with real escrow history
+    // (test1 sits at ₹4110) and a correctly DENIED write still reported "was writable".
+    const { data: beforeRow } = await userClient.from('profiles')
+      .select('wallet_balance').eq('id', userId).maybeSingle();
+    const before = Number(beforeRow?.wallet_balance ?? 0);
     const { error } = await userClient.from('profiles')
-      .update({ wallet_balance: 999999 }).eq('id', userId);
-    const { data: after } = await userClient.from('profiles').select('wallet_balance').eq('id', userId).maybeSingle();
-    if (error && Number(after?.wallet_balance ?? 0) === 0) ok('profiles.wallet_balance update denied (col grant): ' + error.message);
-    else if (!error && Number(after?.wallet_balance ?? 0) === 0) ok('profiles.wallet_balance unchanged (silently ignored)');
-    else no('profiles.wallet_balance was writable — now ' + after?.wallet_balance);
+      .update({ wallet_balance: before + 999999 }).eq('id', userId);
+    const { data: afterRow } = await userClient.from('profiles')
+      .select('wallet_balance').eq('id', userId).maybeSingle();
+    const after = Number(afterRow?.wallet_balance ?? 0);
+    if (error && after === before) ok('profiles.wallet_balance update denied (col grant): ' + error.message);
+    else if (!error && after === before) ok('profiles.wallet_balance unchanged (silently ignored)');
+    else no(`profiles.wallet_balance was writable — ${before} → ${after}`);
   }
   // 5) cannot self-set provider rating / is_verified
   {
@@ -187,6 +195,38 @@ if (!authed) {
       await userClient.from('service_providers').delete().eq('id', providerId);
     }
   }
+}
+
+// ---- background jobs are actually scheduled ----
+// pg_cron went uninstalled from Step 7 to Step 10 without a single red test: the schedules live in
+// the `cron` schema, PostgREST only exposes `public`, and 20260807120000 guarded its cron.schedule
+// on pg_extension — so a project with no scheduler applied the migration and reported success.
+// public.scheduled_jobs() (20260810120000) is the window into it; a missing job now fails here.
+console.log('\n[background jobs are scheduled]');
+if (!service) {
+  sk('cron jobs scheduled (no service key)');
+} else {
+  const { data, error } = await service.rpc('scheduled_jobs');
+  if (error) {
+    no('scheduled_jobs() unreadable: ' + error.message);
+  } else {
+    const jobs = new Map((data ?? []).map((j) => [j.jobname, j]));
+    for (const [name, schedule, why] of [
+      ['nightly-reputation', '0 2 * * *', 'time-decay never propagates; scores freeze between booking events'],
+      ['hourly-expire-offers', '7 * * * *', "abandoned negotiations sit in 'negotiating' forever, holding the anti-probe slot"],
+    ]) {
+      const job = jobs.get(name);
+      if (!job) no(`${name} is NOT scheduled — ${why}`);
+      else if (!job.active) no(`${name} exists but is INACTIVE — ${why}`);
+      else if (job.schedule !== schedule) no(`${name} runs on '${job.schedule}', expected '${schedule}'`);
+      else ok(`${name} scheduled and active (${job.schedule})`);
+    }
+  }
+
+  // The RPC reads the scheduler; a browser client has no business enumerating it.
+  const { error: anonErr } = await anon.rpc('scheduled_jobs');
+  if (anonErr) ok('anon cannot call scheduled_jobs(): ' + anonErr.message);
+  else no('anon CAN call scheduled_jobs() — EXECUTE should be service_role only');
 }
 
 if (throwawayUserId && service) await service.auth.admin.deleteUser(throwawayUserId);
