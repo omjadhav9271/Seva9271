@@ -9,7 +9,7 @@ import { toast } from 'sonner';
 import Link from 'next/link';
 
 export default function ProfilePage() {
-  const { user, profile, refreshProfile } = useAuth();
+  const { user, profile, refreshProfile, loading: authLoading } = useAuth();
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -24,7 +24,11 @@ export default function ProfilePage() {
     address: '',
   });
 
+  // Wait for the session to be restored before deciding the user is signed out.
+  // AuthContext starts at { user: null, loading: true }, so redirecting on !user
+  // alone bounced a signed-in user to /auth/signin on every hard refresh.
   useEffect(() => {
+    if (authLoading) return;
     if (!user) {
       router.push('/auth/signin');
       return;
@@ -38,7 +42,7 @@ export default function ProfilePage() {
         address: profile.address ?? '',
       });
     }
-  }, [user, profile, router]);
+  }, [user, profile, authLoading, router]);
 
   useEffect(() => {
     if (!user) return;
@@ -57,6 +61,13 @@ export default function ProfilePage() {
     return () => { mounted = false; };
   }, [user]);
 
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#0d0d0d] pt-20 flex items-center justify-center text-gray-400">
+        Loading…
+      </div>
+    );
+  }
   if (!user) return null;
 
   const handleSave = async () => {

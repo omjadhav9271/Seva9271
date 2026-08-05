@@ -25,7 +25,7 @@ const FILTER_TABS: { value: BookingStatus | 'all'; label: string }[] = [
 ];
 
 export default function BookingsPage() {
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const router = useRouter();
   const [customerBookings, setCustomerBookings] = useState<BookingRow[]>([]);
   const [providerBookings, setProviderBookings] = useState<BookingRow[]>([]);
@@ -62,14 +62,25 @@ export default function BookingsPage() {
     setLoading(false);
   }, []);
 
+  // Wait for the session to be restored before deciding the user is signed out.
+  // AuthContext starts at { user: null, loading: true }, so redirecting on !user
+  // alone bounced a signed-in user to /auth/signin on every hard refresh.
   useEffect(() => {
+    if (authLoading) return;
     if (!user) {
       router.push('/auth/signin');
       return;
     }
     loadBookings(user.id);
-  }, [user, router, loadBookings]);
+  }, [user, authLoading, router, loadBookings]);
 
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#0d0d0d] pt-20 flex items-center justify-center text-gray-400">
+        Loading…
+      </div>
+    );
+  }
   if (!user) return null;
 
   const source = view === 'provider' ? providerBookings : customerBookings;

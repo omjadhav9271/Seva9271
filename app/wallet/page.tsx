@@ -42,7 +42,7 @@ const tierInfo = {
 };
 
 export default function WalletPage() {
-  const { user, profile, refreshProfile } = useAuth();
+  const { user, profile, refreshProfile, loading: authLoading } = useAuth();
   const router = useRouter();
   const [tab, setTab] = useState<'overview' | 'topup' | 'withdraw'>('overview');
   const [amount, setAmount] = useState('');
@@ -50,9 +50,13 @@ export default function WalletPage() {
   const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
   const [txLoading, setTxLoading] = useState(true);
 
+  // Wait for the session to be restored before deciding the user is signed out.
+  // AuthContext starts at { user: null, loading: true }, so redirecting on !user
+  // alone bounced a signed-in user to /auth/signin on every hard refresh.
   useEffect(() => {
+    if (authLoading) return;
     if (!user) router.push('/auth/signin');
-  }, [user, router]);
+  }, [user, authLoading, router]);
 
   // Real wallet: refresh the balance and pull this user's ledger (RLS scopes it to them).
   // Providers see payout credits here; the balance moves only via the server-only credit_wallet.
@@ -74,6 +78,13 @@ export default function WalletPage() {
     return () => { active = false; };
   }, [user, refreshProfile]);
 
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#0d0d0d] pt-20 flex items-center justify-center text-gray-400">
+        Loading…
+      </div>
+    );
+  }
   if (!user) return null;
 
   const balance = profile?.wallet_balance ?? 0;
