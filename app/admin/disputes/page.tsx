@@ -5,17 +5,23 @@ import Link from 'next/link';
 import { Scale, AlertTriangle, CheckCircle, ChevronRight, BadgeCheck } from 'lucide-react';
 import { supabase, type Dispute } from '@/lib/supabase';
 import { useAdminGuard, REASON_LABELS } from '@/lib/admin';
+import { fetchNames, partyLabel } from '@/lib/disputes';
 
 // Queue row = dispute + enough booking context to triage (admin RLS opens these reads).
 type QueueRow = Dispute & {
   bookings: {
     id: string;
+    customer_id: string;
     status: string;
     payment_status: string;
     price_charged: number | null;
     price_agreed: number | null;
     total_amount: number;
-    service_providers: { business_name: string | null } | null;
+    service_categories: { name: string } | null;
+    service_providers: {
+      business_name: string | null;
+      service_categories: { name: string } | null;
+    } | null;
   } | null;
 };
 
@@ -29,6 +35,7 @@ function age(iso: string): string {
 export default function AdminDisputesPage() {
   const guard = useAdminGuard();
   const [rows, setRows] = useState<QueueRow[]>([]);
+  const [names, setNames] = useState<Record<string, string>>({});
   const [tab, setTab] = useState<'open' | 'resolved'>('open');
   const [loading, setLoading] = useState(true);
 
@@ -38,11 +45,17 @@ export default function AdminDisputesPage() {
     (async () => {
       const { data, error } = await supabase
         .from('disputes')
-        .select('*, bookings(id, status, payment_status, price_charged, price_agreed, total_amount, service_providers(business_name))')
+        .select('*, bookings(id, customer_id, status, payment_status, price_charged, price_agreed, total_amount, service_categories(name), service_providers(business_name, service_categories(name)))')
         .order('created_at', { ascending: false });
       if (!active) return;
       if (error) console.error('Failed to load disputes:', error.message);
-      setRows((data ?? []) as unknown as QueueRow[]);
+      const list = (data ?? []) as unknown as QueueRow[];
+      setRows(list);
+      // Put a NAME on every case. Triage is a human job: "raised by the customer" tells you
+      // nothing when six rows say it, and admins field calls from people, not roles.
+      const ids = list.flatMap((d) => [d.raised_by, d.bookings?.customer_id]);
+      const map = await fetchNames(ids);
+      if (active) setNames(map);
       setLoading(false);
     })();
     return () => { active = false; };
@@ -63,7 +76,8 @@ export default function AdminDisputesPage() {
           <h1 className="text-3xl font-black text-white">Dispute Queue</h1>
         </div>
         <p className="text-sm text-gray-400 mb-4">
-          Every dispute carries its full evidence bundle — timeline, chat, payments, reputations.
+          Every dispute carries its full evidence bundle — the reason and message filed, the files
+          each party attached, the booking timeline, the chat and the payments.
         </p>
         <Link href="/admin/providers" className="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-[#FF9933] transition-colors mb-6">
           <BadgeCheck className="w-3.5 h-3.5" /> Provider applications
@@ -94,6 +108,17 @@ export default function AdminDisputesPage() {
           <div className="space-y-3">
             {visible.map((d) => {
               const amount = d.bookings ? (d.bookings.price_charged ?? d.bookings.price_agreed ?? d.bookings.total_amount) : null;
+              const business = d.bookings?.service_providers?.business_name ?? null;
+              const customer = d.bookings?.customer_id ? names[d.bookings.customer_id] : null;
+              // A provider raiser is best identified by their business; a customer by their name.
+              const raiser = d.raiser_role === 'provider'
+                ? partyLabel(business ?? names[d.raised_by], 'provider')
+                : partyLabel(customer ?? names[d.raised_by], 'customer');
+              const other = d.raiser_role === 'provider'
+                ? partyLabel(customer, 'customer')
+                : partyLabel(business, 'provider');
+              const category = d.bookings?.service_categories?.name
+                ?? d.bookings?.service_providers?.service_categories?.name ?? null;
               return (
                 <Link
                   key={d.id}
@@ -108,13 +133,18 @@ export default function AdminDisputesPage() {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-semibold text-white">
                       {REASON_LABELS[d.reason]}
-                      <span className="text-gray-500 font-normal"> · raised by the {d.raiser_role}</span>
+                      <span className="text-gray-500 font-normal"> · raised by {raiser}</span>
                     </p>
                     <p className="text-xs text-gray-400 mt-0.5 truncate">
-                      {d.bookings?.service_providers?.business_name ?? 'Provider'} · booking #{d.booking_id.slice(0, 8)}
+                      against {other}
+                      {category && <> · {category}</>}
+                      {' · '}booking #{d.booking_id.slice(0, 8)}
                       {amount != null && <> · ₹{Number(amount).toLocaleString('en-IN')}</>}
                       {d.bookings && <> · money: {d.bookings.payment_status}</>}
                     </p>
+                    {d.description?.trim() && (
+                      <p className="text-xs text-gray-500 mt-1 truncate italic">&ldquo;{d.description.trim()}&rdquo;</p>
+                    )}
                   </div>
                   <div className="text-right flex-shrink-0">
                     <span className={`text-xs px-2.5 py-1 rounded-full font-medium capitalize ${

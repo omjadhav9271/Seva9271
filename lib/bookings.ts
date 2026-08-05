@@ -30,6 +30,7 @@ export type BookingRow = {
   payment_status: string;
   service_type: string;
   address: string | null;
+  notes: string | null;   // the customer's brief — "what was booked" on the dispute card
   service_providers: {
     business_name: string | null;
     city: string | null;
@@ -40,7 +41,7 @@ export type BookingRow = {
 
 // One select string for both pages — they were byte-identical copies before.
 export const BOOKING_SELECT =
-  'id, customer_id, provider_id, scheduled_date, scheduled_time, total_amount, price_agreed, price_charged, status, payment_method, payment_status, service_type, address, service_providers(business_name, city, service_categories(name, slug)), service_categories(name, slug)';
+  'id, customer_id, provider_id, scheduled_date, scheduled_time, total_amount, price_agreed, price_charged, status, payment_method, payment_status, service_type, address, notes, service_providers(business_name, city, service_categories(name, slug)), service_categories(name, slug)';
 
 export const statusConfig: Record<BookingStatus, { label: string; color: string; bg: string; icon: LucideIcon }> = {
   requested:   { label: 'Requested',   color: 'text-yellow-400',  bg: 'bg-yellow-900/20 border-yellow-700/30',   icon: AlertCircle },

@@ -6,7 +6,7 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import {
-  supabase, type DisputeReason, type DisputeOutcome, type KycStatus, type ServiceProvider,
+  supabase, type KycStatus, type ServiceProvider,
   type DocumentStatus, type ProviderExperience,
 } from '@/lib/supabase';
 
@@ -23,23 +23,9 @@ export function useAdminGuard(): 'checking' | 'ok' {
   return !loading && user && profile?.role === 'admin' ? 'ok' : 'checking';
 }
 
-export const REASON_LABELS: Record<DisputeReason, string> = {
-  work_not_done: 'Work not done',
-  poor_quality: 'Poor quality',
-  overcharged: 'Overcharged',
-  no_show: 'No-show',
-  damage: 'Damage',
-  payment_not_received: 'Payment not received',
-  customer_behaviour: 'Customer behaviour',
-  other: 'Other',
-};
-
-export const OUTCOME_LABELS: Record<DisputeOutcome, string> = {
-  favor_customer: 'Favour customer (full refund)',
-  favor_provider: 'Favour provider (release escrow)',
-  partial: 'Partial refund (split)',
-  no_fault: 'No fault (release escrow)',
-};
+// The dispute vocabulary is shared with the party side (lib/disputes.ts owns it) — the admin
+// console and /bookings/[id] must never disagree about what a reason or an outcome is called.
+export { REASON_LABELS, OUTCOME_LABELS } from '@/lib/disputes';
 
 export type PartyContact = {
   name: string | null;

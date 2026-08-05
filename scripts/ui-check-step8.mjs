@@ -564,6 +564,8 @@ try {
       }
       await service.from('wallet_transactions').delete().eq('reference_id', bookingId);
       await service.from('notifications').delete().like('link', `/bookings/${bookingId}%`);
+      // the admin's "New dispute to review" notification points at the case, not the booking
+      if (disputeId) await service.from('notifications').delete().like('link', `/admin/disputes/${disputeId}%`);
       await service.from('bookings').delete().eq('id', bookingId); // cascades dispute/paytx/messages/events
       console.log('  seeded booking, dispute, chat, events and ledger rows removed');
 

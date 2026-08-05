@@ -221,6 +221,13 @@ try {
     else no('no disputed booking_event with actor_role=customer');
     if (await notifCount(sp.ownerId, 'Dispute raised', bkCust)) ok('counterparty (provider) notified on raise');
     else no('provider was not notified on a customer-raised dispute');
+    // 20260811120000: the review team is told too, linked straight to the case (not the booking).
+    const dIdC = disputeIdOf(rC.data);
+    const adminNotified = (await service.from('notifications')
+      .select('id', { head: true, count: 'exact' })
+      .eq('user_id', adminId).eq('link', `/admin/disputes/${dIdC}`)).count ?? 0;
+    if (adminNotified > 0) ok('the ADMIN is notified too, linked straight to /admin/disputes/<id>');
+    else no('no admin notification for a raised dispute — is 20260811120000_seva_dispute_clarity.sql applied?');
 
     // provider raises (the other direction)
     const bkProv = await mkBooking({ customer: test2Id, provider: sp.id, status: 'completed' });
@@ -446,6 +453,12 @@ try {
 console.log('\n[cleanup]');
 {
   for (const id of bookingIds) await service.from('notifications').delete().like('link', `/bookings/${id}%`);
+  if (bookingIds.length) {
+    // raise_dispute also notifies every admin at /admin/disputes/<dispute_id> (20260811120000).
+    // Those links survive the booking cascade, so clear them while the disputes still exist.
+    const { data: ds } = await service.from('disputes').select('id').in('booking_id', bookingIds);
+    for (const d of ds ?? []) await service.from('notifications').delete().like('link', `/admin/disputes/${d.id}%`);
+  }
   if (bookingIds.length) {
     await service.from('wallet_transactions').delete().in('reference_id', bookingIds);
     await service.from('bookings').delete().in('id', bookingIds); // cascades disputes, payment_transactions, messages, events

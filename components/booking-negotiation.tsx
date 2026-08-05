@@ -9,7 +9,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Handshake, ArrowRight, Clock, CheckCircle, XCircle, Loader2 } from 'lucide-react';
 import { fetchOffers, respondToOffer, whoseTurn, hoursLeft } from '@/lib/bargaining';
-import type { Offer } from '@/lib/supabase';
+import { supabase, type Offer } from '@/lib/supabase';
 import { toast } from 'sonner';
 
 export default function BookingNegotiation({
@@ -31,6 +31,22 @@ export default function BookingNegotiation({
   }, [bookingId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Live rounds. respond_offer's COUNTER branch writes ONLY to `offers` — it never touches
+  // `bookings` — so the page-level bookings subscription cannot see a counter, and the other
+  // party sat looking at the previous round until they reloaded. `offers` joined the realtime
+  // publication in 20260811120000; RLS (read_offers_parties) keeps the stream to the two parties.
+  useEffect(() => {
+    const channel = supabase
+      .channel(`offers:${bookingId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'offers', filter: `booking_id=eq.${bookingId}` },
+        () => { void load(); onSettled(); },   // onSettled re-reads the booking: an accept ends the phase
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [bookingId, load, onSettled]);
 
   const open = offers.find((o) => o.status === 'pending');
   const turn = whoseTurn(offers);

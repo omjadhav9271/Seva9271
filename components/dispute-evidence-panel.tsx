@@ -75,9 +75,14 @@ export default function DisputeEvidencePanel({ dispute, role }: { dispute: Dispu
         <Paperclip className="w-4 h-4 text-orange-400" />
         <h2 className="text-sm font-bold text-white">Your evidence</h2>
       </div>
+      <p className="text-xs text-gray-400 mb-2">
+        {open
+          ? 'Attach anything that supports your side of the complaint above — photos of the work, a receipt, a recording. Our team weighs both parties’ evidence before deciding.'
+          : 'What you attached to this case.'}
+      </p>
       <p className="text-xs text-gray-500 mb-4 flex items-center gap-1.5">
         <ShieldCheck className="w-3.5 h-3.5" />
-        Only you and our review team can see these. Photos, video, audio or PDF — up to {MAX_FILES_PER_PARTY} files, 50&nbsp;MB each.
+        Only you and our review team can see these — never the other party. Photos, video, audio or PDF — up to {MAX_FILES_PER_PARTY} files, 50&nbsp;MB each.
       </p>
 
       {items.length > 0 && (

@@ -3,7 +3,14 @@
    thread, and a plausible event timeline — so the /bookings/[id] "Report a problem" flow and the
    admin evidence bundle have real content to show. Prints the booking id + url.
 
-   Run:  node scripts/seed-step8-browser.mjs
+   Two shapes, because the settlement summary reads differently in each:
+     (default)   in_progress + escrow HELD  → resolving pays out of money we still hold
+     --released  paid + escrow ALREADY RELEASED (a real payout event + the wallet credit behind
+                 it) → resolving in the customer's favour must CLAW BACK from the provider's
+                 wallet. That branch is nearly impossible to reach by hand, and it's the one the
+                 settlement card has the most to explain.
+
+   Run:  node scripts/seed-step8-browser.mjs [--released]
    Undo: node scripts/seed-step8-browser.mjs --clean   (deletes bookings tagged in notes) */
 import { createClient } from '@supabase/supabase-js';
 import { readFileSync } from 'node:fs';
@@ -69,23 +76,38 @@ const { data: sp } = await service.from('service_providers')
 if (!sp) throw new Error('test1 owns no service_providers profile');
 const { data: cat } = await service.from('service_categories').select('id').limit(1).maybeSingle();
 
-// the booking: in_progress + funds held (a captured escrow) → disputable, and money is at stake
+const RELEASED = process.argv.includes('--released');
+const AMOUNT = 800;
+// what the escrow release would have taken and paid, at the live fee
+const { data: feeRow } = await service.rpc('platform_fee_pct');
+const FEE = Math.round(AMOUNT * Number(feeRow ?? 0.01) * 100) / 100;
+const PAYOUT = AMOUNT - FEE;
+
+// the booking. Held: money is still ours to move. Released: the provider has already been paid.
 const { data: bk, error: bkErr } = await service.from('bookings').insert({
   customer_id: test2Id, provider_id: sp.id, category_id: cat?.id ?? null,
   service_type: 'one-time', scheduled_date: '2026-07-24', scheduled_time: '15:00',
-  duration_hours: 2, hourly_rate: 400, total_amount: 800, price_charged: 800,
-  payment_method: 'upi', status: 'in_progress', payment_status: 'held', notes: TAG,
+  duration_hours: 2, hourly_rate: 400, total_amount: AMOUNT, price_charged: AMOUNT,
+  payment_method: 'upi',
+  status: RELEASED ? 'paid' : 'in_progress',
+  payment_status: RELEASED ? 'released' : 'held',
+  notes: TAG,
 }).select('id').single();
 if (bkErr) throw new Error('booking insert: ' + bkErr.message);
 const bId = bk.id;
 
-// captured escrow ledger row (paise)
+// the escrow ledger row (paise): captured, or already split and released
 await service.from('payment_transactions').insert({
   booking_id: bId, razorpay_order_id: 'order_s8browser_' + Date.now(),
-  razorpay_payment_id: 'pay_s8browser_' + Date.now(), amount: 80000, status: 'captured',
+  razorpay_payment_id: 'pay_s8browser_' + Date.now(), amount: AMOUNT * 100,
+  status: RELEASED ? 'released' : 'captured',
+  provider_amount: RELEASED ? PAYOUT : null,
+  platform_fee: RELEASED ? FEE : null,
 });
 
-// a plausible timeline (none of these to_status values fire escrow/reputation triggers)
+// a plausible timeline. NOTE: never insert a 'confirmed' event here — trg_release_escrow fires on
+// exactly that and would pay the provider a SECOND time. The released shape therefore writes the
+// system 'paid' event itself, carrying the meta.payout that proves the escrow was already out.
 const t = (min) => new Date(Date.now() - min * 60000).toISOString();
 const ev = [
   { from_status: null, to_status: 'requested', actor_id: test2Id, actor_role: 'customer', created_at: t(180) },
@@ -94,7 +116,22 @@ const ev = [
   { from_status: 'en_route', to_status: 'arrived', actor_id: test1Id, actor_role: 'provider', created_at: t(60) },
   { from_status: 'arrived', to_status: 'in_progress', actor_id: test1Id, actor_role: 'provider', created_at: t(45) },
 ];
+if (RELEASED) {
+  ev.push(
+    { from_status: 'in_progress', to_status: 'completed', actor_id: test1Id, actor_role: 'provider', created_at: t(35) },
+    { from_status: 'confirmed', to_status: 'paid', actor_id: null, actor_role: 'system', created_at: t(30),
+      meta: { payout: PAYOUT, fee: FEE } },
+  );
+}
 for (const e of ev) await service.from('booking_events').insert({ booking_id: bId, meta: {}, ...e });
+
+// the payout the provider actually banked — so a clawback has something to pull back
+if (RELEASED) {
+  await service.rpc('credit_wallet', {
+    p_user_id: test1Id, p_amount: PAYOUT, p_type: 'credit',
+    p_description: 'Payout for booking ' + bId, p_reference_id: bId,
+  });
+}
 
 // a short chat thread for the evidence bundle
 await service.from('messages').insert([
@@ -104,6 +141,10 @@ await service.from('messages').insert([
 ]);
 
 console.log('SEEDED booking for the Step-8 browser test');
+console.log('  shape:', RELEASED
+  ? `paid / escrow ALREADY RELEASED — ₹${PAYOUT} is in the provider's wallet, ₹${FEE} kept as fee.`
+    + '\n         Resolve it "Favour customer" to exercise the clawback settlement.'
+  : `in_progress / escrow HELD — ₹${AMOUNT} still in escrow.`);
 console.log('  provider:', sp.business_name, '(' + sp.id + ')');
 console.log('  booking id:', bId);
 console.log('  url: http://localhost:3000/bookings/' + bId);

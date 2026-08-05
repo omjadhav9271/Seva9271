@@ -3,13 +3,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, Calendar, Clock, MapPin, AlertCircle, AlertTriangle, CheckCircle, XCircle, CreditCard, Shield, Wallet, Scale } from 'lucide-react';
+import { ArrowLeft, Calendar, Clock, MapPin, AlertCircle, AlertTriangle, CheckCircle, XCircle, CreditCard, Shield, Wallet } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { supabase, type Dispute, type DisputeReason } from '@/lib/supabase';
 import BookingChat from '@/components/booking-chat';
 import BookingReview from '@/components/booking-review';
 import DisputeEvidencePanel from '@/components/dispute-evidence-panel';
+import DisputeCase from '@/components/dispute-case';
 import BookingNegotiation from '@/components/booking-negotiation';
+import { DISPUTE_REASONS, fetchNames } from '@/lib/disputes';
 import {
   type BookingRow, type BookingStatus, type PaymentStatus, type Role,
   BOOKING_SELECT, statusConfig, paymentStatusConfig, actionsFor, runTransition,
@@ -50,33 +52,8 @@ const PAYABLE_STATUSES: BookingStatus[] = ['accepted', 'en_route', 'arrived', 'i
 // Mirrors raise_dispute's allowed states — the button never offers an illegal dispute.
 const DISPUTABLE_STATUSES: BookingStatus[] = ['arrived', 'in_progress', 'completed', 'confirmed', 'paid'];
 
-// Role-appropriate reason lists (the DB CHECK accepts the union; this is UX curation).
-const DISPUTE_REASONS: Record<Role, { value: DisputeReason; label: string }[]> = {
-  customer: [
-    { value: 'work_not_done', label: 'Work was not done' },
-    { value: 'poor_quality', label: 'Poor quality of work' },
-    { value: 'overcharged', label: 'Overcharged / price issue' },
-    { value: 'no_show', label: 'Provider did not show up' },
-    { value: 'damage', label: 'Damage to property' },
-    { value: 'other', label: 'Other' },
-  ],
-  provider: [
-    { value: 'payment_not_received', label: 'Payment not received' },
-    { value: 'customer_behaviour', label: 'Customer behaviour' },
-    { value: 'no_show', label: 'Customer not available / no access' },
-    { value: 'other', label: 'Other' },
-  ],
-};
-
-const OUTCOME_TEXT: Record<string, string> = {
-  favor_customer: 'Resolved in the customer’s favour — refund issued.',
-  favor_provider: 'Resolved in the provider’s favour.',
-  partial: 'Resolved with a partial refund.',
-  no_fault: 'Resolved — no fault found on either side.',
-};
-
-const reasonLabel = (r: string) =>
-  [...DISPUTE_REASONS.customer, ...DISPUTE_REASONS.provider].find((x) => x.value === r)?.label ?? r;
+// The reason lists, labels and outcome copy live in lib/disputes.ts — one vocabulary shared with
+// the admin console, so the two sides of a case can never call the same thing different names.
 
 export default function BookingDetailPage({ params }: { params: { id: string } }) {
   const { id } = params;
@@ -88,6 +65,9 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
   const [acting, setActing] = useState(false);
   const [paying, setPaying] = useState(false);
   const [dispute, setDispute] = useState<Dispute | null>(null);
+  // The customer's display name (public_profiles). The provider side had no way to name the
+  // person they were dealing with — "Raised by the customer" is unanswerable.
+  const [customerName, setCustomerName] = useState<string | null>(null);
   const [disputeFormOpen, setDisputeFormOpen] = useState(false);
   const [disputeReason, setDisputeReason] = useState<DisputeReason | ''>('');
   const [disputeDesc, setDisputeDesc] = useState('');
@@ -127,6 +107,10 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
         } else if (await ownsProviderSide(row.provider_id, user.id)) {
           if (active) setRole('provider');
         }
+        // Name both sides. public_profiles exposes only (id, full_name, avatar_url, city, state),
+        // so this names the counterparty without widening the PII surface.
+        const names = await fetchNames([row.customer_id]);
+        if (active) setCustomerName(names[row.customer_id] || null);
       }
       if (active) setLoading(false);
     })();
@@ -177,6 +161,14 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
   // moves the booking (e.g. the customer confirms → it settles), this page refetches without a
   // manual refresh — the status/payment badges update and the review section's `settled` gate
   // flips on, revealing the form for the provider live. RLS gates the stream to the two parties.
+  // Live updates while the page is open. Two streams, because they carry different news:
+  //   bookings  — the other party moved the job (accepted, arrived, confirmed → settled)
+  //   disputes  — a dispute was raised, taken under review, or RESOLVED. Resolution is the one
+  //               that matters most: the notification links here, and landing on a stale "under
+  //               review" banner after the outcome has been decided is exactly the confusion this
+  //               pass exists to remove. `disputes` joined the realtime publication in
+  //               20260811120000; RLS keeps the stream to the two parties (+ admins).
+  // (Offers are subscribed inside BookingNegotiation, which owns that state.)
   useEffect(() => {
     if (!user) return;
     const channel = supabase
@@ -186,6 +178,11 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
         { event: 'UPDATE', schema: 'public', table: 'bookings', filter: `id=eq.${id}` },
         // A status flip to/out of 'disputed' comes with a dispute row change — refresh both.
         () => { void refetchBooking(); void fetchDispute(); },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'disputes', filter: `booking_id=eq.${id}` },
+        () => { void fetchDispute(); void refetchBooking(); },
       )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
@@ -303,7 +300,7 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
     }
     setDispute((Array.isArray(data) ? data[0] : data) as Dispute);
     setDisputeFormOpen(false);
-    toast.success('Dispute raised. Our team will review the booking and get back to both of you.');
+    toast.success('Dispute raised. Attach any photos or files as evidence below — our team reviews both sides and gets back to you.');
     void refetchBooking();
   };
 
@@ -335,11 +332,18 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
     booking.service_categories?.name ??
     booking.service_providers?.service_categories?.name ??
     'Service';
-  // Safe-by-default: the customer sees the provider's business name; the provider side
-  // shows a generic label (no customer PII joined here — that comes later if needed).
+  // The customer sees the provider's business name; the provider now sees who they're serving,
+  // by name, from public_profiles (the hardened view — name/city only, never phone).
   const counterparty = isCustomer
     ? (booking.service_providers?.business_name ?? 'Provider')
-    : 'Customer';
+    : (customerName || 'Customer');
+  // One readable "when" for the dispute card.
+  const scheduledLabel = [
+    booking.scheduled_date
+      ? new Date(booking.scheduled_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+      : null,
+    formatTime(booking.scheduled_time) || null,
+  ].filter(Boolean).join(', ');
   const StatusIcon = statusConfig[booking.status].icon;
   const amount = booking.price_charged ?? booking.price_agreed ?? booking.total_amount;
   const priceLabel = booking.price_charged != null ? 'Charged' : 'Agreed';
@@ -378,34 +382,23 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
           </div>
         )}
 
-        {/* Dispute banner — replaces the normal action emphasis while a dispute is live. */}
-        {dispute && dispute.status !== 'resolved' && (
-          <div className="rounded-2xl border border-orange-700/40 bg-orange-900/15 p-4 mb-6 flex items-start gap-3">
-            <AlertTriangle className="w-5 h-5 text-orange-400 flex-shrink-0 mt-0.5" />
-            <div>
-              <p className="text-sm font-semibold text-orange-300">
-                Dispute {dispute.status === 'open' ? 'open' : 'under review'} — {reasonLabel(dispute.reason)}
-              </p>
-              <p className="text-xs text-gray-400 mt-1">
-                Raised by {dispute.raised_by === user?.id ? 'you' : `the ${dispute.raiser_role}`} on{' '}
-                {new Date(dispute.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}.
-                Our team is reviewing the booking history, chat and payments. Funds stay protected until it&apos;s resolved.
-              </p>
-            </div>
-          </div>
-        )}
-        {dispute && dispute.status === 'resolved' && (
-          <div className="rounded-2xl border border-[#2a2a2a] bg-[#161616] p-4 mb-6 flex items-start gap-3">
-            <Scale className="w-5 h-5 text-[#5da9ff] flex-shrink-0 mt-0.5" />
-            <div>
-              <p className="text-sm font-semibold text-white">
-                Dispute resolved{dispute.outcome ? ` — ${OUTCOME_TEXT[dispute.outcome]}` : '.'}
-              </p>
-              {dispute.resolution_notes && (
-                <p className="text-xs text-gray-400 mt-1">{dispute.resolution_notes}</p>
-              )}
-            </div>
-          </div>
+        {/* The dispute card — who raised it, against whom, about which booking, in whose words,
+            and (once resolved) the outcome plus the settlement. Replaces the normal action
+            emphasis while a dispute is live. */}
+        {dispute && (
+          <DisputeCase
+            dispute={dispute}
+            viewerRole={role}
+            viewerId={user?.id ?? null}
+            customerName={customerName}
+            providerName={booking.service_providers?.business_name ?? null}
+            categoryName={categoryName}
+            bookingId={booking.id}
+            scheduledLabel={scheduledLabel}
+            workSummary={booking.notes}
+            amount={Number(amount)}
+            priceLabel={`${priceLabel} amount`}
+          />
         )}
 
         {/* Summary */}
@@ -536,11 +529,12 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
                       value={disputeDesc}
                       onChange={(e) => setDisputeDesc(e.target.value)}
                       rows={3}
-                      placeholder="Describe what happened (optional, but helps our team resolve it faster)"
+                      placeholder="Describe what happened — dates, amounts, what was promised. Both this message and the other party's reply go to our team."
                       className="w-full bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-orange-500/50 resize-none"
                     />
                     <p className="text-xs text-gray-500">
-                      Raising a dispute pauses this booking while our team reviews the full history —
+                      Raising a dispute pauses this booking. Our team reads the reason and message
+                      you file here, the evidence each side attaches, and this booking&apos;s
                       timeline, chat and payments. Money stays protected until it&apos;s resolved.
                     </p>
                     <div className="flex gap-2">

@@ -9,7 +9,9 @@ import Link from 'next/link';
 import { ArrowLeft, Scale, MessageSquare, CreditCard, ShieldCheck, Clock, Phone, Mail, Paperclip, FileText } from 'lucide-react';
 import { supabase, type Dispute, type DisputeOutcome, type Message, type DisputeEvidence } from '@/lib/supabase';
 import { useAdminGuard, REASON_LABELS, OUTCOME_LABELS, adminDisputeRefund, fetchDisputeContacts, type DisputeContacts } from '@/lib/admin';
+import { shortId, inr } from '@/lib/disputes';
 import { listEvidence, evidenceSignedUrl } from '@/lib/dispute-evidence';
+import DisputeSettlement from '@/components/dispute-settlement';
 import { toast } from 'sonner';
 
 type BookingBundle = {
@@ -25,7 +27,9 @@ type BookingBundle = {
   scheduled_date: string | null;
   scheduled_time: string | null;
   address: string | null;
+  notes: string | null;
   created_at: string;
+  service_categories: { name: string } | null;
   service_providers: {
     business_name: string | null;
     rating: number;
@@ -59,7 +63,6 @@ const fmtTime = (iso: string) =>
 
 // Platform fee — mirrors platform_fee_pct() in the DB (the RPC does the authoritative math).
 const FEE_PCT = 0.01;
-const inr = (n: number) => `₹${Math.round(n).toLocaleString('en-IN')}`;
 
 // What a chosen outcome will do to the escrowed amount, mirrored from resolve_dispute so the admin
 // sees the split before committing. `refund` = ₹ back to the customer (only meaningful for partial).
@@ -118,7 +121,7 @@ export default function AdminDisputeDetailPage({ params }: { params: { id: strin
     const bookingId = disputeRow.booking_id;
     const [{ data: b }, { data: ev }, { data: msg }, { data: tx }] = await Promise.all([
       supabase.from('bookings')
-        .select('id, customer_id, provider_id, status, payment_status, payment_method, price_agreed, price_charged, total_amount, scheduled_date, scheduled_time, address, created_at, service_providers(business_name, rating, reputation_score, service_categories(name))')
+        .select('id, customer_id, provider_id, status, payment_status, payment_method, price_agreed, price_charged, total_amount, scheduled_date, scheduled_time, address, notes, created_at, service_categories(name), service_providers(business_name, rating, reputation_score, service_categories(name))')
         .eq('id', bookingId).maybeSingle(),
       supabase.from('booking_events').select('*').eq('booking_id', bookingId).order('created_at', { ascending: true }),
       supabase.from('messages').select('*').eq('booking_id', bookingId).order('created_at', { ascending: true }),
@@ -225,6 +228,11 @@ export default function AdminDisputeDetailPage({ params }: { params: { id: strin
   const providerName = booking?.service_providers?.business_name ?? 'Provider';
   const customerName = customer?.full_name ?? 'Customer';
   const nameFor = (senderId: string) => (senderId === booking?.customer_id ? customerName : providerName);
+  const raiserName = dispute.raiser_role === 'customer' ? customerName : providerName;
+  const accusedRole: 'customer' | 'provider' = dispute.raiser_role === 'customer' ? 'provider' : 'customer';
+  const accusedName = accusedRole === 'customer' ? customerName : providerName;
+  const categoryName = booking?.service_categories?.name
+    ?? booking?.service_providers?.service_categories?.name ?? 'Service';
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] pt-20">
@@ -246,20 +254,41 @@ export default function AdminDisputeDetailPage({ params }: { params: { id: strin
                   {dispute.status === 'under_review' ? 'under review' : dispute.status}
                 </span>
               </div>
+              {/* WHO, against WHOM, about WHAT — an admin arriving from a notification should
+                  not have to cross-reference three cards to learn whose case this is. */}
               <p className="text-sm text-gray-400">
-                Raised by the <span className="text-white">{dispute.raiser_role}</span> · {fmtTime(dispute.created_at)} ·
-                booking <span className="font-mono text-xs">#{dispute.booking_id.slice(0, 8)}</span>
+                Raised by <span className="text-white">{raiserName}</span> ({dispute.raiser_role})
+                <span className="font-mono text-xs text-gray-600"> {shortId(dispute.raised_by)}</span>
+                {' · '}against <span className="text-white">{accusedName}</span> ({accusedRole})
+                {' · '}{fmtTime(dispute.created_at)}
               </p>
-              {dispute.description && (
-                <p className="text-sm text-gray-300 mt-3 bg-[#1e1e1e] rounded-xl p-3">&ldquo;{dispute.description}&rdquo;</p>
+              <p className="text-sm text-gray-400 mt-1">
+                {categoryName} · booking <span className="font-mono text-xs">#{dispute.booking_id.slice(0, 8)}</span>
+                {' · '}case <span className="font-mono text-xs">{shortId(dispute.id)}</span>
+                {' · '}scheduled {booking?.scheduled_date ?? '—'} {booking?.scheduled_time?.slice(0, 5) ?? ''}
+              </p>
+              {booking?.notes?.trim() && (
+                <p className="text-xs text-gray-500 mt-1">Work booked: {booking.notes.trim()}</p>
+              )}
+              <p className="text-[11px] text-gray-500 mt-3 mb-1">
+                What the {dispute.raiser_role} reported
+              </p>
+              {dispute.description?.trim() ? (
+                <p className="text-sm text-gray-300 bg-[#1e1e1e] rounded-xl p-3 whitespace-pre-wrap">&ldquo;{dispute.description.trim()}&rdquo;</p>
+              ) : (
+                <p className="text-sm text-gray-500 italic">No description filed — only the reason above.</p>
               )}
             </div>
             {dispute.status === 'resolved' && (
               <div className="bg-[#138808]/10 border border-[#138808]/20 rounded-xl p-3 text-sm">
                 <p className="text-[#138808] font-semibold">{dispute.outcome ? OUTCOME_LABELS[dispute.outcome] : 'Resolved'}</p>
-                <p className="text-xs text-gray-400 mt-1">Fault: {dispute.fault_party ?? '—'}
+                <p className="text-xs text-gray-400 mt-1">
+                  Fault: {dispute.fault_party && dispute.fault_party !== 'none'
+                    ? `${dispute.fault_party === 'customer' ? customerName : providerName} (${dispute.fault_party})`
+                    : 'no one'}
                   {dispute.refund_amount != null && Number(dispute.refund_amount) > 0 && <> · refund ₹{Number(dispute.refund_amount).toLocaleString('en-IN')}</>}
                 </p>
+                {dispute.resolved_at && <p className="text-xs text-gray-500 mt-1">{fmtTime(dispute.resolved_at)}</p>}
                 {dispute.resolution_notes && <p className="text-xs text-gray-400 mt-1">{dispute.resolution_notes}</p>}
               </div>
             )}
@@ -328,9 +357,15 @@ export default function AdminDisputeDetailPage({ params }: { params: { id: strin
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   {([['Customer', contacts.customer], ['Provider', contacts.provider]] as const).map(([label, c]) => (
                     <div key={label} className="bg-[#1e1e1e] rounded-xl p-3 space-y-1.5">
-                      <p className="text-xs text-gray-500">{label}</p>
+                      <p className="text-xs text-gray-500">
+                        {label}
+                        <span className="text-gray-600">
+                          {' · '}{label.toLowerCase() === dispute.raiser_role ? 'raised this dispute' : 'responding party'}
+                        </span>
+                      </p>
                       <p className="text-white font-semibold truncate">{c.business_name || c.name || '—'}</p>
                       {c.business_name && c.name && <p className="text-xs text-gray-400 truncate">{c.name}</p>}
+                      <p className="text-xs text-gray-400">Service: {categoryName}</p>
                       {c.phone ? (
                         <a href={`tel:${c.phone}`} className="flex items-center gap-1.5 text-xs text-[#5da9ff] hover:underline"><Phone className="w-3 h-3 flex-shrink-0" />{c.phone}</a>
                       ) : <p className="text-xs text-gray-600">no phone on file</p>}
@@ -344,7 +379,10 @@ export default function AdminDisputeDetailPage({ params }: { params: { id: strin
               ) : (
                 <p className="text-xs text-gray-500">Contact details unavailable.</p>
               )}
-              <p className="text-[11px] text-gray-600 mt-3">Visible to admins only — use to verify facts before assigning fault.</p>
+              <p className="text-[11px] text-gray-600 mt-3">
+                Visible to admins only — never to the other party. Call or email either side to
+                verify facts before assigning fault; fault is what moves a trust score.
+              </p>
             </div>
 
             {/* Timeline — where "he never arrived" is settled by timestamps. */}
@@ -434,6 +472,19 @@ export default function AdminDisputeDetailPage({ params }: { params: { id: strin
                     {resolving ? 'Resolving…' : 'Resolve dispute'}
                   </button>
                 </div>
+              </div>
+            )}
+
+            {/* Once resolved, the panel above is replaced by the arithmetic it produced — the
+                SAME card both parties are shown, so a "where did my money go?" call can be
+                answered from the exact screen the caller is looking at. */}
+            {dispute.status === 'resolved' && (
+              <div className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-5">
+                <h2 className="font-bold text-white text-sm uppercase tracking-wide mb-1">Settled</h2>
+                <p className="text-xs text-gray-500">
+                  Read back from the ledger and the dispute row — not recomputed from the fee.
+                </p>
+                <DisputeSettlement dispute={dispute} amountFallback={Number(amount)} viewerRole={null} />
               </div>
             )}
 
