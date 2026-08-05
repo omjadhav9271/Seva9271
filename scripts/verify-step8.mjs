@@ -227,6 +227,17 @@ try {
     if (adminNotified > 0) ok('the ADMIN is notified too, linked straight to /admin/disputes/<id>');
     else no('no admin notification for a raised dispute — is 20260811120000_seva_dispute_clarity.sql applied?');
 
+    // 20260812120000: raise_dispute writes a booking_events row, which used to make
+    // notify_on_booking_event emit a SECOND, vaguer "A dispute was raised" to the same person.
+    // (The booking's own "New booking request" is a different event and legitimately also here,
+    // so count the dispute-related titles rather than everything on the booking.)
+    const accusedNotes = (await service.from('notifications')
+      .select('title').eq('user_id', sp.ownerId).like('link', `/bookings/${bkCust}%`)).data ?? [];
+    const disputeTitles = accusedNotes.map((n) => n.title).filter((t) => /dispute/i.test(t));
+    if (disputeTitles.length === 1 && disputeTitles[0] === 'Dispute raised')
+      ok('one dispute notification per raise — the trigger no longer doubles it up');
+    else no(`expected exactly one dispute notification, got ${disputeTitles.length}: ${JSON.stringify(disputeTitles)}`);
+
     // provider raises (the other direction)
     const bkProv = await mkBooking({ customer: test2Id, provider: sp.id, status: 'completed' });
     const rP = await raiseAs(sp.client, bkProv, 'payment_not_received');
@@ -282,6 +293,17 @@ try {
     const both = (await notifCount(test2Id, 'Dispute resolved', bk)) > 0 && (await notifCount(sp.ownerId, 'Dispute resolved', bk)) > 0;
     if (both) ok('BOTH parties notified on resolution');
     else no('resolution did not notify both parties');
+
+    // 20260812120000: the resolution notification names WHICH WAY it went instead of the old
+    // content-free "Your dispute has been reviewed and resolved."
+    const resolvedMsg = (await service.from('notifications').select('message')
+      .eq('user_id', test2Id).eq('title', 'Dispute resolved').like('link', `/bookings/${bk}%`)
+      .order('created_at', { ascending: false }).limit(1).maybeSingle()).data?.message ?? '';
+    if (/no fault was found on either side/i.test(resolvedMsg))
+      ok('the resolution notification states the OUTCOME, not just that it was resolved');
+    else no('resolution notification copy is generic: ' + JSON.stringify(resolvedMsg));
+    if (/settlement/i.test(resolvedMsg)) ok('...and points the party at the settlement summary');
+    else no('the resolution notification does not mention the settlement');
   }
 
   // ================= (e) MONEY: held → favor_provider releases escrow to the provider (−1%) =================
