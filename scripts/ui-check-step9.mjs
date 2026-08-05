@@ -11,20 +11,21 @@
   honest pending screen appears — then verifies the row the UI created is born pending/unverified
   and cleans it up.
 
-  Usage (needs `npm run dev` on :3000):
-    APPLICANT_EMAIL=test2@gmail.com APPLICANT_PASSWORD=test2@9271 node scripts/ui-check-step9.mjs
+  Usage (needs `npm run dev` on :3000, and credentials in .env.local — see .env.example. The
+  applicant defaults to the CUSTOMER account; override with APPLICANT_EMAIL/APPLICANT_PASSWORD):
+    node scripts/ui-check-step9.mjs
 */
 import { spawn } from 'node:child_process';
+import { requireAccounts } from './lib/creds.mjs';
 import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createClient } from '@supabase/supabase-js';
 
 const APP = 'http://localhost:3000';
-const EMAIL = process.env.APPLICANT_EMAIL ?? 'test2@gmail.com';
-const PASSWORD = process.env.APPLICANT_PASSWORD ?? 'test2@9271';
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? 'test3@gmail.com';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? 'test3@9271';
+const { APPLICANT, ADMIN } = requireAccounts([['APPLICANT', 'CUSTOMER'], ['ADMIN', 'STRANGER']]);
+const { email: EMAIL, password: PASSWORD } = APPLICANT;
+const { email: ADMIN_EMAIL, password: ADMIN_PASSWORD } = ADMIN;
 
 const env = Object.fromEntries(
   readFileSync('.env.local', 'utf8').split(/\r?\n/)

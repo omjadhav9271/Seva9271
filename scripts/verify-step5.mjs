@@ -24,9 +24,7 @@
         NEVER mis-served "Payment received"
     (e) credit_wallet is NOT executable by authenticated
 
-  Usage (from repo root, with the dev server running):
-    CUSTOMER_EMAIL=test1@gmail.com CUSTOMER_PASSWORD=test1@9271 \
-    PROVIDER_EMAIL=test2@gmail.com PROVIDER_PASSWORD=test2@9271 \
+  Usage (from repo root, with the dev server running) — credentials come from .env.local (see .env.example):
     node scripts/verify-step5.mjs
 
   Needs TWO distinct email-confirmed users (customer + provider), like verify-step4.mjs.
@@ -34,6 +32,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { readFileSync } from 'node:fs';
 import { createHmac, randomUUID } from 'node:crypto';
+import { cred } from './lib/creds.mjs';
 
 const env = Object.fromEntries(
   readFileSync('.env.local', 'utf8')
@@ -89,8 +88,8 @@ const service = createClient(URL, SERVICE, { auth: { persistSession: false, auto
 // ---- helper: authenticated client for a named role (mirrors verify-step4.mjs) ----
 async function authClient(prefix) {
   const client = createClient(URL, ANON, { auth: { persistSession: false, autoRefreshToken: false } });
-  const email = process.env[`${prefix}_EMAIL`];
-  const password = process.env[`${prefix}_PASSWORD`];
+  const email = cred(`${prefix}_EMAIL`);
+  const password = cred(`${prefix}_PASSWORD`);
   if (!email) return { client, userId: null };
   const { data, error } = await client.auth.signInWithPassword({ email, password });
   if (error) { console.log(`${prefix} signIn error:`, error.message); return { client, userId: null }; }

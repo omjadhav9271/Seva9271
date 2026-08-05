@@ -10,11 +10,12 @@
     node scripts/verify-all.mjs            # everything, including the browser checks
     node scripts/verify-all.mjs --no-ui    # DB suite only (no Chrome needed)
 
-  Credentials default to the three live test accounts and can be overridden with the usual
-  CUSTOMER_/PROVIDER_/STRANGER_ env vars. Needs `npm run dev` on :3000 for full coverage.
+  Credentials are read from .env.local (CUSTOMER_/PROVIDER_/STRANGER_ EMAIL+PASSWORD) and can be
+  overridden with the same env vars. Needs `npm run dev` on :3000 for full coverage.
 */
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { requireAccounts, SUITE_PREFIXES } from './lib/creds.mjs';
 
 const DB_SCRIPTS = [
   'verify-hardening', 'verify-provider-pii', 'verify-step2', 'verify-step3', 'verify-step4',
@@ -24,13 +25,18 @@ const DB_SCRIPTS = [
 const UI_SCRIPTS = ['ui-check-step8', 'ui-check-step9', 'ui-check-step10', 'ui-check-dispute-clarity'];
 const withUi = !process.argv.includes('--no-ui');
 
-const creds = {
-  CUSTOMER_EMAIL: 'test2@gmail.com', CUSTOMER_PASSWORD: 'test2@9271',
-  PROVIDER_EMAIL: 'test1@gmail.com', PROVIDER_PASSWORD: 'test1@9271',
-  STRANGER_EMAIL: 'test3@gmail.com', STRANGER_PASSWORD: 'test3@9271',
-};
+// Credentials come from .env.local (gitignored) or the environment — never a literal in this
+// file. Missing ones stop the run here rather than letting thirteen children each fail obscurely.
+const accounts = requireAccounts(SUITE_PREFIXES);
 const childEnv = { ...process.env };
-for (const [k, v] of Object.entries(creds)) childEnv[k] ??= v;
+for (const [prefix, { email, password }] of Object.entries(accounts)) {
+  childEnv[`${prefix}_EMAIL`] ??= email;
+  childEnv[`${prefix}_PASSWORD`] ??= password;
+}
+// The DB scripts still ask for the admin under its legacy STRANGER_* name (permission tests use
+// it as the party who is not on the booking). Same account, both names exported.
+childEnv.STRANGER_EMAIL ??= accounts.ADMIN.email;
+childEnv.STRANGER_PASSWORD ??= accounts.ADMIN.password;
 
 // ---- preconditions ----
 let env = {};

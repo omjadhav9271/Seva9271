@@ -16,21 +16,21 @@
   The harness (CDP plumbing, React-aware input filling, the hydration-safe sign-in) is the one
   from ui-check-step9.mjs.
 
-  Usage (needs `npm run dev` on :3000):
-    PROVIDER_EMAIL=test1@gmail.com PROVIDER_PASSWORD=test1@9271 \
-    CUSTOMER_EMAIL=test2@gmail.com CUSTOMER_PASSWORD=test2@9271 node scripts/ui-check-step10.mjs
+  Usage (needs `npm run dev` on :3000, and CUSTOMER_/PROVIDER_ credentials in .env.local — see
+  .env.example):
+    node scripts/ui-check-step10.mjs
 */
 import { spawn } from 'node:child_process';
+import { requireAccounts } from './lib/creds.mjs';
 import { readFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createClient } from '@supabase/supabase-js';
 
 const APP = 'http://localhost:3000';
-const PROVIDER_EMAIL = process.env.PROVIDER_EMAIL ?? 'test1@gmail.com';
-const PROVIDER_PASSWORD = process.env.PROVIDER_PASSWORD ?? 'test1@9271';
-const CUSTOMER_EMAIL = process.env.CUSTOMER_EMAIL ?? 'test2@gmail.com';
-const CUSTOMER_PASSWORD = process.env.CUSTOMER_PASSWORD ?? 'test2@9271';
+const { PROVIDER, CUSTOMER } = requireAccounts(['PROVIDER', 'CUSTOMER']);
+const { email: PROVIDER_EMAIL, password: PROVIDER_PASSWORD } = PROVIDER;
+const { email: CUSTOMER_EMAIL, password: CUSTOMER_PASSWORD } = CUSTOMER;
 
 const LIST = 600, FLOOR = 400, THRESHOLD = 550, OFFER = 450;   // OFFER sits between floor and threshold
 

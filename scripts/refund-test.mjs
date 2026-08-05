@@ -10,9 +10,8 @@
   path in the route, so point it at a booking whose escrow you actually want returned (or one that
   is already 'refunded' to exercise the idempotent no-op).
 
-  Usage (from repo root, with the dev server running):
+  Usage (from repo root, with the dev server running) — credentials come from .env.local (see .env.example):
     BOOKING_ID=<uuid> \
-    CUSTOMER_EMAIL=test1@gmail.com CUSTOMER_PASSWORD=test1@9271 \
     node scripts/refund-test.mjs
 */
 import { createClient } from '@supabase/supabase-js';

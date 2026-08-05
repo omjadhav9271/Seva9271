@@ -15,14 +15,12 @@
     (e) CONTACT ROUTE — /api/admin/dispute-contacts is admin-only (party → 403; admin → both
         parties' name/phone/email). Skipped if the dev server isn't running.
 
-  Usage:
-    CUSTOMER_EMAIL=test2@gmail.com CUSTOMER_PASSWORD=test2@9271 \
-    PROVIDER_EMAIL=test1@gmail.com PROVIDER_PASSWORD=test1@9271 \
-    STRANGER_EMAIL=test3@gmail.com STRANGER_PASSWORD=test3@9271 \
+  Usage — credentials come from .env.local (see .env.example):
     node scripts/verify-step8-evidence.mjs
 */
 import { createClient } from '@supabase/supabase-js';
 import { readFileSync } from 'node:fs';
+import { cred } from './lib/creds.mjs';
 
 const env = Object.fromEntries(
   readFileSync('.env.local', 'utf8').split(/\r?\n/)
@@ -45,7 +43,7 @@ const service = createClient(URL, SERVICE, { auth: { persistSession: false, auto
 
 async function authClient(prefix) {
   const client = createClient(URL, ANON, { auth: { persistSession: false, autoRefreshToken: false } });
-  const email = process.env[`${prefix}_EMAIL`], password = process.env[`${prefix}_PASSWORD`];
+  const email = cred(`${prefix}_EMAIL`), password = cred(`${prefix}_PASSWORD`);
   if (!email) return { client, userId: null, token: null };
   const { data, error } = await client.auth.signInWithPassword({ email, password });
   if (error) { console.log(`${prefix} signIn error:`, error.message); return { client, userId: null, token: null }; }

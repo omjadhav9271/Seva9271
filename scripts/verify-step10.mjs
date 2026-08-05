@@ -18,14 +18,12 @@
     (g) A booking under negotiation is UNPAYABLE (price_agreed stays NULL).
     (h) A FAILED HAGGLE MOVES NEITHER REPUTATION — otherwise providers turn bargaining off.
 
-  Usage:
-    CUSTOMER_EMAIL=test2@gmail.com CUSTOMER_PASSWORD=test2@9271 \
-    PROVIDER_EMAIL=test1@gmail.com PROVIDER_PASSWORD=test1@9271 \
-    STRANGER_EMAIL=test3@gmail.com STRANGER_PASSWORD=test3@9271 \
+  Usage — credentials come from .env.local (see .env.example):
     node scripts/verify-step10.mjs
 */
 import { createClient } from '@supabase/supabase-js';
 import { readFileSync } from 'node:fs';
+import { cred } from './lib/creds.mjs';
 
 const env = Object.fromEntries(
   readFileSync('.env.local', 'utf8').split(/\r?\n/)
@@ -48,7 +46,7 @@ const anon = createClient(URL, ANON, { auth: { persistSession: false, autoRefres
 
 async function authClient(prefix) {
   const client = createClient(URL, ANON, { auth: { persistSession: false, autoRefreshToken: false } });
-  const email = process.env[`${prefix}_EMAIL`], password = process.env[`${prefix}_PASSWORD`];
+  const email = cred(`${prefix}_EMAIL`), password = cred(`${prefix}_PASSWORD`);
   if (!email) return { client, userId: null };
   const { data, error } = await client.auth.signInWithPassword({ email, password });
   if (error) { console.log(`${prefix} signIn error:`, error.message); return { client, userId: null }; }

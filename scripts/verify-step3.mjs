@@ -13,19 +13,18 @@
     - NON-PARTY: a stranger gets 0 rows on SELECT and is denied on INSERT
     - IMMUTABLE: a party's own message can't be UPDATEd or DELETEd (REVOKE + no policy)
 
-  Usage (from repo root):
+  Usage (from repo root) — credentials come from .env.local (see .env.example):
     node scripts/verify-step3.mjs
 
   Needs THREE distinct authenticated users. When "Confirm email" is OFF, throwaway signups
   return sessions and the script self-provisions all three. When it's ON, pass pre-confirmed
   accounts:
-    CUSTOMER_EMAIL=a@x.com CUSTOMER_PASSWORD=... \
-    PROVIDER_EMAIL=b@x.com PROVIDER_PASSWORD=... \
     STRANGER_EMAIL=c@x.com STRANGER_PASSWORD=... node scripts/verify-step3.mjs
 */
 import { createClient } from '@supabase/supabase-js';
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { cred } from './lib/creds.mjs';
 
 const env = Object.fromEntries(
   readFileSync('.env.local', 'utf8')
@@ -71,8 +70,8 @@ console.log('DB:', URL, '\n');
 // ---- helper: get an authenticated client (+ access token) for a named role ----
 async function authClient(prefix) {
   const client = createClient(URL, KEY, { auth: { persistSession: false, autoRefreshToken: false } });
-  const envEmail = process.env[`${prefix}_EMAIL`];
-  const envPass = process.env[`${prefix}_PASSWORD`];
+  const envEmail = cred(`${prefix}_EMAIL`);
+  const envPass = cred(`${prefix}_PASSWORD`);
   let userId = null;
   if (envEmail) {
     const { data, error } = await client.auth.signInWithPassword({ email: envEmail, password: envPass });

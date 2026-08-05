@@ -24,18 +24,17 @@
                       delivered live (no reload)
     - LOCKED DOWN   → a direct client INSERT into notifications (for self OR another user) is denied
 
-  Usage (from repo root):
+  Usage (from repo root) — credentials come from .env.local (see .env.example):
     node scripts/verify-step4.mjs
 
   Needs TWO distinct email-confirmed users (customer + provider). Self-provisioning throwaway
   signups fail on this project, so pass pre-confirmed accounts:
-    CUSTOMER_EMAIL=test1@gmail.com CUSTOMER_PASSWORD=test1@9271 \
-    PROVIDER_EMAIL=test2@gmail.com PROVIDER_PASSWORD=test2@9271 \
     node scripts/verify-step4.mjs
 */
 import { createClient } from '@supabase/supabase-js';
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { cred } from './lib/creds.mjs';
 
 const env = Object.fromEntries(
   readFileSync('.env.local', 'utf8')
@@ -81,8 +80,8 @@ console.log('DB:', URL, '\n');
 // ---- helper: get an authenticated client (+ access token) for a named role ----
 async function authClient(prefix) {
   const client = createClient(URL, KEY, { auth: { persistSession: false, autoRefreshToken: false } });
-  const envEmail = process.env[`${prefix}_EMAIL`];
-  const envPass = process.env[`${prefix}_PASSWORD`];
+  const envEmail = cred(`${prefix}_EMAIL`);
+  const envPass = cred(`${prefix}_PASSWORD`);
   let userId = null;
   if (envEmail) {
     const { data, error } = await client.auth.signInWithPassword({ email: envEmail, password: envPass });

@@ -20,14 +20,12 @@
     (f) EXPIRY demotes: a lapsed document loses its verified status and the tier drops.
     (g) NO LEAKS — provider_missing_documents refuses to enumerate another provider's gaps.
 
-  Usage:
-    CUSTOMER_EMAIL=test2@gmail.com CUSTOMER_PASSWORD=test2@9271 \
-    PROVIDER_EMAIL=test1@gmail.com PROVIDER_PASSWORD=test1@9271 \
-    STRANGER_EMAIL=test3@gmail.com STRANGER_PASSWORD=test3@9271 \
+  Usage — credentials come from .env.local (see .env.example):
     node scripts/verify-step9-5.mjs
 */
 import { createClient } from '@supabase/supabase-js';
 import { readFileSync } from 'node:fs';
+import { cred } from './lib/creds.mjs';
 
 const env = Object.fromEntries(
   readFileSync('.env.local', 'utf8').split(/\r?\n/)
@@ -49,7 +47,7 @@ const service = createClient(URL, SERVICE, { auth: { persistSession: false, auto
 
 async function authClient(prefix) {
   const client = createClient(URL, ANON, { auth: { persistSession: false, autoRefreshToken: false } });
-  const email = process.env[`${prefix}_EMAIL`], password = process.env[`${prefix}_PASSWORD`];
+  const email = cred(`${prefix}_EMAIL`), password = cred(`${prefix}_PASSWORD`);
   if (!email) return { client, userId: null };
   const { data, error } = await client.auth.signInWithPassword({ email, password });
   if (error) { console.log(`${prefix} signIn error:`, error.message); return { client, userId: null }; }

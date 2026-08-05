@@ -19,24 +19,22 @@
   recomputed), so it leaves the project exactly as it found it. Same harness as
   ui-check-step9/10: no new dependencies, Chrome driven with Node's built-in WebSocket.
 
-  Usage (needs `npm run dev` on :3000):
-    CUSTOMER_EMAIL=test2@gmail.com CUSTOMER_PASSWORD=test2@9271 \
-    PROVIDER_EMAIL=test1@gmail.com PROVIDER_PASSWORD=test1@9271 \
-    ADMIN_EMAIL=test3@gmail.com    ADMIN_PASSWORD=test3@9271 node scripts/ui-check-step8.mjs
+  Usage (needs `npm run dev` on :3000, and CUSTOMER_/PROVIDER_/ADMIN_ credentials in .env.local —
+  see .env.example):
+    node scripts/ui-check-step8.mjs
 */
 import { spawn } from 'node:child_process';
+import { requireAccounts } from './lib/creds.mjs';
 import { readFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createClient } from '@supabase/supabase-js';
 
 const APP = 'http://localhost:3000';
-const CUSTOMER_EMAIL = process.env.CUSTOMER_EMAIL ?? 'test2@gmail.com';
-const CUSTOMER_PASSWORD = process.env.CUSTOMER_PASSWORD ?? 'test2@9271';
-const PROVIDER_EMAIL = process.env.PROVIDER_EMAIL ?? 'test1@gmail.com';
-const PROVIDER_PASSWORD = process.env.PROVIDER_PASSWORD ?? 'test1@9271';
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? 'test3@gmail.com';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? 'test3@9271';
+const { CUSTOMER, PROVIDER, ADMIN } = requireAccounts(['CUSTOMER', 'PROVIDER', ['ADMIN', 'STRANGER']]);
+const { email: CUSTOMER_EMAIL, password: CUSTOMER_PASSWORD } = CUSTOMER;
+const { email: PROVIDER_EMAIL, password: PROVIDER_PASSWORD } = PROVIDER;
+const { email: ADMIN_EMAIL, password: ADMIN_PASSWORD } = ADMIN;
 
 const TAG = 'STEP8-UI-CHECK';
 const AMOUNT = 800;              // ₹ charged and held in escrow
