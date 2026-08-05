@@ -30,7 +30,7 @@ const faqs = [
 
 export default function HowItWorksPage() {
   return (
-    <div className="min-h-screen bg-[#0d0d0d] pt-16">
+    <div className="min-h-screen bg-[#0d0d0d] pt-20">
       {/* Hero */}
       <section className="py-20 bg-[#0a0a0a] text-center">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -52,7 +52,7 @@ export default function HowItWorksPage() {
       </section>
 
       {/* For Customers */}
-      <section className="py-20 max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+      <section className="py-20 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="text-center mb-12">
           <span className="text-[#FF9933] font-semibold text-sm uppercase tracking-wider">For Customers</span>
           <h2 className="text-3xl font-black text-white mt-2">Get Service in 4 Steps</h2>
@@ -80,7 +80,7 @@ export default function HowItWorksPage() {
 
       {/* For Providers */}
       <section className="py-20 bg-[#0a0a0a]">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-12">
             <span className="text-[#138808] font-semibold text-sm uppercase tracking-wider">For Service Providers</span>
             <h2 className="text-3xl font-black text-white mt-2">Start Earning in 4 Steps</h2>
@@ -104,7 +104,7 @@ export default function HowItWorksPage() {
       </section>
 
       {/* Key Features */}
-      <section className="py-20 max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+      <section className="py-20 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <h2 className="text-3xl font-black text-white text-center mb-12">Platform Features</h2>
         <div className="grid md:grid-cols-3 gap-6">
           {[

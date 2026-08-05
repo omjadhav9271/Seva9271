@@ -32,8 +32,12 @@ export default function SignInPage() {
     }
   };
 
+  // relative + overflow-hidden on the root: the decorative w-96 blobs below sit
+  // at left-1/4 / right-1/4, so on a 390px viewport they reached 481px and gave
+  // the page 92px of horizontal scroll. Same pattern the hero and
+  // /become-provider already use to clip their blobs.
   return (
-    <div className="min-h-screen bg-[#0d0d0d] flex items-center justify-center px-4 pt-16">
+    <div className="relative overflow-hidden min-h-screen bg-[#0d0d0d] flex items-center justify-center px-4 pt-20">
       <div className="absolute inset-0 pointer-events-none">
         <div className="absolute top-20 left-1/4 w-96 h-96 bg-[#FF9933]/6 rounded-full blur-[120px]" />
         <div className="absolute bottom-20 right-1/4 w-96 h-96 bg-[#138808]/6 rounded-full blur-[120px]" />

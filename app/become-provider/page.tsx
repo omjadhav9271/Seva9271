@@ -287,7 +287,7 @@ export default function BecomeProviderPage() {
   const bioLeft = BIO_MAX - form.bio.length;
 
   return (
-    <div className="min-h-screen bg-[#0d0d0d] pt-16">
+    <div className="min-h-screen bg-[#0d0d0d] pt-20">
       <section className="relative py-14 overflow-hidden">
         <div className="absolute inset-0 pointer-events-none">
           <div className="absolute top-0 left-0 w-96 h-96 bg-[#FF9933]/8 rounded-full blur-[100px]" />
@@ -307,7 +307,11 @@ export default function BecomeProviderPage() {
         </div>
       </section>
 
-      <section className="pb-20 max-w-2xl mx-auto px-4 sm:px-6">
+      {/* The hero above stays max-w-2xl on purpose — it is centred marketing copy
+          and reads better narrow. The form does not: at max-w-2xl the 24-item
+          category grid was crammed into 3 columns with ~380px of dead space
+          either side on a desktop screen. */}
+      <section className="pb-20 max-w-4xl mx-auto px-4 sm:px-6">
         {editing && (
           <button onClick={() => { if (application) prefill(application); setEditing(false); }}
             className="text-sm text-gray-400 hover:text-white mb-4 transition-colors">
@@ -317,7 +321,7 @@ export default function BecomeProviderPage() {
 
         <div className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-6 sm:p-8 space-y-6">
           <Field label="What do you do?" required>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
               {categories.map((cat) => (
                 <button key={cat.id} type="button"
                   onClick={() => setForm({ ...form, categoryId: cat.id })}
@@ -748,13 +752,18 @@ function StatusShell({ icon, tone, title, body, children }: {
 }) {
   return (
     <div className="min-h-screen bg-[#0d0d0d] pt-20 flex items-start justify-center px-4">
-      <div className="text-center max-w-lg w-full py-16">
+      {/* Widened from max-w-lg: `children` here is the document checklist,
+          experience and pricing sections, which were squeezed into the same
+          512px column as the one-line status text. text-center is kept on the
+          wrapper — the status buttons below are inline and rely on inheriting
+          it — and the body copy is capped so the prose line stays readable. */}
+      <div className="text-center max-w-3xl w-full py-16">
         <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 border-2"
           style={{ backgroundColor: `${tone}1a`, borderColor: `${tone}4d` }}>
           {icon}
         </div>
         <h2 className="text-2xl sm:text-3xl font-black text-white mb-3">{title}</h2>
-        <p className="text-gray-400 mb-8">{body}</p>
+        <p className="text-gray-400 mb-8 max-w-lg mx-auto">{body}</p>
         {children}
       </div>
     </div>

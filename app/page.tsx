@@ -71,7 +71,10 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-[#0d0d0d]">
       {/* Hero Section */}
-      <section className="relative min-h-screen flex items-center pt-16 overflow-hidden">
+      {/* pt-24, not pt-20 like the other pages: the navbar is transparent at
+          scroll-top and sits directly over this hero, so it needs more than the
+          bare 64px of nav height to clear the badge and headline. */}
+      <section className="relative min-h-screen flex items-center pt-24 overflow-hidden">
         {/* Background Effects */}
         <div className="absolute inset-0 pointer-events-none">
           <div className="absolute top-20 left-0 w-[600px] h-[600px] bg-[#FF9933]/8 rounded-full blur-[120px]" />
@@ -108,26 +111,30 @@ export default function Home() {
 
               {/* Search Bar */}
               <form onSubmit={handleSearch} className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-2xl p-2 mb-6 hover:border-[#FF9933]/30 transition-colors">
+                {/* min-w-0 on every flex-1 child: flex items default to
+                    min-width:auto, so without it these refuse to shrink below
+                    their intrinsic width and push the submit button out of the
+                    grid column and underneath the card beside it. */}
                 <div className="flex flex-col sm:flex-row gap-2">
-                  <div className="flex items-center gap-3 flex-1 px-4 py-2">
+                  <div className="flex items-center gap-3 flex-1 min-w-0 px-4 py-2">
                     <Search className="w-5 h-5 text-gray-500 flex-shrink-0" />
                     <input
                       type="text"
                       placeholder="What service do you need?"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      className="flex-1 bg-transparent text-white placeholder-gray-500 text-sm focus:outline-none"
+                      className="flex-1 min-w-0 bg-transparent text-white placeholder-gray-500 text-sm focus:outline-none"
                     />
                   </div>
                   <div className="hidden sm:block w-px bg-[#2a2a2a] self-stretch" />
-                  <div className="flex items-center gap-3 flex-1 px-4 py-2">
+                  <div className="flex items-center gap-3 flex-1 min-w-0 px-4 py-2">
                     <MapPin className="w-5 h-5 text-gray-500 flex-shrink-0" />
                     <input
                       type="text"
                       placeholder="Your location"
                       value={location}
                       onChange={(e) => setLocation(e.target.value)}
-                      className="flex-1 bg-transparent text-white placeholder-gray-500 text-sm focus:outline-none"
+                      className="flex-1 min-w-0 bg-transparent text-white placeholder-gray-500 text-sm focus:outline-none"
                     />
                   </div>
                   <button

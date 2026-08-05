@@ -80,7 +80,7 @@ export default function BookingsPage() {
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] pt-20">
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
         <div className="flex items-center justify-between mb-8">
           <h1 className="text-3xl font-black text-white flex items-center gap-3">
             <BookOpen className="w-8 h-8 text-[#FF9933]" />My Bookings

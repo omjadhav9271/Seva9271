@@ -310,7 +310,7 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
   if (loading || authLoading) {
     return (
       <div className="min-h-screen bg-[#0d0d0d] pt-20">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8 text-center text-gray-400">Loading…</div>
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 text-center text-gray-400">Loading…</div>
       </div>
     );
   }
@@ -318,7 +318,7 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
   if (!booking) {
     return (
       <div className="min-h-screen bg-[#0d0d0d] pt-20">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 py-20 text-center">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-20 text-center">
           <AlertCircle className="w-12 h-12 text-gray-600 mx-auto mb-4" />
           <h1 className="text-xl font-bold text-white mb-2">Booking not found</h1>
           <p className="text-gray-400 text-sm mb-6">
@@ -365,7 +365,7 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] pt-20">
-      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8">
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8">
         <Link href="/bookings" className="inline-flex items-center gap-2 text-sm text-gray-400 hover:text-white mb-6">
           <ArrowLeft className="w-4 h-4" />Back to My Bookings
         </Link>

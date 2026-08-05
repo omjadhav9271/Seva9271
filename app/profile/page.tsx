@@ -89,7 +89,9 @@ export default function ProfilePage() {
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] pt-20">
-      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8">
+      {/* settings/detail width — the form inside is md:grid-cols-2, which was
+          squeezed at max-w-3xl (47% of a 1440px viewport went unused) */}
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8">
         <h1 className="text-3xl font-black text-white mb-8">My Profile</h1>
 
         {/* Profile Card */}

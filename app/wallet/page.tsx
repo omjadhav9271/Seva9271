@@ -108,7 +108,9 @@ export default function WalletPage() {
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] pt-20">
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8">
+      {/* dashboard width — the lg:grid-cols-3 split below (balance+ledger / tier
+          sidebar) had only 896px to share */}
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
         <h1 className="text-3xl font-black text-white mb-8 flex items-center gap-3">
           <Wallet className="w-8 h-8 text-[#FF9933]" />
           Seva Wallet

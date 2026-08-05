@@ -285,20 +285,24 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] pt-20">
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      {/* matches the other public pages (/, /services, /providers) at max-w-7xl */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Back */}
         <Link href="/providers" className="inline-flex items-center gap-2 text-gray-400 hover:text-white mb-6 transition-colors group">
           <ArrowLeft className="w-4 h-4 group-hover:-translate-x-1 transition-transform" />
           Back to Providers
         </Link>
 
+        {/* min-w-0 on both grid children: grid items default to min-width:auto,
+            so they refuse to shrink below their min-content width and stretch
+            the track past the viewport — 442px inside 390px on mobile. */}
         <div className="grid lg:grid-cols-3 gap-8">
           {/* Main Content */}
-          <div className="lg:col-span-2 space-y-6">
+          <div className="lg:col-span-2 min-w-0 space-y-6">
             {/* Profile Card */}
             <div className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-6">
               <div className="flex items-start justify-between gap-4 mb-6">
-                <div className="flex items-start gap-4">
+                <div className="flex items-start gap-4 min-w-0">
                   <div className="relative flex-shrink-0">
                     <div className={`w-20 h-20 rounded-2xl bg-gradient-to-br ${gradient} flex items-center justify-center text-2xl font-black text-white`}>
                       {initials(provider.business_name)}
@@ -307,7 +311,7 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                       <span className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-[#22c55e] border-2 border-[#161616]" />
                     )}
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                       <h1 className="text-2xl font-black text-white">{provider.business_name}</h1>
                       {provider.is_verified && <CheckCircle className="w-5 h-5 text-[#138808]" />}
@@ -360,7 +364,9 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
               </div>
 
               {/* Stats Row */}
-              <div className="grid grid-cols-3 gap-4 mb-6">
+              {/* tighter gutter on mobile: with the card no longer overflowing,
+                  three columns at gap-4 left only 60px for a 64px "Experience" */}
+              <div className="grid grid-cols-3 gap-2 sm:gap-4 mb-6">
                 <div className="bg-[#1e1e1e] rounded-xl p-4 text-center">
                   <p className="text-xl font-black text-white">{provider.total_bookings}+</p>
                   <p className="text-xs text-gray-400 mt-0.5">Jobs Done</p>
@@ -504,7 +510,7 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
           </div>
 
           {/* Booking Sidebar */}
-          <div className="lg:col-span-1">
+          <div className="lg:col-span-1 min-w-0">
             <div className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-5 sticky top-24">
               {bookingStep === 'form' ? (
                 <>
