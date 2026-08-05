@@ -142,7 +142,8 @@ let docPaths = [];
 try {
   if (!CHROME) { console.log('Cannot run: Chrome not found.'); process.exit(0); }
   try {
-    const r = await fetch(APP, { signal: AbortSignal.timeout(5000) });
+    // generous: a cold dev server compiles the route on first hit (measured ~7s)
+    const r = await fetch(APP, { signal: AbortSignal.timeout(45000) });
     if (!r.ok && r.status >= 500) throw new Error('bad status');
   } catch { console.log('Cannot run: dev server not answering on :3000 — start `npm run dev`.'); process.exit(0); }
 

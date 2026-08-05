@@ -21,7 +21,7 @@ const DB_SCRIPTS = [
   'verify-step5', 'verify-step6', 'verify-step7', 'verify-step8', 'verify-step8-evidence',
   'verify-step9', 'verify-step9-5', 'verify-step10',
 ];
-const UI_SCRIPTS = ['ui-check-step9', 'ui-check-step10'];
+const UI_SCRIPTS = ['ui-check-step8', 'ui-check-step9', 'ui-check-step10'];
 const withUi = !process.argv.includes('--no-ui');
 
 const creds = {
@@ -46,7 +46,10 @@ for (const key of ['NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY', 
 
 let serverUp = false;
 try {
-  const r = await fetch('http://localhost:3000', { signal: AbortSignal.timeout(4000) });
+  // Generous on purpose: `next dev` compiles the route on the first request, and a cold server has
+  // been measured taking ~7s (much worse when it has been running for hours). A short timeout here
+  // silently downgrades the run to DB-only — a green suite that never opened a browser.
+  const r = await fetch('http://localhost:3000', { signal: AbortSignal.timeout(45000) });
   serverUp = r.status < 500;
 } catch { serverUp = false; }
 
