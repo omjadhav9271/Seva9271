@@ -22,7 +22,8 @@ const DB_SCRIPTS = [
   'verify-step5', 'verify-step6', 'verify-step7', 'verify-step8', 'verify-step8-evidence',
   'verify-step9', 'verify-step9-5', 'verify-step10',
 ];
-const UI_SCRIPTS = ['ui-check-step8', 'ui-check-step9', 'ui-check-step10', 'ui-check-dispute-clarity'];
+const UI_SCRIPTS = ['ui-check-step8', 'ui-check-step9', 'ui-check-step10', 'ui-check-dispute-clarity',
+  'ui-check-live-counter-offer'];
 const withUi = !process.argv.includes('--no-ui');
 
 // Credentials come from .env.local (gitignored) or the environment — never a literal in this

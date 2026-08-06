@@ -185,7 +185,12 @@ let chrome = null, bookingId = null, disputeId = null;
 let customerId = null, providerUserId = null, adminId = null, providerId = null;
 let customerName = null, businessName = null;
 let customerNameOriginal = null, customerNameSeeded = false;
+let contactOriginal = null, contactSeeded = false;
 let FEE = 0, PAYOUT = 0;
+const SEEDED = {
+  customerPhone: '+91 98111 20002', customerAddress: 'Flat 4B, Hill Road, Bandra West, Mumbai',
+  providerPhone: '+91 98111 10001', providerAddress: 'Shop 12, Linking Road, Bandra West, Mumbai',
+};
 
 try {
   if (!CHROME) { console.log('Cannot run: Chrome not found.'); process.exit(0); }
@@ -221,10 +226,36 @@ try {
   }
 
   const { data: sp } = await service.from('service_providers')
-    .select('id, business_name').eq('user_id', providerUserId).eq('status', 'approved').maybeSingle();
+    .select('id, business_name, phone, work_address').eq('user_id', providerUserId).eq('status', 'approved').maybeSingle();
   if (!sp) { console.log('Cannot run: the provider account owns no approved provider row.'); process.exit(1); }
   providerId = sp.id;
   businessName = sp.business_name ?? '';
+
+  // The contact panel exists so an admin can REACH both sides. These profiles store '' for unset
+  // contact fields, so the panel honestly renders "no phone on file" — correct behaviour, but it
+  // leaves nothing to assert. Seed only what is empty, and restore whatever was there.
+  const { data: custContact } = await service.from('profiles')
+    .select('phone, address').eq('id', customerId).maybeSingle();
+  contactOriginal = {
+    customer: { phone: custContact?.phone ?? null, address: custContact?.address ?? null },
+    provider: { phone: sp.phone ?? null, work_address: sp.work_address ?? null },
+  };
+  const blank = (v) => v == null || String(v).trim() === '';
+  if (blank(custContact?.phone) || blank(custContact?.address)) {
+    await service.from('profiles').update({
+      phone: blank(custContact?.phone) ? SEEDED.customerPhone : custContact.phone,
+      address: blank(custContact?.address) ? SEEDED.customerAddress : custContact.address,
+    }).eq('id', customerId);
+    contactSeeded = true;
+  }
+  if (blank(sp.phone) || blank(sp.work_address)) {
+    await service.from('service_providers').update({
+      phone: blank(sp.phone) ? SEEDED.providerPhone : sp.phone,
+      work_address: blank(sp.work_address) ? SEEDED.providerAddress : sp.work_address,
+    }).eq('id', providerId);
+    contactSeeded = true;
+  }
+  if (contactSeeded) console.log('note: seeded the missing phone/address on the two parties for this run (restored at the end).');
 
   // an admin session, to resolve the case from OUTSIDE the browser while a party page stays open
   const adminClient = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
@@ -510,9 +541,34 @@ try {
   if (cat?.name && new RegExp(`Service: ${cat.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i').test(bundle))
     ok(`...and carry the service category ("Service: ${cat.name}")`);
   else no('the contact cards do not show the service category');
-  if (!/Contact details unavailable/.test(bundle) && /Visible to admins only/i.test(bundle))
-    ok('...with both parties\' contact details resolved, labelled admin-only');
-  else no('contact details did not load');
+  // Item 4 in full: the admin must be able to REACH both sides. Assert the real values are on the
+  // page, not merely that the panel rendered — "no phone on file" would satisfy the weaker check
+  // while leaving the admin unable to call anyone.
+  const { data: custRow } = await service.from('profiles')
+    .select('phone, address, city').eq('id', customerId).maybeSingle();
+  const { data: provRow } = await service.from('service_providers')
+    .select('phone, work_address, city').eq('id', providerId).maybeSingle();
+  const custPhone = custRow?.phone ?? null;
+  const provPhone = provRow?.phone ?? null;
+  const custPlace = custRow?.address ?? custRow?.city ?? null;
+  const provPlace = provRow?.work_address ?? provRow?.city ?? null;
+
+  // NB an empty string must NOT count as present — profiles here store '' rather than NULL for
+  // unset contact fields, and `bundle.includes('')` is always true, which passed a missing
+  // location as if it had rendered.
+  const shows = (v) => typeof v === 'string' && v.trim() !== '' && bundle.includes(v);
+  if (shows(custPhone) && shows(provPhone))
+    ok(`both parties' PHONE numbers are on the page (${custPhone} · ${provPhone})`);
+  else no(`a phone is missing — customer=${custPhone ? shows(custPhone) : 'none on file'}, provider=${provPhone ? shows(provPhone) : 'none on file'}`);
+  if (bundle.includes(CUSTOMER_EMAIL) && bundle.includes(PROVIDER_EMAIL))
+    ok("both parties' EMAIL addresses are on the page");
+  else no('an email is missing from the contact panel');
+  if (shows(custPlace) && shows(provPlace))
+    ok(`both parties' LOCATION is on the page (${custPlace} · ${provPlace})`);
+  else no(`a location is missing — customer=${custPlace ?? 'none on file'}, provider=${provPlace ?? 'none on file'}`);
+  if (!/no phone on file|no email on file|Contact details unavailable/.test(bundle) && /Visible to admins only/i.test(bundle))
+    ok('...no "not on file" gaps, and the panel is labelled admin-only');
+  else no('the panel reports missing contact details: ' + (bundle.match(/no (phone|email) on file|Contact details unavailable/g)?.join(', ') ?? '?'));
   // Same card, neutral labels: the admin is neither party, so it reads "the provider" rather than
   // "you". Assert the NUMBERS, not just the heading — a card that renders with the wrong figures
   // is worse than one that is missing.
@@ -572,6 +628,11 @@ try {
     if (customerNameSeeded && customerId) {
       await service.from('profiles').update({ full_name: customerNameOriginal }).eq('id', customerId);
       console.log(`  customer full_name restored to ${JSON.stringify(customerNameOriginal)}`);
+    }
+    if (contactSeeded && contactOriginal) {
+      if (customerId) await service.from('profiles').update(contactOriginal.customer).eq('id', customerId);
+      if (providerId) await service.from('service_providers').update(contactOriginal.provider).eq('id', providerId);
+      console.log('  phone/address restored on both parties');
     }
   } catch (e) { console.log('  cleanup problem: ' + (e?.message ?? e)); }
   try { ws?.close(); } catch {}
