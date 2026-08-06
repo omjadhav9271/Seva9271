@@ -21,10 +21,14 @@ const LIST_COLUMNS =
   'id, user_id, category_id, business_name, city, state, status, kyc_status, kyc_documents, ' +
   'hourly_rate, trust_tier, applied_at, reviewed_at, service_categories(name)';
 
+// trust_tier is in BOTH lists on purpose: ProviderApplicationDetail.application extends
+// ProviderApplicationRow, so TypeScript believes the field is there either way. Omitting it here
+// would not fail the build — the badge would just render tier 1 for every applicant, which is a
+// wrong answer rather than a missing one.
 const DETAIL_COLUMNS =
   'id, user_id, category_id, business_name, bio, experience_years, hourly_rate, city, state, ' +
   'address, status, is_verified, kyc_status, kyc_documents, rejection_reason, applied_at, ' +
-  'reviewed_by, reviewed_at, created_at, service_categories(name)';
+  'reviewed_by, reviewed_at, created_at, trust_tier, service_categories(name)';
 
 
 // The select strings are built by concatenation, so supabase-js can't infer a row shape from

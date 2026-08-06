@@ -12,6 +12,7 @@ import {
   reviewProviderDocument, verifyProviderExperience,
   type ProviderApplicationDetail,
 } from '@/lib/admin';
+import TrustTierBadge from '@/components/trust-tier-badge';
 import { toast } from 'sonner';
 
 const DOC_CHIP: Record<string, { label: string; cls: string }> = {
@@ -109,6 +110,10 @@ export default function AdminProviderApplicationPage({ params }: { params: { id:
           <div>
             <h1 className="text-2xl font-black text-white">{app.business_name ?? 'Unnamed'}</h1>
             <p className="text-sm text-[#FF9933] mt-0.5">{app.service_categories?.name ?? 'No category'}</p>
+            {/* Step 9.5 capability tier — recomputed server-side whenever a document or work
+                history is verified, and demoted by the nightly expiry sweep. Shown here because
+                it is what the approve/reject decision is actually about. */}
+            <TrustTierBadge tier={app.trust_tier} showMeaning className="mt-2" />
           </div>
           <span className={`text-xs px-3 py-1.5 rounded-full font-medium capitalize flex-shrink-0 ${
             app.status === 'approved' ? 'bg-[#138808]/10 text-[#138808]'

@@ -131,11 +131,13 @@ export function verifiedYears(rows: ProviderExperience[]): number {
 export type MyApplication = Pick<ServiceProvider,
   | 'id' | 'category_id' | 'business_name' | 'bio' | 'experience_years' | 'hourly_rate'
   | 'city' | 'state' | 'address' | 'status' | 'is_verified' | 'kyc_status' | 'kyc_documents'
-  | 'rejection_reason' | 'applied_at' | 'reviewed_at'>;
+  | 'rejection_reason' | 'applied_at' | 'reviewed_at' | 'trust_tier'>;
 
+// trust_tier needs no column grant here: my_provider_profile is a view filtered to auth.uid() and
+// granted wholesale, so the owner reads their own tier through it.
 const MY_APPLICATION_COLUMNS =
   'id, category_id, business_name, bio, experience_years, hourly_rate, city, state, address, ' +
-  'status, is_verified, kyc_status, kyc_documents, rejection_reason, applied_at, reviewed_at';
+  'status, is_verified, kyc_status, kyc_documents, rejection_reason, applied_at, reviewed_at, trust_tier';
 
 const extFromName = (name: string) => {
   const dot = name.lastIndexOf('.');

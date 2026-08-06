@@ -15,6 +15,7 @@ import {
   KYC_ACCEPT, type MyApplication,
 } from '@/lib/provider-application';
 import { fetchMyPricing, saveMyPricing } from '@/lib/bargaining';
+import TrustTierBadge from '@/components/trust-tier-badge';
 import type {
   KycDocument, CategoryKycRequirement, DocumentChecklistItem, ProviderExperience,
   ProviderPricing,
@@ -205,6 +206,11 @@ export default function BecomeProviderPage() {
       return (
         <StatusShell icon={<CheckCircle className="w-12 h-12 text-[#138808]" />} tone="#138808"
           title="You're live." body="Your profile is verified and customers can book you now.">
+          {/* What customers see about what you have been checked FOR. Verifying another document
+              or a work history raises it automatically; letting one expire lowers it again. */}
+          <div className="flex justify-center mb-6">
+            <TrustTierBadge tier={application.trust_tier} showMeaning />
+          </div>
           <div className="flex flex-col sm:flex-row gap-3 justify-center mb-8">
             <Link href={`/providers/${application.id}`} className="saffron-btn px-6 py-3 rounded-xl font-semibold text-sm">
               View my public profile

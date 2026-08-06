@@ -2,10 +2,11 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { Scale, AlertTriangle, CheckCircle, ChevronRight, BadgeCheck } from 'lucide-react';
+import { Scale, AlertTriangle, CheckCircle, ChevronRight } from 'lucide-react';
 import { supabase, type Dispute } from '@/lib/supabase';
 import { useAdminGuard, REASON_LABELS } from '@/lib/admin';
 import { fetchNames, partyLabel } from '@/lib/disputes';
+import AdminNav from '@/components/admin-nav';
 
 // Queue row = dispute + enough booking context to triage (admin RLS opens these reads).
 type QueueRow = Dispute & {
@@ -79,9 +80,7 @@ export default function AdminDisputesPage() {
           Every dispute carries its full evidence bundle — the reason and message filed, the files
           each party attached, the booking timeline, the chat and the payments.
         </p>
-        <Link href="/admin/providers" className="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-[#FF9933] transition-colors mb-6">
-          <BadgeCheck className="w-3.5 h-3.5" /> Provider applications
-        </Link>
+        <AdminNav counts={{ disputes: openCount }} />
 
         <div className="flex gap-2 mb-6">
           {(['open', 'resolved'] as const).map((t) => (

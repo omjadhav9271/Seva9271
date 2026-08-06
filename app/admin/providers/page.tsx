@@ -2,8 +2,10 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { BadgeCheck, Clock, CheckCircle, XCircle, ChevronRight, Scale } from 'lucide-react';
+import { BadgeCheck, Clock, CheckCircle, XCircle, ChevronRight } from 'lucide-react';
 import { useAdminGuard, fetchProviderApplications, type ProviderApplicationRow } from '@/lib/admin';
+import AdminNav from '@/components/admin-nav';
+import TrustTierBadge from '@/components/trust-tier-badge';
 
 function age(iso: string | null): string {
   if (!iso) return '—';
@@ -51,9 +53,7 @@ export default function AdminProvidersPage() {
         <p className="text-sm text-gray-400 mb-4">
           Nobody is bookable until approved here. Check the ID against the details before you approve.
         </p>
-        <Link href="/admin/disputes" className="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-[#FF9933] transition-colors mb-6">
-          <Scale className="w-3.5 h-3.5" /> Dispute queue
-        </Link>
+        <AdminNav counts={{ providers: pendingCount }} />
 
         <div className="flex gap-2 mb-6">
           {(['pending', 'decided'] as const).map((t) => (
@@ -107,6 +107,11 @@ export default function AdminProvidersPage() {
                     {r.hourly_rate > 0 && <> · ₹{Number(r.hourly_rate).toLocaleString('en-IN')}/hr</>}
                     {' · '}{r.documents_verified}/{r.documents_required} docs verified
                   </p>
+                  {/* Approved rows only. trust_tier is NOT NULL DEFAULT 1 and tier 1 reads
+                      "Identity verified", so on a pending applicant with nothing checked yet the
+                      badge would assert something the DB has not established. Their progress is
+                      already on the line above as docs-verified. */}
+                  {r.status === 'approved' && <TrustTierBadge tier={r.trust_tier} className="mt-1.5" />}
                 </div>
                 <div className="text-right flex-shrink-0">
                   <span className={`text-xs px-2.5 py-1 rounded-full font-medium capitalize ${

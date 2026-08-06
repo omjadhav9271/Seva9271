@@ -10,6 +10,7 @@ import { useAuth } from '@/lib/auth-context';
 import { useRouter } from 'next/navigation';
 import { supabase, type ReputationSnapshot } from '@/lib/supabase';
 import { makeOffer } from '@/lib/bargaining';
+import TrustTierBadge from '@/components/trust-tier-badge';
 import { toast } from 'sonner';
 
 type ProviderDetail = {
@@ -25,6 +26,9 @@ type ProviderDetail = {
   reputation_score: number;
   is_verified: boolean;
   is_available: boolean;
+  // Step 9.5 capability tier. Readable by clients only since 20260813120000 added the SELECT
+  // grant that Step 9.5 forgot; server-written by recompute_trust_tier().
+  trust_tier: number;
   city: string | null;
   state: string | null;
   // Step 10: public pricing. floor_price is absent by design — it has no select grant.
@@ -154,7 +158,7 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
       // if someone posts around this page.
       const { data, error } = await supabase
         .from('service_providers')
-        .select('id, category_id, business_name, bio, experience_years, hourly_rate, rating, total_reviews, total_bookings, reputation_score, is_verified, is_available, city, state, pricing_mode, list_price, auto_accept_threshold, max_counter_rounds, service_categories(name, slug)')
+        .select('id, category_id, business_name, bio, experience_years, hourly_rate, rating, total_reviews, total_bookings, reputation_score, is_verified, is_available, trust_tier, city, state, pricing_mode, list_price, auto_accept_threshold, max_counter_rounds, service_categories(name, slug)')
         .eq('id', params.id)
         .eq('status', 'approved')
         .maybeSingle();
@@ -411,6 +415,9 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                     <Shield className="w-4 h-4" />ID Verified
                   </span>
                 )}
+                {/* Step 9.5 capability tier — what this provider has been checked FOR, as opposed
+                    to the reputation score below, which is what they have DONE. */}
+                <TrustTierBadge tier={provider.trust_tier} />
                 {provider.total_bookings > 500 && (
                   <span className="flex items-center gap-1.5 bg-[#FF9933]/10 border border-[#FF9933]/20 rounded-full px-3 py-1 text-sm font-medium text-[#FF9933]">
                     <Award className="w-4 h-4" />Top Rated

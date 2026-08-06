@@ -6,7 +6,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import {
   Bell, MapPin, Wallet, Menu, X, LogOut, User, BookOpen,
   Heart, Settings, HelpCircle, ArrowUpRight, ArrowDownLeft, TrendingUp,
-  CheckCircle, Info, AlertTriangle, AlertCircle, type LucideIcon
+  CheckCircle, Info, AlertTriangle, AlertCircle, ShieldCheck, type LucideIcon
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { supabase, type Notification } from '@/lib/supabase';
@@ -16,6 +16,16 @@ const navLinks = [
   { href: '/providers', label: 'Providers' },
   { href: '/how-it-works', label: 'How It Works' },
   { href: '/become-provider', label: 'Become a Provider' },
+];
+
+// An admin is not a customer with extra buttons. They never book, never hold a wallet balance and
+// certainly never "Become a Provider" — offering those is noise that also implies capabilities the
+// account does not have. Give them the three surfaces they actually work in.
+const adminLinks = [
+  { href: '/admin', label: 'Admin' },
+  { href: '/admin/disputes', label: 'Disputes' },
+  { href: '/admin/providers', label: 'Providers' },
+  { href: '/admin/categories', label: 'Categories' },
 ];
 
 // Colour + icon per notification type (info / success / warning / error).
@@ -49,11 +59,11 @@ export default function Navbar() {
   const router = useRouter();
   const pathname = usePathname();
 
-  // Admin link only for admins — role is server-controlled (not client-writable), and the admin
-  // pages + RLS re-check it anyway; this is pure navigation, not a security boundary.
-  const links = profile?.role === 'admin'
-    ? [...navLinks, { href: '/admin/disputes', label: 'Admin' }]
-    : navLinks;
+  // Admin navigation replaces the customer navigation rather than adding to it. `role` is
+  // server-controlled (not client-writable) and every admin page + its RLS re-checks it, so this
+  // is presentation only — hiding a link has never been the boundary.
+  const isAdmin = profile?.role === 'admin';
+  const links = isAdmin ? adminLinks : navLinks;
 
   const walletRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
@@ -133,8 +143,11 @@ export default function Navbar() {
     router.push('/');
   };
 
-  const balance = profile?.wallet_balance ?? 12450;
-  const tier = profile?.wallet_tier ?? 'gold';
+  // Real values only. These used to fall back to ₹12,450 / 'gold' placeholder data, so for the
+  // moment before the profile row arrives — and for any user whose fetch fails — the navbar showed
+  // a balance that was not theirs. Money must never be invented in the UI.
+  const balance = profile?.wallet_balance ?? 0;
+  const tier = profile?.wallet_tier ?? 'silver';
   const monthlyReward = Math.round((balance * 0.08) / 12);
 
   const unreadCount = notifications.filter((n) => !n.is_read).length;
@@ -220,7 +233,10 @@ export default function Navbar() {
               <>
                 {user ? (
                   <>
-                    {/* Wallet Button + Dropdown */}
+                    {/* Wallet Button + Dropdown — customers and providers only. An admin holds no
+                        balance and cannot top up or withdraw, so the control is hidden rather than
+                        shown reading ₹0. */}
+                    {!isAdmin && (
                     <div className="relative" ref={walletRef}>
                       <button
                         onClick={() => { setWalletOpen(!walletOpen); setNotificationsOpen(false); setUserMenuOpen(false); }}
@@ -285,8 +301,10 @@ export default function Navbar() {
                         </div>
                       )}
                     </div>
+                    )}
 
-                    {/* Notifications Button + Dropdown */}
+                    {/* Notifications Button + Dropdown — admins need these too: a raised dispute
+                        notifies every admin and links straight to the case. */}
                     <div className="relative" ref={notifRef}>
                       <button
                         onClick={toggleNotifications}
@@ -360,19 +378,37 @@ export default function Navbar() {
                       {userMenuOpen && (
                         <div className="absolute right-0 mt-2 w-56 bg-[#1a1a1a] border border-[#2a2a2a] rounded-2xl shadow-2xl overflow-hidden">
                           <div className="px-4 py-3.5 border-b border-[#2a2a2a]">
-                            <p className="text-sm font-bold text-white truncate">{profile?.full_name ?? 'Rajesh Kumar'}</p>
-                            <p className="text-xs text-gray-400 truncate mt-0.5">{user.email ?? 'rajesh@example.com'}</p>
+                            {/* No invented identity: show what we have, or nothing. */}
+                            <p className="text-sm font-bold text-white truncate">{profile?.full_name?.trim() || user.email || 'Your account'}</p>
+                            {profile?.full_name?.trim() && user.email && (
+                              <p className="text-xs text-gray-400 truncate mt-0.5">{user.email}</p>
+                            )}
+                            {isAdmin && (
+                              <span className="inline-block mt-1.5 text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-[#FF9933]/15 text-[#FF9933]">
+                                Admin
+                              </span>
+                            )}
                           </div>
                           <div className="py-1.5">
                             <Link href="/profile" onClick={closeAll} className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300 hover:bg-[#252525] hover:text-white transition-colors">
                               <User className="w-4 h-4 text-gray-500" /> Profile
                             </Link>
-                            <Link href="/bookings" onClick={closeAll} className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300 hover:bg-[#252525] hover:text-white transition-colors">
-                              <BookOpen className="w-4 h-4 text-gray-500" /> My Bookings
-                            </Link>
-                            <Link href="/profile" onClick={closeAll} className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300 hover:bg-[#252525] hover:text-white transition-colors">
-                              <Heart className="w-4 h-4 text-gray-500" /> Favorites
-                            </Link>
+                            {/* Bookings and favourites belong to people who book. An admin has
+                                neither, and the admin console is what they came for. */}
+                            {isAdmin ? (
+                              <Link href="/admin" onClick={closeAll} className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300 hover:bg-[#252525] hover:text-white transition-colors">
+                                <ShieldCheck className="w-4 h-4 text-gray-500" /> Admin console
+                              </Link>
+                            ) : (
+                              <>
+                                <Link href="/bookings" onClick={closeAll} className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300 hover:bg-[#252525] hover:text-white transition-colors">
+                                  <BookOpen className="w-4 h-4 text-gray-500" /> My Bookings
+                                </Link>
+                                <Link href="/profile" onClick={closeAll} className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300 hover:bg-[#252525] hover:text-white transition-colors">
+                                  <Heart className="w-4 h-4 text-gray-500" /> Favorites
+                                </Link>
+                              </>
+                            )}
                             <Link href="/profile" onClick={closeAll} className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-300 hover:bg-[#252525] hover:text-white transition-colors">
                               <Settings className="w-4 h-4 text-gray-500" /> Settings
                             </Link>
@@ -443,8 +479,13 @@ export default function Navbar() {
               {user ? (
                 <div className="space-y-2">
                   <Link href="/profile" className="block px-4 py-3 rounded-lg text-sm text-gray-300 hover:bg-[#1e1e1e] hover:text-white">Profile</Link>
-                  <Link href="/bookings" className="block px-4 py-3 rounded-lg text-sm text-gray-300 hover:bg-[#1e1e1e] hover:text-white">My Bookings</Link>
-                  <Link href="/wallet" className="block px-4 py-3 rounded-lg text-sm text-gray-300 hover:bg-[#1e1e1e] hover:text-white">Wallet</Link>
+                  {/* Mirrors the desktop menu — an admin gets neither bookings nor a wallet. */}
+                  {!isAdmin && (
+                    <>
+                      <Link href="/bookings" className="block px-4 py-3 rounded-lg text-sm text-gray-300 hover:bg-[#1e1e1e] hover:text-white">My Bookings</Link>
+                      <Link href="/wallet" className="block px-4 py-3 rounded-lg text-sm text-gray-300 hover:bg-[#1e1e1e] hover:text-white">Wallet</Link>
+                    </>
+                  )}
                   <button onClick={handleSignOut} className="block w-full text-left px-4 py-3 rounded-lg text-sm text-red-400 hover:bg-red-900/20">Sign out</button>
                 </div>
               ) : (
