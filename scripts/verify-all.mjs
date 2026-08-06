@@ -20,10 +20,10 @@ import { requireAccounts, SUITE_PREFIXES } from './lib/creds.mjs';
 const DB_SCRIPTS = [
   'verify-hardening', 'verify-provider-pii', 'verify-step2', 'verify-step3', 'verify-step4',
   'verify-step5', 'verify-step6', 'verify-step7', 'verify-step8', 'verify-step8-evidence',
-  'verify-step9', 'verify-step9-5', 'verify-step10',
+  'verify-step9', 'verify-step9-5', 'verify-step10', 'verify-admin',
 ];
 const UI_SCRIPTS = ['ui-check-step8', 'ui-check-step9', 'ui-check-step10', 'ui-check-dispute-clarity',
-  'ui-check-live-counter-offer'];
+  'ui-check-live-counter-offer', 'ui-check-admin'];
 const withUi = !process.argv.includes('--no-ui');
 
 // Credentials come from .env.local (gitignored) or the environment — never a literal in this

@@ -266,6 +266,12 @@ try {
   await waitFor("!document.body.innerText.includes('What do you do?') && document.body.innerText.includes('Submitted')",
     { label: 'the pending status screen (form replaced)', timeout: 30000 });
   await sleep(500);
+  // The three assertions below share ONE snapshot, and "Your documents" arrives from a checklist
+  // fetch that can resolve after the form unmounts — so a fixed 500ms sleep raced it and this
+  // failed intermittently. Wait for it specifically; swallow the timeout so a genuine absence is
+  // still reported by the assertion rather than aborting the run.
+  await waitFor("/Your documents/i.test(document.body.innerText)",
+    { label: 'the document checklist', timeout: 15000 }).catch(() => {});
   const after = await text();
   if (/Submitted — reviewed within 24–48 hours|reviewed within 24/i.test(after)) ok('pending screen says “Submitted — reviewed within 24–48 hours”');
   else no('pending screen copy not found. Body was:\n' + after.slice(0, 400));

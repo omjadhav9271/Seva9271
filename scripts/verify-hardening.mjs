@@ -214,6 +214,7 @@ if (!service) {
     for (const [name, schedule, why] of [
       ['nightly-reputation', '0 2 * * *', 'time-decay never propagates; scores freeze between booking events'],
       ['hourly-expire-offers', '7 * * * *', "abandoned negotiations sit in 'negotiating' forever, holding the anti-probe slot"],
+      ['nightly-expire-documents', '20 2 * * *', 'verified documents never lapse, so a tier-3 badge outlives the police check behind it'],
     ]) {
       const job = jobs.get(name);
       if (!job) no(`${name} is NOT scheduled — ${why}`);
