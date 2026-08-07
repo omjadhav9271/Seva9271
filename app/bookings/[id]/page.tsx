@@ -345,8 +345,17 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
     formatTime(booking.scheduled_time) || null,
   ].filter(Boolean).join(', ');
   const StatusIcon = statusConfig[booking.status].icon;
+  // While a booking is being negotiated NOTHING is agreed — price_agreed is deliberately NULL
+  // (that is what makes /api/payments/create-order refuse to charge it). Falling back to
+  // total_amount and still calling it "Agreed" told a customer who had offered ₹450 that they had
+  // agreed ₹1,200, and kept saying it on an expired negotiation where no price was ever struck.
+  // Label what the number actually is: charged > agreed > merely listed.
   const amount = booking.price_charged ?? booking.price_agreed ?? booking.total_amount;
-  const priceLabel = booking.price_charged != null ? 'Charged' : 'Agreed';
+  const priceLabel = booking.price_charged != null
+    ? 'Charged'
+    : booking.price_agreed != null
+      ? 'Agreed'
+      : 'Listed';
   const address = booking.address ?? booking.service_providers?.city ?? '';
   const actions = role ? actionsFor(role, booking.status) : [];
   // Settled = money has cleared (tightened from Step 1's 'completed'). Reviews open for BOTH

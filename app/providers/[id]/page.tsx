@@ -464,11 +464,18 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
             <div className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-6">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="font-bold text-white text-lg">Customer Reviews</h2>
-                <div className="flex items-center gap-2">
-                  <StarRating rating={provider.rating} />
-                  <span className="text-white font-bold">{Number(provider.rating).toFixed(1)}</span>
-                  <span className="text-gray-500 text-sm">/ 5</span>
-                </div>
+                {/* Unrated ≠ zero-rated — same rule as the header badge and the Avg Rating stat.
+                    This header was the one place still rendering "0.0 / 5" with five empty stars
+                    for a provider who simply has no reviews yet. */}
+                {provider.total_reviews > 0 ? (
+                  <div className="flex items-center gap-2">
+                    <StarRating rating={provider.rating} />
+                    <span className="text-white font-bold">{Number(provider.rating).toFixed(1)}</span>
+                    <span className="text-gray-500 text-sm">/ 5</span>
+                  </div>
+                ) : (
+                  <span className="text-sm text-gray-500">Not rated yet</span>
+                )}
               </div>
               {/* Dimension breakdown — averaged across the shown reviews. */}
               {dimensionAverages.length > 0 && (
@@ -633,9 +640,14 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                         </button>
                       ) : (
                         <div className="border border-[#FF9933]/30 rounded-xl p-3 space-y-2">
+                          {/* The reference price MUST be the same figure as "Book at ₹X" above —
+                              that is the number the customer is bargaining down from, and it is
+                              what their offer is compared against. list_price is a JOB TOTAL (see
+                              migration 20260816120000), so it is never multiplied by the hours
+                              and never labelled "/hr". */}
                           <p className="text-xs text-gray-400">
-                            Listed at ₹{provider.list_price ?? provider.hourly_rate}/hr. Offer what you
-                            think it&apos;s worth — they can accept, counter or decline.
+                            Listed at ₹{provider.list_price ?? totalAmount} for {DURATION_HOURS} hours.
+                            Offer what you think it&apos;s worth — they can accept, counter or decline.
                           </p>
                           <input type="number" inputMode="numeric" value={offerAmount} autoFocus
                             onChange={(e) => setOfferAmount(e.target.value)}
