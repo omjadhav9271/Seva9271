@@ -133,6 +133,10 @@ async function goto(route, marker, label, settle = null) {
 // The nav links live in the header; scoping to it keeps page BODY copy from being mistaken for
 // navigation (the admin overview page legitimately describes the other admin surfaces in prose).
 const navText = () => evaluate(`(() => { const n = document.querySelector('nav') || document.querySelector('header'); return n ? n.innerText : ''; })()`);
+// The footer is the site-wide sitemap and a SECOND place the same invitation lives. Item 17 fixed
+// the navbar and left this one offering admins "Become a Provider" for a release, so it is now
+// asserted in both directions alongside the nav.
+const footerText = () => evaluate(`(() => { const f = document.querySelector('footer'); return f ? f.innerText : ''; })()`);
 
 // ---------------------------------------------------------------- run
 let chrome = null;
@@ -221,6 +225,12 @@ try {
       return n ? /₹/.test(n.innerText) : false; })()`);
     if (!wallet) ok('no wallet balance in the admin nav');
     else no('the admin nav still shows a wallet balance');
+
+    // ...and the same for the footer sitemap, which is where this survived item 17.
+    const foot = await footerText();
+    if (!foot) no('no footer rendered — the sitemap assertion below proves nothing');
+    else if (!/Become a Provider/i.test(foot)) ok('...and "Become a Provider" is gone from the admin FOOTER too');
+    else no('an admin is still offered "Become a Provider" in the footer sitemap');
   }
 
   // (b)+(c) item 12 — the queue is reachable and opens a decision page.
@@ -378,6 +388,12 @@ try {
     else no('"Become a Provider" vanished for a CUSTOMER — item 17 over-applied');
     if (!/Categories|Disputes/.test(nav)) ok('a customer is offered no admin links');
     else no('a customer can see admin navigation');
+
+    // The over-application check that matters for the footer: hiding the link from EVERYONE would
+    // pass the admin assertion above while quietly removing the main way people sign up.
+    const foot = await footerText();
+    if (/Become a Provider/i.test(foot)) ok('...and a customer still gets "Become a Provider" in the footer');
+    else no('"Become a Provider" vanished from the footer for a CUSTOMER — the admin fix over-applied');
 
     // The guard, in the browser. The RPC refuses them anyway (verify-admin.mjs proves that);
     // this is the navigation half.

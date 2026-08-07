@@ -286,6 +286,34 @@ try {
   if (!leakedInState) ok('...and "floor_price" appears in no serialized page state');
   else no('🔴 floor_price is present in the page payload');
 
+  // ---- Bucket C (18): this is the checkout, so guard the UPI-only contract here ----
+  // Proven by hand in a browser on 2026-08-08 and then left unprotected, which is how it would
+  // quietly come back. The assertion is deliberately structural rather than textual: counting
+  // SELECTABLE controls catches a re-added chooser whatever its options are labelled, where a
+  // grep for "wallet" would pass a chooser offering "Balance" or "Seva Credit".
+  const pay = await evaluate(`(() => {
+    const label = [...document.querySelectorAll('label')].find(l => l.textContent.trim() === 'Payment');
+    if (!label) return { found: false };
+    const section = label.parentElement;
+    return {
+      found: true,
+      controls: section.querySelectorAll('button, input[type=radio], input[type=checkbox], select').length,
+      text: section.innerText.replace(/\\s+/g, ' ').trim(),
+    };
+  })()`);
+
+  if (pay.found) ok('the booking panel has a Payment section');
+  else no('no Payment section on the booking panel — the checkout changed shape');
+  if (pay.found && pay.controls === 0) ok('...offering ONE path, with nothing to choose (no chooser)');
+  else if (pay.found) no(`🔴 the customer is being offered a payment CHOICE again (${pay.controls} control(s)) — item 18 says UPI only`);
+  if (pay.found && /UPI/i.test(pay.text)) ok('...and that path is UPI/online into escrow');
+  else if (pay.found) no('the single payment path is not UPI: ' + pay.text.slice(0, 80));
+
+  // The wallet is the PROVIDER payout ledger. It must not be offered to a customer as a way to
+  // pay — anywhere on the page that takes the booking.
+  if (!/seva wallet/i.test(providerPage)) ok('the Seva Wallet is not offered to the customer at checkout');
+  else no('🔴 "Seva Wallet" is back on the checkout page — it is the payout ledger, not a payment method');
+
   // make the offer
   if (await clickContaining('Make an offer')) ok('opened the offer sheet');
   else no('could not open the offer sheet');

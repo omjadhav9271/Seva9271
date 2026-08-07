@@ -1,5 +1,16 @@
+'use client';
+
+/* Client-side only so it can read the signed-in role. The footer is otherwise static, and it was
+   a server component until an admin browsing the site kept being invited to "Become a Provider"
+   in the sitemap — item 17 fixed the navbar and missed this. Same rule as the navbar, applied in
+   one place instead of two: an admin never books, never holds a balance and never applies.
+
+   Presentation only. `role` is server-controlled and every admin surface re-checks it in RLS;
+   hiding a link has never been the boundary. */
+
 import Link from 'next/link';
 import { MapPin, Phone, Mail } from 'lucide-react';
+import { useAuth } from '@/lib/auth-context';
 
 const popularServices = [
   { label: 'Electrician Services', href: '/services?category=electrician' },
@@ -9,13 +20,16 @@ const popularServices = [
   { label: 'Tutoring Services', href: '/services?category=tutor' },
 ];
 
+// 'Become a Provider' is split out rather than filtered by label — a string comparison against
+// display copy silently stops working the day someone rewords the link.
 const company = [
   { label: 'About Us', href: '/how-it-works' },
   { label: 'How It Works', href: '/how-it-works' },
-  { label: 'Become a Provider', href: '/become-provider' },
   { label: 'Careers', href: '/how-it-works' },
   { label: 'Press & Media', href: '/how-it-works' },
 ];
+
+const becomeProvider = { label: 'Become a Provider', href: '/become-provider' };
 
 const support = [
   { label: 'Help Center', href: '/how-it-works' },
@@ -25,6 +39,13 @@ const support = [
 ];
 
 export default function Footer() {
+  const { profile } = useAuth();
+  const isAdmin = profile?.role === 'admin';
+  // Insert it where it has always been (third), so the ordering doesn't shuffle for everyone else.
+  const companyLinks = isAdmin
+    ? company
+    : [...company.slice(0, 2), becomeProvider, ...company.slice(2)];
+
   return (
     <footer style={{ backgroundColor: '#0d1b4b' }}>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14">
@@ -63,7 +84,7 @@ export default function Footer() {
           <div>
             <h3 className="text-white font-semibold mb-5">Company</h3>
             <ul className="space-y-3">
-              {company.map((c) => (
+              {companyLinks.map((c) => (
                 <li key={c.label}>
                   <Link href={c.href} className="text-sm text-blue-200/70 hover:text-white transition-colors">
                     {c.label}

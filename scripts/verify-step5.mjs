@@ -350,6 +350,44 @@ console.log('\n[e) credit_wallet is server-only]');
   else no('credit_wallet WAS executable by an authenticated client (should be denied)');
 }
 
+// ================= Bucket C (18): what we PROMISE about payment =================
+// The DB and the checkout are UPI-only, but the public copy is a separate surface that drifted
+// out of step with them once already: the homepage and How-it-works went on advertising "Pay by
+// UPI or Seva Wallet" for a whole release after the wallet stopped being a customer path.
+// Promising a payment method that does not exist is a support ticket, so it is asserted.
+//
+// Fetched, not grepped from source: what the visitor actually receives is the thing that matters,
+// and a string can arrive from a constant, a CMS field or a component either way. Needs the dev
+// server; skipped (loudly) rather than failed when it is down, like the rest of this file.
+console.log('\n[public copy: no wallet-as-payment-method claims]');
+{
+  const ORIGIN = (env.WEBHOOK_URL || process.env.WEBHOOK_URL || 'http://localhost:3000/api/payments/webhook')
+    .replace(/\/api\/.*$/, '');
+  // Each is a CLAIM, not a mere mention of the word. The wallet may legitimately be described as
+  // the payout ledger and the refund destination — it may not be offered as a way to pay.
+  const banned = [
+    /UPI\s+or\s+Seva\s+Wallet/i,
+    /Seva\s+Wallet\s+or\s+UPI/i,
+    /(?:accepted|accept|methods?)[^.]{0,80}Seva\s+Wallet/i,
+    /Seva\s+Wallet[^.]{0,60}faster\s+checkout/i,
+    /pay\s+(?:with|via|by|using)\s+(?:the\s+)?Seva\s+Wallet/i,
+  ];
+  let checked = 0;
+  for (const path of ['/', '/how-it-works']) {
+    let html = null;
+    try {
+      const r = await fetch(ORIGIN + path, { signal: AbortSignal.timeout(45000) });
+      if (r.ok) html = await r.text();
+    } catch { /* server down — reported below */ }
+    if (html == null) { sk(`could not fetch ${path} (dev server down?) — copy NOT checked`); continue; }
+    checked++;
+    const hits = banned.filter((re) => re.test(html)).map(String);
+    if (hits.length === 0) ok(`${path} makes no wallet-as-payment claim`);
+    else no(`🔴 ${path} advertises the Seva Wallet as a way to pay: ${hits.join(', ')}`);
+  }
+  if (checked === 2) ok('both public payment surfaces describe only UPI / card / netbanking into escrow');
+}
+
 // ================= cleanup =================
 console.log('\n[cleanup]');
 {
