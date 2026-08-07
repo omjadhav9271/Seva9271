@@ -557,15 +557,26 @@ Recorded honestly so the coverage isn't overstated.
 
 ## 10. `verify-all.mjs`
 
-### After the F-1 / F-2 / F-3 fixes (current)
+### Current — all four FAILs fixed, suite fully green
 
 ```
-TOTAL: 544 passed, 1 failed, 1 skipped
+TOTAL: 545 passed, 0 failed, 1 skipped
 ```
 
-The single remaining failure is the ⚠️ known-open `verify-step7` fixture drift (below); the single
-skip is `verify-step10`'s intentional admin-access skip. `verify-step10` (bargaining) is **33/0** and
-`ui-check-step10` **27/0** after the `start_negotiation` change, so the unit fix regressed nothing.
+The only skip is `verify-step10`'s intentional admin-access skip. `verify-step10` (bargaining) is
+**33/0** and `ui-check-step10` **27/0** after the `start_negotiation` change, so the unit fix
+regressed nothing.
+
+The last red — `verify-step7`'s ⚠️ known-open fixture drift — was closed the way the Decisions Log
+asks for: **the expectation is now computed from the DB, not the assertion relaxed.** Case (f) runs
+against the live test account and hardcoded `dispute_fault_rate === 0`, which was true when written
+and stopped being true once that account earned a genuine at-fault dispute. `expectedFaultRate()`
+recomputes the engine's definition from raw `bookings`/`disputes` rows — deliberately **not** by
+calling `dispute_fault_rate()`, which would compare the engine to itself. It still discriminates:
+mid-run it compared 0.046 to 0.046 (3 at-fault over 65 counted, vs 3/39 live), and one miscounted
+dispute moves the rate ~0.0154 — thirty times the 0.0005 tolerance. The anti-frivolous property
+("merely being disputed costs nothing") remains pinned on synthetic data in case (e), where the
+subject is freshly created and 0 is guaranteed; that assertion must never be derived and is untouched.
 
 `ui-check-dispute-clarity` now reports **45 / 0 inside the suite**, confirming the pre-fix triage
 that its 8 failures were harness interference rather than a defect.
@@ -618,10 +629,11 @@ TOTAL: 535 passed, 10 failed, 1 skipped
    that row is deleted.
 3. **1 × `verify-step7`** — the ⚠️ known-open fixture drift already recorded in the Decisions Log. The
    two disputes raised during this audit moved test2's `dispute_fault_rate` to 0.047 against a
-   hardcoded expectation. The reputation *logic* is correct; the test hardcodes its expected value.
-   **Do not weaken the assertion** — the honest fix is to compute it from the DB.
+   hardcoded expectation. The reputation *logic* is correct; the test hardcoded its expected value.
+   ✅ **Closed 2026-08-07** by computing the expectation from the DB — the assertion was not
+   weakened. See the current-results block above.
 
-**Clean baseline once the audit residue is removed: ~543 passed / 1 known-open failure.**
+**Final: 545 passed, 0 failed, 1 skipped.**
 
 ---
 
