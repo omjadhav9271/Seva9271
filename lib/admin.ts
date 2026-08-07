@@ -85,13 +85,19 @@ export type ProviderApplicationDocument = {
   description: string | null;
   capture_method: string;
   carries_expiry: boolean;
-  requirement: 'required' | 'badge';
+  // Bucket C (10): 'optional' is the named second-ID slot. It never blocks approval, but the
+  // reviewer must still see it — an extra document nobody looks at is not a document.
+  requirement: 'required' | 'badge' | 'optional';
   note: string | null;
   document_id: string | null;
   verification_status: DocumentStatus | null;
   verified_source: string | null;
   reference_number: string | null;
   expires_at: string | null;
+  // What the applicant said this is: meta.id_type ('aadhaar', 'pan', …) and, for the selfie,
+  // meta.capture ('live' | 'upload_fallback'). Descriptive, client-asserted — it tells the
+  // reviewer what they're looking at, it does not stand in for looking at it.
+  meta: Record<string, unknown> | null;
   url: string | null;   // short-lived signed URL, minted server-side
 };
 

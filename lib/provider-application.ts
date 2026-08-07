@@ -16,6 +16,40 @@ export const KYC_BUCKET = 'kyc-docs';
 export const MAX_KYC_BYTES = 10_485_760; // 10 MB — mirrors the bucket's file_size_limit
 export const MAX_KYC_DOCS = 2;
 
+/* ── Bucket C (16): which government IDs we ask for ──────────────────────────
+   The old copy read "Aadhaar via DigiLocker, or DL / Passport / Voter ID", which put a passport —
+   held by a small minority of Indians — level with the ones nearly everyone has. These are the
+   documents an Indian provider actually carries, each with a photo on it so the enrollment selfie
+   has something to be matched against. Which one was supplied is stored on the document row
+   (meta.id_type) so the reviewer sees "Primary photo ID · Aadhaar", not "img_2043.jpg". */
+
+export type IdOption = { value: string; label: string; hint: string };
+
+export const PRIMARY_ID_OPTIONS: IdOption[] = [
+  { value: 'aadhaar',         label: 'Aadhaar',         hint: 'Photo + address' },
+  { value: 'voter_id',        label: 'Voter ID (EPIC)', hint: 'Photo + address' },
+  { value: 'driving_licence', label: 'Driving licence', hint: 'Photo + address' },
+  // Never the default, never required — offered last, for the few who hold one.
+  { value: 'passport',        label: 'Passport',        hint: 'If you have one' },
+];
+
+// PAN belongs HERE and not above: it carries no address and is weak on its own, so it is a
+// supplementary document, never the primary proof of identity.
+export const SECONDARY_ID_OPTIONS: IdOption[] = [
+  { value: 'pan', label: 'PAN', hint: 'Common second document' },
+  ...PRIMARY_ID_OPTIONS,
+];
+
+// Which slots ask "which ID is this?". Everything else (a licence, an RC book) is already named
+// by its own document type and needs no picker.
+export const ID_OPTIONS_FOR: Record<string, IdOption[]> = {
+  photo_id: PRIMARY_ID_OPTIONS,
+  id_secondary: SECONDARY_ID_OPTIONS,
+};
+
+export const idTypeLabel = (value: string | null | undefined): string | null =>
+  SECONDARY_ID_OPTIONS.find((o) => o.value === value)?.label ?? null;
+
 // Kept in sync with the bucket's allowed_mime_types (migration 20260731120000).
 export const KYC_ALLOWED_MIME = [
   'image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf',
@@ -53,6 +87,10 @@ export async function recordDocument(input: {
   filePath?: string | null;
   referenceNumber?: string | null;   // stored masked (last 4) by the RPC
   expiresAt?: string | null;
+  // Descriptive context for the human reviewer: which ID this is (id_type), and whether a selfie
+  // was captured live or fell back to an upload (capture). Client-asserted by definition — it
+  // labels the evidence, it does not stand in for looking at it.
+  meta?: Record<string, unknown>;
 }): Promise<{ ok: true } | { error: string }> {
   const { error } = await supabase.rpc('record_provider_document', {
     p_doc_code: input.docCode,
@@ -60,7 +98,7 @@ export async function recordDocument(input: {
     p_reference_number: input.referenceNumber ?? null,
     p_issued_at: null,
     p_expires_at: input.expiresAt ?? null,
-    p_meta: {},
+    p_meta: input.meta ?? {},
   });
   if (error) return { error: error.message };
   return { ok: true };

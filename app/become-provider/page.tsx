@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import {
   CheckCircle, Clock, AlertTriangle, ShieldCheck, Upload, X, FileText, Loader2, Ban,
-  Download, Briefcase, Plus, BadgeCheck, Handshake,
+  Download, Briefcase, Plus, BadgeCheck, Handshake, Camera, IdCard,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { supabase } from '@/lib/supabase';
@@ -12,13 +12,14 @@ import {
   fetchMyApplication, submitApplication, uploadKycDoc, removeKycDoc,
   fetchCategoryRequirements, fetchDocumentChecklist, recordDocument, requestDigiLocker,
   fetchExperience, addExperience, removeExperience, requestEpfoHistory, verifiedYears,
-  KYC_ACCEPT, type MyApplication,
+  KYC_ACCEPT, ID_OPTIONS_FOR, idTypeLabel, type MyApplication,
 } from '@/lib/provider-application';
 import { fetchMyPricing, saveMyPricing } from '@/lib/bargaining';
 import TrustTierBadge from '@/components/trust-tier-badge';
+import LiveSelfieCapture from '@/components/live-selfie-capture';
 import type {
   KycDocument, CategoryKycRequirement, DocumentChecklistItem, ProviderExperience,
-  ProviderPricing,
+  ProviderPricing, CaptureMethod,
 } from '@/lib/supabase';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
@@ -44,12 +45,16 @@ export default function BecomeProviderPage() {
   // Step 9.5: which documents this category asks for, driven by data
   const [requirements, setRequirements] = useState<CategoryKycRequirement[]>([]);
   const [pendingFiles, setPendingFiles] = useState<Record<string, KycDocument>>({});
+  // Bucket C: what each pending file IS (id_type / live-vs-fallback capture). Parked alongside
+  // the file until the provider row exists, then written onto the document row.
+  const [pendingMeta, setPendingMeta] = useState<Record<string, Record<string, unknown>>>({});
+  // Which government ID the applicant says they're supplying, per slot.
+  const [idTypes, setIdTypes] = useState<Record<string, string>>({});
   const [uploading, setUploading] = useState<string | null>(null);
   const [checklist, setChecklist] = useState<DocumentChecklistItem[]>([]);
   const [experience, setExperience] = useState<ProviderExperience[]>([]);
   const [expForm, setExpForm] = useState({ employer: '', role: '', from: '', to: '' });
   const [submitting, setSubmitting] = useState(false);
-  const fileInputs = useRef<Record<string, HTMLInputElement | null>>({});
 
   useEffect(() => {
     let active = true;
@@ -106,21 +111,27 @@ export default function BecomeProviderPage() {
   // ── uploads ────────────────────────────────────────────────────────────────
   // Before the row exists we park files in storage and record them right after submit; once it
   // exists we record immediately.
-  const handleFile = async (docCode: string, label: string, file: File | undefined) => {
+  const handleFile = async (
+    docCode: string,
+    label: string,
+    file: File | undefined,
+    meta: Record<string, unknown> = {},
+  ) => {
     if (!file) return;
     setUploading(docCode);
     const result = await uploadKycDoc(file, label);
     if ('error' in result) { setUploading(null); toast.error(result.error); return; }
 
     if (application) {
-      const rec = await recordDocument({ docCode, filePath: result.data.path });
+      const rec = await recordDocument({ docCode, filePath: result.data.path, meta });
       setUploading(null);
       if ('error' in rec) { toast.error(rec.error); return; }
       await refreshProviderState(application.id);
-      toast.success(`${label} uploaded — our team will check it.`);
+      toast.success(`${label} saved — our team will check it.`);
     } else {
       const replaced = pendingFiles[docCode];
       setPendingFiles((prev) => ({ ...prev, [docCode]: result.data }));
+      setPendingMeta((prev) => ({ ...prev, [docCode]: meta }));
       setUploading(null);
       if (replaced) await removeKycDoc(replaced.path);
     }
@@ -129,7 +140,7 @@ export default function BecomeProviderPage() {
   const clearPending = async (docCode: string) => {
     const doc = pendingFiles[docCode];
     setPendingFiles((prev) => { const next = { ...prev }; delete next[docCode]; return next; });
-    if (fileInputs.current[docCode]) fileInputs.current[docCode]!.value = '';
+    setPendingMeta((prev) => { const next = { ...prev }; delete next[docCode]; return next; });
     if (doc) await removeKycDoc(doc.path);
   };
 
@@ -141,6 +152,8 @@ export default function BecomeProviderPage() {
   // ── submit ─────────────────────────────────────────────────────────────────
   const requiredDocs = requirements.filter((r) => r.requirement === 'required');
   const badgeDocs = requirements.filter((r) => r.requirement === 'badge');
+  // Bucket C (10): named, bounded extras — a second ID, not an unlimited pile of files.
+  const optionalDocs = requirements.filter((r) => r.requirement === 'optional');
 
   const handleSubmit = async () => {
     if (!user) { router.push('/auth/signin'); return; }
@@ -167,12 +180,14 @@ export default function BecomeProviderPage() {
     });
     if ('error' in result) { setSubmitting(false); toast.error(result.error); return; }
 
-    // now that the row exists, record each parked file as a typed document
+    // now that the row exists, record each parked file as a typed document — with the label the
+    // reviewer needs (which ID it is / whether the selfie was live).
     for (const [docCode, doc] of Object.entries(pendingFiles)) {
-      const rec = await recordDocument({ docCode, filePath: doc.path });
+      const rec = await recordDocument({ docCode, filePath: doc.path, meta: pendingMeta[docCode] ?? {} });
       if ('error' in rec) toast.error(`${docCode}: ${rec.error}`);
     }
     setPendingFiles({});
+    setPendingMeta({});
     setApplication(result.data);
     prefill(result.data);
     await refreshProviderState(result.data.id);
@@ -222,7 +237,8 @@ export default function BecomeProviderPage() {
           {/* Step 10: only an approved provider can be booked, so only they can be haggled with —
               start_negotiation refuses anyone else. */}
           <PricingSection providerId={application.id} />
-          <DocumentSection checklist={checklist} uploading={uploading} fileInputs={fileInputs}
+          <DocumentSection checklist={checklist} uploading={uploading} idTypes={idTypes}
+            onIdType={(code, v) => setIdTypes((prev) => ({ ...prev, [code]: v }))}
             onFile={handleFile} onDigiLocker={tryDigiLocker} />
           <ExperienceSection rows={experience} form={expForm} setForm={setExpForm}
             onAdd={handleAddExperience}
@@ -245,7 +261,8 @@ export default function BecomeProviderPage() {
           <button onClick={() => setEditing(true)} className="saffron-btn px-6 py-3 rounded-xl font-semibold text-sm mb-8">
             Fix and resubmit
           </button>
-          <DocumentSection checklist={checklist} uploading={uploading} fileInputs={fileInputs}
+          <DocumentSection checklist={checklist} uploading={uploading} idTypes={idTypes}
+            onIdType={(code, v) => setIdTypes((prev) => ({ ...prev, [code]: v }))}
             onFile={handleFile} onDigiLocker={tryDigiLocker} />
         </StatusShell>
       );
@@ -280,7 +297,8 @@ export default function BecomeProviderPage() {
           className="px-6 py-3 rounded-xl border border-[#2a2a2a] text-sm text-gray-300 hover:text-white transition-colors mb-8">
           Edit my details
         </button>
-        <DocumentSection checklist={checklist} uploading={uploading} fileInputs={fileInputs}
+        <DocumentSection checklist={checklist} uploading={uploading} idTypes={idTypes}
+          onIdType={(code, v) => setIdTypes((prev) => ({ ...prev, [code]: v }))}
           onFile={handleFile} onDigiLocker={tryDigiLocker} />
         <ExperienceSection rows={experience} form={expForm} setForm={setExpForm}
           onAdd={handleAddExperience}
@@ -379,61 +397,45 @@ export default function BecomeProviderPage() {
             <p className="text-xs text-gray-600 mt-1.5 text-right">{bioLeft} characters left</p>
           </Field>
 
-          {/* Documents — driven by the chosen category */}
+          {/* Documents — driven by the chosen category. Bucket C: each slot is NAMED, so the
+              reviewer always knows what they're looking at, and the selfie is captured live. */}
           {form.categoryId && (
-            <Field label="Proof of identity" required>
-              <div className="space-y-2">
-                {requiredDocs.map((req) => {
-                  const t = req.kyc_document_types;
-                  const label = t?.label ?? req.doc_code;
-                  const doc = pendingFiles[req.doc_code];
-                  return (
-                    <div key={req.doc_code}>
-                      <input ref={(el) => { fileInputs.current[req.doc_code] = el; }} type="file"
-                        accept={KYC_ACCEPT} className="hidden"
-                        onChange={(e) => handleFile(req.doc_code, label, e.target.files?.[0])} />
-                      {doc ? (
-                        <div className="flex items-center gap-3 bg-[#1e1e1e] border border-[#138808]/30 rounded-xl px-4 py-3">
-                          <FileText className="w-4 h-4 text-[#138808] flex-shrink-0" />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm text-white truncate">{doc.name ?? label}</p>
-                            <p className="text-xs text-gray-500">{label} · ready to submit</p>
-                          </div>
-                          <button type="button" onClick={() => clearPending(req.doc_code)}
-                            className="text-gray-500 hover:text-red-400 transition-colors" aria-label={`Remove ${label}`}>
-                            <X className="w-4 h-4" />
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="bg-[#1e1e1e] border border-dashed border-[#2a2a2a] rounded-xl px-4 py-3">
-                          <p className="text-sm text-gray-300">{label}</p>
-                          {t?.description && <p className="text-xs text-gray-600 mb-2">{t.description}</p>}
-                          <div className="flex gap-2 mt-2">
-                            {t?.capture_method === 'digilocker' && (
-                              <button type="button" onClick={() => tryDigiLocker(req.doc_code)}
-                                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-[#FF9933]/10 border border-[#FF9933]/30 text-[#FF9933] hover:bg-[#FF9933]/20 transition-all">
-                                <Download className="w-3.5 h-3.5" /> Fetch from DigiLocker
-                              </button>
-                            )}
-                            <button type="button" onClick={() => fileInputs.current[req.doc_code]?.click()}
-                              disabled={uploading === req.doc_code}
-                              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-[#2a2a2a] text-gray-400 hover:text-white transition-all disabled:opacity-60">
-                              {uploading === req.doc_code
-                                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                : <Upload className="w-3.5 h-3.5" />}
-                              {t?.capture_method === 'digilocker' ? 'or upload' : 'Upload'}
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-              <p className="text-xs text-gray-600 mt-2">
-                Photo or PDF, up to 10 MB. Stored privately — only you and our verification team can open it, never customers.
-              </p>
-            </Field>
+            <>
+              <Field label="Proof of identity" required>
+                <div className="space-y-2">
+                  {requiredDocs.map((req) => (
+                    <PendingSlot key={req.doc_code} req={req}
+                      doc={pendingFiles[req.doc_code]} meta={pendingMeta[req.doc_code]}
+                      supplied={checklist.find((c) => c.doc_code === req.doc_code)}
+                      idType={idTypes[req.doc_code]}
+                      onIdType={(v) => setIdTypes((prev) => ({ ...prev, [req.doc_code]: v }))}
+                      uploading={uploading === req.doc_code}
+                      onFile={handleFile} onClear={clearPending} onDigiLocker={tryDigiLocker} />
+                  ))}
+                </div>
+                <p className="text-xs text-gray-600 mt-2">
+                  Photo or PDF, up to 10 MB. Stored privately — only you and our verification team can open it, never customers.
+                </p>
+              </Field>
+
+              {/* (10) One extra, named slot — not an open-ended upload pile. A second document
+                  makes an identity easier to confirm; it never blocks approval. */}
+              {optionalDocs.length > 0 && (
+                <Field label="Add a second ID (optional)">
+                  <div className="space-y-2">
+                    {optionalDocs.map((req) => (
+                      <PendingSlot key={req.doc_code} req={req}
+                        doc={pendingFiles[req.doc_code]} meta={pendingMeta[req.doc_code]}
+                        supplied={checklist.find((c) => c.doc_code === req.doc_code)}
+                        idType={idTypes[req.doc_code]}
+                        onIdType={(v) => setIdTypes((prev) => ({ ...prev, [req.doc_code]: v }))}
+                        uploading={uploading === req.doc_code}
+                        onFile={handleFile} onClear={clearPending} onDigiLocker={tryDigiLocker} />
+                    ))}
+                  </div>
+                </Field>
+              )}
+            </>
           )}
 
           {/* Optional badges for this category */}
@@ -493,6 +495,161 @@ function Row({ label, value }: { label: string; value: string | null }) {
   );
 }
 
+/* Bucket C — the ONE place a document is captured, shared by the pre-submit form and the
+   post-submit checklist. Which control appears is driven by the document type's capture_method
+   (data), never by a hardcoded doc_code: 'live_capture' opens the camera, everything else offers
+   an upload (plus DigiLocker where the type supports it). */
+function DocCapture({ docCode, label, captureMethod, uploading, idType, onIdType, onFile, onDigiLocker }: {
+  docCode: string;
+  label: string;
+  captureMethod: CaptureMethod | null;
+  uploading: boolean;
+  idType: string | undefined;
+  onIdType: (value: string) => void;
+  onFile: (docCode: string, label: string, file: File | undefined, meta?: Record<string, unknown>) => void;
+  onDigiLocker: (docCode: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const options = ID_OPTIONS_FOR[docCode];
+  const chosen = idType ?? options?.[0]?.value;
+
+  // (14) The selfie is taken here and now. The component owns its own failure story — it never
+  // leaves an applicant stuck with a camera that won't start.
+  if (captureMethod === 'live_capture') {
+    return (
+      <LiveSelfieCapture busy={uploading} accept={KYC_ACCEPT}
+        onPhoto={(file, source) => onFile(docCode, label, file, { capture: source })} />
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {/* (16) Which ID is this? Recorded on the document so the reviewer isn't guessing from a
+          filename. Aadhaar leads because it's the one nearly everyone has; passport is last. */}
+      {options && (
+        <div className="flex flex-wrap gap-1.5">
+          {options.map((o) => (
+            <button key={o.value} type="button" onClick={() => onIdType(o.value)} title={o.hint}
+              className={`px-2.5 py-1 rounded-lg border text-xs transition-all ${
+                chosen === o.value
+                  ? 'border-[#FF9933]/60 bg-[#FF9933]/10 text-white'
+                  : 'border-[#2a2a2a] bg-[#161616] text-gray-400 hover:border-[#FF9933]/40'
+              }`}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-2">
+        {captureMethod === 'digilocker' && (
+          <button type="button" onClick={() => onDigiLocker(docCode)}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-[#FF9933]/10 border border-[#FF9933]/30 text-[#FF9933] hover:bg-[#FF9933]/20 transition-all">
+            <Download className="w-3.5 h-3.5" /> Fetch from DigiLocker
+          </button>
+        )}
+        <input ref={inputRef} type="file" accept={KYC_ACCEPT} className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = '';   // so re-picking the SAME file still fires a change
+            onFile(docCode, label, file, chosen ? { id_type: chosen } : {});
+          }} />
+        <button type="button" onClick={() => inputRef.current?.click()} disabled={uploading}
+          className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-[#2a2a2a] text-gray-400 hover:text-white transition-all disabled:opacity-60">
+          {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+          {captureMethod === 'digilocker' ? 'or upload' : 'Upload'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// One document slot on the application form. Two very different states share it:
+//   • no provider row yet — the file is PARKED in storage and recorded the moment the row exists
+//   • resubmitting — the row exists, so the file is recorded immediately, and `supplied` (the
+//     server's own checklist, refreshed right after) is what says so.
+// Without that second case the slot kept offering "Upload" / "Use this photo" after a successful
+// save, with only a transient toast to say otherwise — so the applicant had no way to tell
+// whether their document had gone in, and could re-submit the same one on top of itself.
+function PendingSlot({ req, doc, meta, supplied, idType, onIdType, uploading, onFile, onClear, onDigiLocker }: {
+  req: CategoryKycRequirement;
+  doc: KycDocument | undefined;
+  meta: Record<string, unknown> | undefined;
+  supplied: DocumentChecklistItem | undefined;
+  idType: string | undefined;
+  onIdType: (value: string) => void;
+  uploading: boolean;
+  onFile: (docCode: string, label: string, file: File | undefined, meta?: Record<string, unknown>) => void;
+  onClear: (docCode: string) => void;
+  onDigiLocker: (docCode: string) => void;
+}) {
+  const [replacing, setReplacing] = useState(false);
+  // A successful replace lands as a NEW file_path on the checklist row. When it does, drop back to
+  // the saved view — otherwise the capture UI stays open behind a document that is already in.
+  useEffect(() => { setReplacing(false); }, [supplied?.file_path]);
+  const t = req.kyc_document_types;
+  const label = t?.label ?? req.doc_code;
+  const what = idTypeLabel(meta?.id_type as string | undefined)
+    ?? (meta?.capture === 'live' ? 'captured live' : meta?.capture === 'upload_fallback' ? 'uploaded — camera unavailable' : null);
+
+  if (doc) {
+    return (
+      <div className="flex items-center gap-3 bg-[#1e1e1e] border border-[#138808]/30 rounded-xl px-4 py-3">
+        <FileText className="w-4 h-4 text-[#138808] flex-shrink-0" />
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-white truncate">{label}{what ? ` · ${what}` : ''}</p>
+          <p className="text-xs text-gray-500 truncate">{doc.name ?? 'ready to submit'} · ready to submit</p>
+        </div>
+        <button type="button" onClick={() => onClear(req.doc_code)}
+          className="text-gray-500 hover:text-red-400 transition-colors" aria-label={`Remove ${label}`}>
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+    );
+  }
+
+  // Already on the record. A verified document is frozen (record_provider_document refuses to
+  // replace one), so only an unverified document offers "Replace".
+  const status = supplied?.verification_status;
+  const onRecord = Boolean(supplied?.document_id) && status !== 'rejected' && status !== 'expired';
+  if (onRecord && !replacing) {
+    const chip = status ? STATUS_CHIP[status] : null;
+    return (
+      <div className="flex items-center gap-3 bg-[#1e1e1e] border border-[#138808]/30 rounded-xl px-4 py-3">
+        <FileText className={`w-4 h-4 flex-shrink-0 ${status === 'verified' ? 'text-[#138808]' : 'text-gray-400'}`} />
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-white truncate">{label}</p>
+          <p className="text-xs text-gray-500 truncate">Saved — we have this on file.</p>
+        </div>
+        {chip && <span className={`text-xs px-2.5 py-1 rounded-full font-medium flex-shrink-0 ${chip.cls}`}>{chip.label}</span>}
+        {status !== 'verified' && (
+          <button type="button" onClick={() => setReplacing(true)}
+            className="text-xs text-gray-500 hover:text-white transition-colors flex-shrink-0">
+            Replace
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-[#1e1e1e] border border-dashed border-[#2a2a2a] rounded-xl px-4 py-3">
+      <p className="text-sm text-gray-300 flex items-center gap-1.5">
+        {t?.capture_method === 'live_capture'
+          ? <Camera className="w-3.5 h-3.5 text-[#FF9933]" />
+          : <IdCard className="w-3.5 h-3.5 text-gray-500" />}
+        {label}
+      </p>
+      {t?.description && <p className="text-xs text-gray-600 mb-2 mt-0.5">{t.description}</p>}
+      <div className="mt-2">
+        <DocCapture docCode={req.doc_code} label={label}
+          captureMethod={(t?.capture_method as CaptureMethod | undefined) ?? null}
+          uploading={uploading} idType={idType} onIdType={onIdType}
+          onFile={onFile} onDigiLocker={onDigiLocker} />
+      </div>
+    </div>
+  );
+}
+
 const STATUS_CHIP: Record<string, { label: string; cls: string }> = {
   verified: { label: 'Verified', cls: 'bg-[#138808]/10 text-[#138808]' },
   pending:  { label: 'In review', cls: 'bg-[#FF9933]/10 text-[#FF9933]' },
@@ -500,16 +657,18 @@ const STATUS_CHIP: Record<string, { label: string; cls: string }> = {
   expired:  { label: 'Expired', cls: 'bg-red-900/20 text-red-400' },
 };
 
-function DocumentSection({ checklist, uploading, fileInputs, onFile, onDigiLocker }: {
+function DocumentSection({ checklist, uploading, idTypes, onIdType, onFile, onDigiLocker }: {
   checklist: DocumentChecklistItem[];
   uploading: string | null;
-  fileInputs: React.MutableRefObject<Record<string, HTMLInputElement | null>>;
-  onFile: (docCode: string, label: string, file: File | undefined) => void;
+  idTypes: Record<string, string>;
+  onIdType: (docCode: string, value: string) => void;
+  onFile: (docCode: string, label: string, file: File | undefined, meta?: Record<string, unknown>) => void;
   onDigiLocker: (docCode: string) => void;
 }) {
   if (checklist.length === 0) return null;
   const required = checklist.filter((c) => c.requirement === 'required');
   const badges = checklist.filter((c) => c.requirement === 'badge');
+  const optional = checklist.filter((c) => c.requirement === 'optional');
 
   const renderRow = (item: DocumentChecklistItem, optional: boolean) => {
     const chip = item.verification_status ? STATUS_CHIP[item.verification_status] : null;
@@ -532,22 +691,11 @@ function DocumentSection({ checklist, uploading, fileInputs, onFile, onDigiLocke
             : <span className="text-xs px-2.5 py-1 rounded-full font-medium bg-gray-800 text-gray-400 flex-shrink-0">{optional ? 'Not added' : 'Needed'}</span>}
         </div>
         {needsAction && (
-          <div className="flex gap-2 mt-3">
-            <input ref={(el) => { fileInputs.current[item.doc_code] = el; }} type="file"
-              accept={KYC_ACCEPT} className="hidden"
-              onChange={(e) => onFile(item.doc_code, item.label, e.target.files?.[0])} />
-            {item.capture_method === 'digilocker' && (
-              <button type="button" onClick={() => onDigiLocker(item.doc_code)}
-                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-[#FF9933]/10 border border-[#FF9933]/30 text-[#FF9933] hover:bg-[#FF9933]/20 transition-all">
-                <Download className="w-3.5 h-3.5" /> DigiLocker
-              </button>
-            )}
-            <button type="button" onClick={() => fileInputs.current[item.doc_code]?.click()}
-              disabled={uploading === item.doc_code}
-              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-[#2a2a2a] text-gray-400 hover:text-white transition-all disabled:opacity-60">
-              {uploading === item.doc_code ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-              Upload
-            </button>
+          <div className="mt-3">
+            <DocCapture docCode={item.doc_code} label={item.label}
+              captureMethod={item.capture_method} uploading={uploading === item.doc_code}
+              idType={idTypes[item.doc_code]} onIdType={(v) => onIdType(item.doc_code, v)}
+              onFile={onFile} onDigiLocker={onDigiLocker} />
           </div>
         )}
       </div>
@@ -560,6 +708,16 @@ function DocumentSection({ checklist, uploading, fileInputs, onFile, onDigiLocke
         <FileText className="w-4 h-4 text-[#FF9933]" /> Your documents
       </h3>
       <div className="space-y-2">{required.map((i) => renderRow(i, false))}</div>
+      {/* (10) The second-ID slot stays available after submitting, too — a provider who skipped
+          it can add it while their application is being reviewed. */}
+      {optional.length > 0 && (
+        <>
+          <h4 className="font-semibold text-gray-300 text-sm mt-6 mb-2 flex items-center gap-2">
+            <IdCard className="w-4 h-4 text-gray-400" /> Optional — a second ID speeds up review
+          </h4>
+          <div className="space-y-2">{optional.map((i) => renderRow(i, true))}</div>
+        </>
+      )}
       {badges.length > 0 && (
         <>
           <h4 className="font-semibold text-gray-300 text-sm mt-6 mb-2 flex items-center gap-2">

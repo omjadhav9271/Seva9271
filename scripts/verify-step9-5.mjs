@@ -113,7 +113,10 @@ try {
     tempCategoryId = nc.id;
     const { data: seeded } = await service.from('category_kyc_requirements').select('doc_code').eq('category_id', nc.id);
     const codes = (seeded ?? []).map((s) => s.doc_code).sort();
-    if (codes.join(',') === 'pan,photo_id,selfie') ok('a NEW category inherits the base requirements automatically (no deploy)');
+    // Bucket C added the optional second-ID slot to the base set, so a new category must inherit
+    // four things now, not three: the primary ID, the live selfie, PAN (at payout) and the
+    // optional secondary ID.
+    if (codes.join(',') === 'id_secondary,pan,photo_id,selfie') ok('a NEW category inherits the base requirements automatically (no deploy)');
     else no('new category did not inherit base requirements: ' + codes.join(','));
   }
 

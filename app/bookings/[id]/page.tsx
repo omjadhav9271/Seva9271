@@ -12,10 +12,11 @@ import DisputeEvidencePanel from '@/components/dispute-evidence-panel';
 import DisputeCase from '@/components/dispute-case';
 import BookingNegotiation from '@/components/booking-negotiation';
 import { DISPUTE_REASONS, fetchNames } from '@/lib/disputes';
+import BookingTimeline from '@/components/booking-timeline';
 import {
   type BookingRow, type BookingStatus, type PaymentStatus, type Role,
   BOOKING_SELECT, statusConfig, paymentStatusConfig, actionsFor, runTransition,
-  createPaymentOrder, ownsProviderSide, formatTime,
+  createPaymentOrder, ownsProviderSide, formatTime, paymentMethodLabel,
 } from '@/lib/bookings';
 import { toast } from 'sonner';
 
@@ -68,6 +69,9 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
   // The customer's display name (public_profiles). The provider side had no way to name the
   // person they were dealing with — "Raised by the customer" is unanswerable.
   const [customerName, setCustomerName] = useState<string | null>(null);
+  // Bumped whenever the booking is refetched, so the timeline re-reads booking_events alongside
+  // it (that table isn't in the realtime publication, so it can't hear about new rows itself).
+  const [timelineKey, setTimelineKey] = useState(0);
   const [disputeFormOpen, setDisputeFormOpen] = useState(false);
   const [disputeReason, setDisputeReason] = useState<DisputeReason | ''>('');
   const [disputeDesc, setDisputeDesc] = useState('');
@@ -152,6 +156,7 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
       .eq('id', id)
       .maybeSingle();
     if (data) setBooking(data as unknown as BookingRow);
+    setTimelineKey((k) => k + 1);
   }, [id]);
 
   // Stop any in-flight payment poll if the page unmounts.
@@ -280,7 +285,10 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
     // On confirm, the system settles behind the RPC (escrow release → 'released'/'paid', or a
     // cash booking → 'paid') via the release trigger. The RPC returns the pre-settlement row,
     // so refetch to show the settled status + payment badge.
+    // Either way the transition wrote a booking_events row; refetchBooking bumps the timeline
+    // itself, so only the non-settling path needs to do it explicitly.
     if (next === 'confirmed') void refetchBooking();
+    else setTimelineKey((k) => k + 1);
   };
 
   // Raise a dispute — the ONLY way a booking enters 'disputed' (Step 8). The RPC validates
@@ -356,6 +364,14 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
     : booking.price_agreed != null
       ? 'Agreed'
       : 'Listed';
+  // Bucket C (20): the shape of the job — how long it was booked for, and the rate it was listed
+  // at. The rate is a sub-caption, never the headline: once a price is agreed or charged, THAT is
+  // what anyone owes, and an hourly rate sitting next to it as an equal invites the wrong maths.
+  const hours = Number(booking.duration_hours ?? 0);
+  const workLabel = hours > 0 ? `${hours} hour${hours === 1 ? '' : 's'} of work` : 'Not specified';
+  const rateLabel = Number(booking.hourly_rate) > 0
+    ? `listed at ₹${Number(booking.hourly_rate).toLocaleString('en-IN')}/hr`
+    : null;
   const address = booking.address ?? booking.service_providers?.city ?? '';
   const actions = role ? actionsFor(role, booking.status) : [];
   // Settled = money has cleared (tightened from Step 1's 'completed'). Reviews open for BOTH
@@ -414,6 +430,11 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
         <div className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-5 mb-6">
           <div className="flex items-start justify-between gap-3 mb-4">
             <div>
+              {/* Bucket C (20): say WHO this person is to you. "Ramesh Electricals" alone left the
+                  provider's own list ambiguous about which side they were looking at. */}
+              <p className="text-xs uppercase tracking-wide text-gray-500 mb-0.5">
+                {isCustomer ? 'Your provider' : 'Your customer'}
+              </p>
               <h1 className="text-xl font-black text-white">{counterparty}</h1>
               <p className="text-sm text-[#FF9933]">{categoryName}</p>
             </div>
@@ -435,30 +456,40 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
             )}
           </div>
 
-          <div className="grid grid-cols-2 gap-4 text-sm pt-4 border-t border-[#222]">
-            <div>
-              <span className="text-gray-500">Booking ID</span>
-              <p className="text-white font-mono text-xs mt-0.5">#{booking.id.slice(0, 8)}</p>
-            </div>
-            <div>
-              <span className="text-gray-500">Service Type</span>
-              <p className="text-white capitalize mt-0.5">{booking.service_type}</p>
-            </div>
-            <div>
-              <span className="text-gray-500">Payment</span>
-              <div className="flex items-center gap-2 mt-1">
-                <span className="text-white capitalize">{booking.payment_method}</span>
-                <span className={`inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full border ${payCfg.color} ${payCfg.bg}`}>
-                  <PayStatusIcon className="w-3 h-3" />
-                  {payCfg.label}
-                </span>
-              </div>
-            </div>
-            <div>
-              <span className="text-gray-500">{priceLabel}</span>
-              <p className="text-[#FF9933] font-bold mt-0.5">₹{Number(amount).toLocaleString('en-IN')}</p>
-            </div>
+          {/* The facts of the job, each one labeled. Display only — every value here is read
+              straight off the booking row; nothing is computed and nothing is decided. */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-4 text-sm pt-4 border-t border-[#222]">
+            <Detail label="Service" value={categoryName} />
+            <Detail label="Booking type" value={booking.service_type} capitalize />
+            <Detail label="Work booked" value={workLabel} />
+            <Detail label={`${priceLabel} price`}>
+              <span className="text-[#FF9933] font-bold">₹{Number(amount).toLocaleString('en-IN')}</span>
+              {rateLabel && <span className="block text-xs text-gray-500 mt-0.5">{rateLabel}</span>}
+            </Detail>
+            <Detail label="Payment">
+              <span className="text-white">{paymentMethodLabel(booking.payment_method)}</span>
+              <span className={`mt-1 inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full border ${payCfg.color} ${payCfg.bg}`}>
+                <PayStatusIcon className="w-3 h-3" />
+                {payCfg.label}
+              </span>
+            </Detail>
+            <Detail label="Booked on" value={booking.created_at
+              ? new Date(booking.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+              : null} />
+            <Detail label="Booking ID">
+              <span className="text-white font-mono text-xs">#{booking.id.slice(0, 8)}</span>
+            </Detail>
           </div>
+
+          {/* What the customer actually asked for, in their words. */}
+          {booking.notes && (
+            <div className="mt-4 pt-4 border-t border-[#222]">
+              <p className="text-xs uppercase tracking-wide text-gray-500 mb-1">
+                {isCustomer ? 'What you asked for' : 'What the customer asked for'}
+              </p>
+              <p className="text-sm text-gray-200 leading-relaxed whitespace-pre-line">{booking.notes}</p>
+            </div>
+          )}
 
           {/* Pay via escrow — customer only, once the provider has accepted. Prominent because
               the provider CAN'T start work until this is paid (the DB blocks accepted→en_route). */}
@@ -569,6 +600,9 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
           )}
         </div>
 
+        {/* (20) Every transition, in order, from the state machine's own audit trail. */}
+        <BookingTimeline bookingId={booking.id} refreshKey={timelineKey} />
+
         {/* Dispute evidence — either party attaches files while a dispute is live; you see only
             your own. The admin weighs both sides in the evidence bundle. */}
         {dispute && role && <DisputeEvidencePanel dispute={dispute} role={role} />}
@@ -590,6 +624,25 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
         <div ref={chatRef}>
           <BookingChat bookingId={booking.id} />
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* One labeled fact about the booking. Renders nothing when there is nothing to say — an empty
+   "Work booked —" row is worse than the row not being there. */
+function Detail({ label, value, capitalize, children }: {
+  label: string;
+  value?: string | null;
+  capitalize?: boolean;
+  children?: React.ReactNode;
+}) {
+  if (!children && !value) return null;
+  return (
+    <div>
+      <span className="text-xs uppercase tracking-wide text-gray-500">{label}</span>
+      <div className="mt-1 flex flex-col items-start">
+        {children ?? <span className={`text-white ${capitalize ? 'capitalize' : ''}`}>{value}</span>}
       </div>
     </div>
   );

@@ -164,6 +164,11 @@ try {
   chrome = spawn(CHROME, [
     '--headless=new', '--remote-debugging-port=9222', `--user-data-dir=${profile}`,
     '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-dev-shm-usage',
+    // Bucket C (14): the selfie is a LIVE camera capture, so a headless machine with no webcam
+    // would only ever exercise the degraded upload fallback. These two flags give Chrome a
+    // synthetic camera and auto-answer the permission prompt, so this check walks the REAL
+    // capture path — getUserMedia → <video> → canvas → upload — every run.
+    '--use-fake-device-for-video-capture', '--use-fake-ui-for-media-stream',
     'about:blank',
   ], { stdio: 'ignore' });
 
@@ -226,12 +231,25 @@ try {
     { label: 'the category\'s document slots', timeout: 20000 });
   await sleep(500);
   const slots = await text();
-  for (const marker of ['Proof of identity', 'Government photo ID', 'Selfie']) {
+  // Bucket C renamed these: the primary slot names the IDs Indians actually hold, the selfie says
+  // out loud that it is captured live, and there is one named optional second-ID slot.
+  for (const marker of ['Proof of identity', 'Primary photo ID', 'Live selfie', 'Add a second ID']) {
     if (slots.includes(marker)) ok(`category-driven slot appears: “${marker}”`);
     else no(`slot MISSING for this category: “${marker}”`);
   }
-  if (!/Driving licence|Vehicle RC/.test(slots)) ok('...and an electrician is NOT asked for a driving licence');
+  for (const marker of ['Aadhaar', 'Voter ID (EPIC)', 'Driving licence', 'PAN']) {
+    if (slots.includes(marker)) ok(`ID option offered: “${marker}”`);
+    else no(`ID option MISSING: “${marker}”`);
+  }
+  // "Driving licence" now also appears as a primary-ID *option*, so the old text match would fire
+  // on the picker. Assert on the driver-only SLOTS instead — those are unambiguous.
+  if (!/Vehicle RC|Vehicle insurance/.test(slots)) ok('...and an electrician is NOT asked for driving documents');
   else no('electrician was asked for driving documents');
+  {
+    const aadhaar = slots.indexOf('Aadhaar'), passport = slots.indexOf('Passport');
+    if (aadhaar > -1 && passport > aadhaar) ok('...and a passport is offered last, never as the default');
+    else no(`ID ordering wrong (Aadhaar at ${aadhaar}, Passport at ${passport})`);
+  }
 
   await fillByLabel('Name customers will see', 'CDP Smoke Electricals');
   await fillByLabel('City', 'Mumbai');
@@ -241,8 +259,9 @@ try {
   await fillByLabel('A line about your work', 'Wiring, repairs and installations across the western suburbs.');
   ok('filled every field on the form');
 
-  // Step 9.5: the slots are driven by the CATEGORY, so there is one file input per required
-  // document (an electrician needs a photo ID and a selfie). Fill every one of them.
+  // Step 9.5: the slots are driven by the CATEGORY. Bucket C: the UPLOAD slots are the primary ID
+  // and the optional second ID — the selfie has no file input at all any more, so it is driven
+  // through the camera below.
   const doc = await send('DOM.getDocument');
   const nodes = await send('DOM.querySelectorAll', { nodeId: doc.root.nodeId, selector: 'input[type=file]' });
   const inputs = nodes.nodeIds ?? [];
@@ -254,7 +273,27 @@ try {
   await waitFor(
     `(document.body.innerText.match(/ready to submit/g) || []).length >= ${inputs.length}`,
     { label: `all ${inputs.length} documents to upload`, timeout: 45000 });
-  ok(`uploaded ${inputs.length} required document(s) to the private bucket from the browser`);
+  ok(`uploaded ${inputs.length} document(s) to the private bucket from the browser (primary + optional second ID)`);
+
+  // ---- (14) the selfie is CAPTURED, not uploaded ----
+  // Chrome is running with a synthetic camera (see the launch flags), so this walks the real
+  // path: getUserMedia → a playing <video> → a canvas frame → the same private bucket.
+  if (await clickText('Open camera')) ok('the selfie slot offers a live camera, not a file picker');
+  else no('no "Open camera" control on the selfie slot');
+  await waitFor("(() => { const v = document.querySelector('video'); return !!v && v.videoWidth > 0; })()",
+    { label: 'a live camera preview', timeout: 20000 });
+  ok('getUserMedia opened a real video stream inside the page');
+  if (await clickText('Take photo')) ok('captured a frame from the stream');
+  else no('no "Take photo" control while the camera was live');
+  await waitFor("!!document.querySelector('img[alt^=\"The selfie\"]')",
+    { label: 'the captured still to review', timeout: 15000 });
+  ok('...and the applicant is shown the frame before anything is sent');
+  if (await clickText('Use this photo')) ok('accepted the captured photo');
+  else no('no "Use this photo" control on the review step');
+  await waitFor(
+    `(document.body.innerText.match(/ready to submit/g) || []).length >= ${inputs.length + 1}`,
+    { label: 'the live selfie to upload', timeout: 45000 });
+  ok('the LIVE selfie uploaded to the private bucket — no file was ever chosen for it');
 
   const submitted = await clickText('Submit application');
   if (!submitted) throw new Error('no "Submit application" button');
@@ -299,11 +338,19 @@ try {
     else no('fields did not persist: ' + JSON.stringify(row));
     // Step 9.5: documents are typed rows now, one per required doc_code — born unverified.
     const { data: pdocs } = await service.from('provider_documents')
-      .select('doc_code, verification_status, file_path').eq('provider_id', providerId);
+      .select('doc_code, verification_status, file_path, meta').eq('provider_id', providerId);
     const codes = (pdocs ?? []).map((d) => d.doc_code).sort();
-    if (codes.join(',') === 'photo_id,selfie')
-      ok('both uploads were recorded as TYPED documents (photo_id, selfie)');
+    if (codes.join(',') === 'id_secondary,photo_id,selfie')
+      ok('all three captures were recorded as TYPED documents (photo_id, id_secondary, selfie)');
     else no('documents not recorded as typed rows: ' + JSON.stringify(codes));
+    // Bucket C (10/16): each document must say WHAT it is, or a labeled slot buys the reviewer
+    // nothing. (14): the selfie must be marked as captured live, not uploaded.
+    const primary = (pdocs ?? []).find((d) => d.doc_code === 'photo_id');
+    const selfie = (pdocs ?? []).find((d) => d.doc_code === 'selfie');
+    if (primary?.meta?.id_type) ok(`the primary ID is labeled with which ID it is (${primary.meta.id_type})`);
+    else no('the primary ID carries no id_type — the reviewer sees an unlabelled file');
+    if (selfie?.meta?.capture === 'live') ok('the selfie is recorded as captured LIVE');
+    else no('the selfie was not recorded as a live capture: ' + JSON.stringify(selfie?.meta));
     if ((pdocs ?? []).every((d) => d.verification_status === 'pending'))
       ok('...and each is born pending — the browser cannot self-verify a document');
     else no('a document was not born pending: ' + JSON.stringify(pdocs));

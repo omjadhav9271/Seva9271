@@ -142,7 +142,6 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
   const [bookingDate, setBookingDate] = useState('');
   const [bookingTime, setBookingTime] = useState('');
   const [serviceType, setServiceType] = useState('one-time');
-  const [paymentMethod, setPaymentMethod] = useState('upi');
   const [isFavorited, setIsFavorited] = useState(false);
   const [bookingStep, setBookingStep] = useState<'form' | 'confirm'>('form');
   const [offerOpen, setOfferOpen] = useState(false);
@@ -251,7 +250,8 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
       duration_hours: DURATION_HOURS,
       hourly_rate: provider.hourly_rate,
       total_amount: totalAmount,
-      payment_method: paymentMethod,
+      // The only customer-facing method. A DB trigger refuses 'wallet' on insert regardless.
+      payment_method: 'upi',
       // status/payment_status use their DB defaults ('pending')
     });
     setSubmitting(false);
@@ -581,26 +581,22 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                       </div>
                     </div>
 
-                    {/* Payment */}
+                    {/* Payment — ONE path, so there is nothing to choose (Bucket C item 18).
+                        COD stays disabled (no escrow protection until it is re-enabled), and the
+                        Seva Wallet was never a customer payment method: it is the PROVIDER's
+                        payout ledger, which escrow releases into and disputes claw back from.
+                        Offering it here created bookings that could never settle. */}
                     <div>
-                      <label className="text-xs font-medium text-gray-400 uppercase tracking-wide block mb-2">Payment Method</label>
-                      <div className="space-y-2">
-                        {[
-                          // COD is disabled for the online-only launch — no escrow protection until
-                          // reputation + disputes land (Steps 7–8). Both remaining methods are online.
-                          { value: 'upi', label: 'UPI (GPay, PhonePe)', icon: '📱' },
-                          { value: 'wallet', label: 'Seva Wallet', icon: '💰' },
-                        ].map((pm) => (
-                          <button
-                            key={pm.value}
-                            onClick={() => setPaymentMethod(pm.value)}
-                            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border text-sm transition-all ${paymentMethod === pm.value ? 'bg-[#FF9933]/10 border-[#FF9933]/40 text-white' : 'bg-[#1e1e1e] border-[#2a2a2a] text-gray-400 hover:border-[#FF9933]/30'}`}
-                          >
-                            <span>{pm.icon}</span>
-                            <span>{pm.label}</span>
-                            {paymentMethod === pm.value && <CheckCircle className="w-4 h-4 text-[#FF9933] ml-auto" />}
-                          </button>
-                        ))}
+                      <label className="text-xs font-medium text-gray-400 uppercase tracking-wide block mb-2">Payment</label>
+                      <div className="flex items-start gap-3 px-3 py-2.5 rounded-xl border border-[#138808]/30 bg-[#138808]/5">
+                        <span className="text-base leading-none mt-0.5">📱</span>
+                        <div>
+                          <p className="text-sm text-white">UPI, card or netbanking</p>
+                          <p className="text-xs text-gray-400 mt-0.5">
+                            Paid online after the provider accepts. Your money is held in escrow and
+                            released only once you confirm the work is done.
+                          </p>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -701,7 +697,7 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-gray-400">Payment</span>
-                      <span className="text-white font-medium capitalize">{paymentMethod}</span>
+                      <span className="text-white font-medium">UPI · held in escrow</span>
                     </div>
                     {provider.hourly_rate > 0 && (
                       <div className="flex justify-between text-sm font-bold pt-2 border-t border-[#222]">

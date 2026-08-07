@@ -68,7 +68,7 @@ export async function GET(req: Request) {
     // The requirement comes from the provider's CATEGORY, so the admin sees required vs supplied.
     const { data: docRows } = await admin
       .from('provider_documents')
-      .select('id, doc_code, file_path, reference_number, verification_status, verified_source, expires_at, created_at, verified_at')
+      .select('id, doc_code, file_path, reference_number, verification_status, verified_source, expires_at, created_at, verified_at, meta')
       .eq('provider_id', id);
     const { data: reqRows } = await admin
       .from('category_kyc_requirements')
@@ -79,9 +79,12 @@ export async function GET(req: Request) {
                     kyc_document_types: { label: string; description: string | null; capture_method: string; carries_expiry: boolean } | null };
     const supplied = new Map((docRows ?? []).map((d) => [d.doc_code as string, d]));
 
+    // 'optional' joins the list in Bucket C: it is the named second-ID slot, and a document the
+    // reviewer never sees is a document that might as well not have been collected. 'payout' (PAN
+    // before the first payout) still stays out — that is a different decision, made later.
     const documents = await Promise.all(
       ((reqRows ?? []) as unknown as ReqRow[])
-        .filter((r) => r.requirement === 'required' || r.requirement === 'badge')
+        .filter((r) => ['required', 'badge', 'optional'].includes(r.requirement))
         .map(async (r) => {
           const row = supplied.get(r.doc_code);
           let url: string | null = null;
@@ -102,6 +105,7 @@ export async function GET(req: Request) {
             verified_source: row?.verified_source ?? null,
             reference_number: row?.reference_number ?? null,
             expires_at: row?.expires_at ?? null,
+            meta: (row?.meta as Record<string, unknown> | null) ?? null,
             url,
           };
         }),

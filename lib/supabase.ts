@@ -92,7 +92,9 @@ export type KycStatus = 'unsubmitted' | 'submitted' | 'verified' | 'rejected';
    Requirements live in data (category_kyc_requirements), so adding a category or a document
    type is an insert, not a deploy. Documents are RPC-written and server-verified. */
 
-export type CaptureMethod = 'digilocker' | 'api_number' | 'upload' | 'vendor';
+// Bucket C (14): 'live_capture' means the form must open the camera — an uploaded file is not
+// accepted for this slot. The form keys on this, not on a hardcoded doc_code.
+export type CaptureMethod = 'digilocker' | 'api_number' | 'upload' | 'vendor' | 'live_capture';
 
 // 'required' blocks approval · 'badge' never blocks, it unlocks a trust tier ·
 // 'payout' is required before the first payout, not before going live.
@@ -192,6 +194,10 @@ export type Booking = {
     | 'cancelled'
     | 'disputed'
     | 'expired';
+  // 'upi' is the only method offered to customers (Bucket C item 18). 'cod' has been blocked for
+  // new bookings since Step 5.5 and 'wallet' since Bucket C — both remain in the type because
+  // legacy rows still carry them. The wallet itself is alive and well: it is the PROVIDER payout
+  // ledger (escrow releases into it, disputes claw back from it), never a way to pay for a job.
   payment_method: 'wallet' | 'upi' | 'cod';
   payment_status: 'pending' | 'paid' | 'refunded';
   notes: string | null;

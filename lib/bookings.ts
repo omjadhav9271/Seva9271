@@ -22,6 +22,11 @@ export type BookingRow = {
   provider_id: string;
   scheduled_date: string | null;
   scheduled_time: string | null;
+  // Bucket C (20): the detail view was missing the shape of the job itself — how long it was
+  // booked for, at what rate, and when it was placed.
+  duration_hours: number | null;
+  hourly_rate: number | null;
+  created_at: string | null;
   total_amount: number;
   price_agreed: number | null;
   price_charged: number | null;
@@ -41,7 +46,19 @@ export type BookingRow = {
 
 // One select string for both pages — they were byte-identical copies before.
 export const BOOKING_SELECT =
-  'id, customer_id, provider_id, scheduled_date, scheduled_time, total_amount, price_agreed, price_charged, status, payment_method, payment_status, service_type, address, notes, service_providers(business_name, city, service_categories(name, slug)), service_categories(name, slug)';
+  'id, customer_id, provider_id, scheduled_date, scheduled_time, duration_hours, hourly_rate, created_at, total_amount, price_agreed, price_charged, status, payment_method, payment_status, service_type, address, notes, service_providers(business_name, city, service_categories(name, slug)), service_categories(name, slug)';
+
+// How the money was (or will be) paid. 'upi' covers UPI/card/netbanking through Razorpay —
+// customers are offered nothing else (Bucket C item 18). The other two are legacy values on
+// existing rows: 'cod' from before Step 5.5, 'wallet' from before Bucket C.
+export const paymentMethodLabel = (method: string | null): string => {
+  switch (method) {
+    case 'upi':    return 'UPI · online';
+    case 'cod':    return 'Cash on delivery';
+    case 'wallet': return 'Seva Wallet (legacy)';
+    default:       return method ?? '—';
+  }
+};
 
 export const statusConfig: Record<BookingStatus, { label: string; color: string; bg: string; icon: LucideIcon }> = {
   requested:   { label: 'Requested',   color: 'text-yellow-400',  bg: 'bg-yellow-900/20 border-yellow-700/30',   icon: AlertCircle },

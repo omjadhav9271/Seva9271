@@ -7,8 +7,8 @@ import { BookOpen, Calendar, Clock, MapPin, User as UserIcon } from 'lucide-reac
 import { useAuth } from '@/lib/auth-context';
 import { supabase } from '@/lib/supabase';
 import {
-  type BookingRow, type BookingStatus, type Role,
-  BOOKING_SELECT, statusConfig, categoryGradient, initials, formatTime,
+  type BookingRow, type BookingStatus, type PaymentStatus, type Role,
+  BOOKING_SELECT, statusConfig, paymentStatusConfig, categoryGradient, initials, formatTime,
 } from '@/lib/bookings';
 
 // This page is an index: it lists bookings and links to each one. Status actions and chat
@@ -163,7 +163,15 @@ export default function BookingsPage() {
               const isProviderView = view === 'provider';
               const title = isProviderView ? categoryName : providerName;
               const subtitle = isProviderView ? 'Incoming request' : categoryName;
-              const amount = booking.price_charged ?? booking.total_amount;
+              // Match the detail page's ladder: what was charged, else what was agreed, else what
+              // was merely listed. total_amount alone called an unnegotiated list price "the" price.
+              const amount = booking.price_charged ?? booking.price_agreed ?? booking.total_amount;
+              const hours = Number(booking.duration_hours ?? 0);
+              // (20) Where the money is. On a list of jobs this is the second question after
+              // "what state is it in", and it was only answerable by opening each one.
+              const payCfg = paymentStatusConfig[booking.payment_status as PaymentStatus]
+                ?? paymentStatusConfig.pending;
+              const PayIcon = payCfg.icon;
               return (
                 <Link
                   key={booking.id}
@@ -196,16 +204,22 @@ export default function BookingsPage() {
                         {booking.scheduled_time && (
                           <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{formatTime(booking.scheduled_time)}</span>
                         )}
+                        {hours > 0 && (
+                          <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{hours} hr{hours === 1 ? '' : 's'}</span>
+                        )}
                         {address && (
                           <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{address}</span>
                         )}
                       </div>
                     </div>
 
-                    {/* Amount */}
+                    {/* Amount + where the money currently is */}
                     <div className="text-right flex-shrink-0">
                       <p className="font-black text-white">₹{Number(amount).toLocaleString('en-IN')}</p>
-                      <p className="text-xs text-gray-500 capitalize">{booking.payment_method}</p>
+                      <span className={`inline-flex items-center gap-1 mt-1 text-[11px] font-medium px-2 py-0.5 rounded-full border ${payCfg.color} ${payCfg.bg}`}>
+                        <PayIcon className="w-3 h-3" />
+                        {payCfg.label}
+                      </span>
                     </div>
                   </div>
                 </Link>

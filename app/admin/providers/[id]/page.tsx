@@ -13,7 +13,22 @@ import {
   type ProviderApplicationDetail,
 } from '@/lib/admin';
 import TrustTierBadge from '@/components/trust-tier-badge';
+import { idTypeLabel } from '@/lib/provider-application';
 import { toast } from 'sonner';
+
+/* Bucket C — what the applicant says this document IS. Reviewing "img_2043.jpg" with no label is
+   guesswork; the selfie's capture path matters most of all, because an UPLOADED selfie is not
+   evidence that anyone was in front of a camera. So it is called out rather than blending in with
+   the live ones. (Client-asserted metadata: it directs the reviewer's attention, it does not
+   replace the reviewer.) */
+function describeDoc(meta: Record<string, unknown> | null | undefined): { text: string; warn: boolean } | null {
+  if (!meta) return null;
+  const idLabel = idTypeLabel(meta.id_type as string | undefined);
+  if (idLabel) return { text: idLabel, warn: false };
+  if (meta.capture === 'live') return { text: 'Captured live', warn: false };
+  if (meta.capture === 'upload_fallback') return { text: 'Uploaded — camera unavailable', warn: true };
+  return null;
+}
 
 const DOC_CHIP: Record<string, { label: string; cls: string }> = {
   verified: { label: 'Verified', cls: 'bg-[#138808]/10 text-[#138808]' },
@@ -152,6 +167,7 @@ export default function AdminProviderApplicationPage({ params }: { params: { id:
                 const chip = doc.verification_status
                   ? DOC_CHIP[doc.verification_status]
                   : { label: doc.requirement === 'required' ? 'Missing' : 'Not added', cls: 'bg-gray-800 text-gray-400' };
+                const what = describeDoc(doc.meta);
                 return (
                   <div key={doc.doc_code} className="bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-4 py-3">
                     <div className="flex items-center gap-3">
@@ -159,7 +175,12 @@ export default function AdminProviderApplicationPage({ params }: { params: { id:
                       <div className="flex-1 min-w-0">
                         <p className="text-sm text-white truncate">
                           {doc.label}
-                          {doc.requirement === 'badge' && <span className="text-gray-500 font-normal"> · optional</span>}
+                          {what && (
+                            <span className={what.warn ? 'text-orange-300 font-normal' : 'text-gray-400 font-normal'}>
+                              {' · '}{what.text}
+                            </span>
+                          )}
+                          {doc.requirement !== 'required' && <span className="text-gray-500 font-normal"> · optional</span>}
                         </p>
                         <p className="text-xs text-gray-500 truncate">
                           {doc.reference_number ? `${doc.reference_number} · ` : ''}
