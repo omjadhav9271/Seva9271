@@ -14,6 +14,11 @@
 
   It does NOT touch bookings, reviews, reputation or the wallet.
 
+  The row still EXISTS afterwards, so /become-provider shows the status screen ("Not sent for
+  review yet"), not a blank form. applied_at is NULL, and the admin queue selects on applied_at
+  — so the application is intentionally invisible to reviewers until it is resubmitted through
+  the form. That is the honest state, not a bug; the screen says so out loud.
+
   Usage (from the repo root):
     node scripts/reset-provider-application.mjs                  # the PROVIDER_EMAIL account
     node scripts/reset-provider-application.mjs someone@x.com
@@ -60,4 +65,11 @@ if (error) { console.log('Reset failed: ' + error.message); process.exit(1); }
 
 console.log(`Reset ${email} (${sp.business_name ?? 'unnamed'}, ${sp.id})`);
 console.log(`  was: status=${sp.status} kyc=${sp.kyc_status}, ${docCount ?? 0} document row(s)`);
-console.log('  now: status=pending kyc=unsubmitted, 0 document rows — /become-provider shows the form again.');
+console.log('  now: status=pending kyc=unsubmitted applied_at=NULL, 0 document rows.');
+console.log('');
+console.log('  NEXT: /become-provider shows the STATUS screen ("Not sent for review yet"), not a');
+console.log('  blank form — the provider row still exists, which is the point (bookings and the');
+console.log('  provider id survive). To walk a full onboarding: add the documents, then click');
+console.log('  "Edit my details and resubmit" → "Resubmit application". That stamps applied_at,');
+console.log('  which is what the admin queue selects on — until then the application is');
+console.log('  deliberately NOT in the review queue.');

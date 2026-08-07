@@ -47,7 +47,7 @@ const stats = [
 const features = [
   { icon: Shield, title: 'ID-Verified Providers', desc: 'Every provider submits a government photo ID that our team checks before they can take a booking.', bg: '#22c55e' },
   { icon: Clock, title: 'Quick Booking', desc: 'Book services instantly or schedule for later. Get confirmed appointments within minutes.', bg: '#3b82f6' },
-  { icon: CreditCard, title: 'Secure Payments', desc: 'Pay by UPI or Seva Wallet. Your money is held in escrow, not passed on until you confirm the work.', bg: '#a855f7' },
+  { icon: CreditCard, title: 'Secure Payments', desc: 'Pay by UPI, card or netbanking. Your money is held in escrow, not passed on until you confirm the work.', bg: '#a855f7' },
   { icon: Star, title: 'Reviews You Can Trust', desc: 'Only customers who actually paid for a booking can leave a review. Every booking can be disputed.', bg: '#f59e0b' },
   { icon: MapPin, title: 'Location-Based', desc: 'Find service providers in your exact area. Filter by distance and availability.', bg: '#ef4444' },
   { icon: MessageCircle, title: 'Real-Time Chat', desc: 'Communicate directly with service providers through our in-app messaging system.', bg: '#14b8a6' },

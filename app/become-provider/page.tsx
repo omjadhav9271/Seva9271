@@ -279,12 +279,20 @@ export default function BecomeProviderPage() {
     const missingCount = checklist.filter(
       (c) => c.requirement === 'required' && c.verification_status !== 'verified').length;
 
+    // applied_at is stamped by submit_provider_application, and the admin queue selects on it
+    // (`.not('applied_at','is',null)`). So a row without it is saved but NOT in front of a
+    // reviewer — telling that applicant "Submitted, reviewed within 24–48 hours" is a promise
+    // nobody is going to keep. Say what is actually true and point at the control that fixes it.
+    const submitted = Boolean(application.applied_at);
+
     return (
       <StatusShell icon={<Clock className="w-12 h-12 text-[#FF9933]" />} tone="#FF9933"
-        title="Submitted — reviewed within 24–48 hours"
-        body={missingCount > 0
-          ? 'We still need a few documents before we can review your application.'
-          : 'A person checks every application and your ID before a profile goes live. We\'ll notify you the moment it\'s decided.'}>
+        title={submitted ? 'Submitted — reviewed within 24–48 hours' : 'Not sent for review yet'}
+        body={!submitted
+          ? 'Your details are saved, but the application hasn\'t gone to our team. Open “Edit my details” and resubmit to put it in the review queue.'
+          : missingCount > 0
+            ? 'We still need a few documents before we can review your application.'
+            : 'A person checks every application and your ID before a profile goes live. We\'ll notify you the moment it\'s decided.'}>
         <div className="bg-[#161616] border border-[#2a2a2a] rounded-xl p-4 text-left mb-6 space-y-2">
           <Row label="Name" value={application.business_name} />
           <Row label="Service area" value={[application.address, application.city].filter(Boolean).join(', ') || null} />
@@ -295,7 +303,7 @@ export default function BecomeProviderPage() {
         </div>
         <button onClick={() => setEditing(true)}
           className="px-6 py-3 rounded-xl border border-[#2a2a2a] text-sm text-gray-300 hover:text-white transition-colors mb-8">
-          Edit my details
+          {submitted ? 'Edit my details' : 'Edit my details and resubmit'}
         </button>
         <DocumentSection checklist={checklist} uploading={uploading} idTypes={idTypes}
           onIdType={(code, v) => setIdTypes((prev) => ({ ...prev, [code]: v }))}

@@ -8,7 +8,7 @@ const customerSteps = [
   { icon: Search, title: 'Search Your Service', desc: 'Browse 25 service categories or use smart search to find exactly what you need in your city.', color: '#FF9933' },
   { icon: Star, title: 'Choose a Provider', desc: 'Compare ratings, reviews, experience, and pricing. Reviews come only from customers who paid for a booking.', color: '#138808' },
   { icon: CheckCircle, title: 'Book & Confirm', desc: 'Select your preferred date, time, and service duration. Choose one-time, weekly, or monthly plans.', color: '#054187' },
-  { icon: Wallet, title: 'Secure Payment', desc: 'Pay via UPI (GPay, PhonePe) or Seva Wallet. Your money is held in escrow until you confirm the work.', color: '#FF9933' },
+  { icon: Wallet, title: 'Secure Payment', desc: 'Pay via UPI (GPay, PhonePe), card or netbanking. Your money is held in escrow until you confirm the work.', color: '#FF9933' },
 ];
 
 const providerSteps = [
@@ -21,8 +21,8 @@ const providerSteps = [
 const faqs = [
   { q: 'How are providers verified?', a: 'Every provider submits a government photo ID, which our team checks before approving them — so the person on the profile is who they say they are. We do not currently run police background checks, and we never claim a provider has one unless they do.' },
   { q: 'Are providers employed by Seva?', a: 'No. Providers on Seva are independent professionals. They set their own prices and choose which bookings to accept. Seva verifies their identity, holds your payment in escrow, and resolves disputes — but does not employ or supervise them.' },
-  { q: 'What payment methods are accepted?', a: 'UPI (GPay, PhonePe, Paytm), debit/credit cards, and the Seva Wallet. Cash payments are not currently supported, so that every booking stays protected by escrow.' },
-  { q: 'What is the Seva Wallet?', a: 'Seva Wallet holds your balance for faster checkout and receives any refunds from a resolved dispute. It is not a savings or investment product and does not pay interest.' },
+  { q: 'What payment methods are accepted?', a: 'UPI (GPay, PhonePe, Paytm), debit/credit cards, and netbanking — all paid online so the money lands in escrow. Cash payments are not currently supported, so that every booking stays protected by escrow.' },
+  { q: 'What is the Seva Wallet?', a: 'It is the payout ledger, not a way to pay. Providers receive their earnings there when you confirm a job is done, and any refund from a resolved dispute lands there too. You do not pay for a booking from it — that is always UPI, card or netbanking into escrow. It is not a savings or investment product and does not pay interest.' },
   { q: 'What if I am unhappy with the service?', a: 'Your payment stays in escrow until you confirm the work is done. If something goes wrong, raise a dispute on the booking — our team reviews the full history (chat, timings, photos, payments) and decides the outcome, which can include a full or partial refund.' },
   { q: 'Can I book recurring services?', a: 'Absolutely! Choose from one-time, weekly, monthly, or yearly plans. Great for tiffin service, house cleaning, or caretaker needs.' },
   { q: 'How do delivery gigs work?', a: 'Service providers who need delivery support can post gig listings. Delivery partners nearby can accept and earn by completing the delivery.' },
