@@ -197,6 +197,26 @@ const latestSnap = async (type, id) => {
     .eq('subject_type', type).eq('subject_id', id).order('computed_at', { ascending: false }).limit(1).maybeSingle();
   return data ?? null;
 };
+/* The engine's own definition of dispute_fault_rate, recomputed independently from the DB:
+   resolved disputes whose fault_party is the subject, over the bookings that count (the ops
+   filter excludes requested/negotiating/expired). Case (f) runs against the LIVE test account,
+   whose dispute history genuinely accumulates, so its expectation must be derived rather than
+   hardcoded — the same way review_count already is. Hardcoding it made the assertion a fixture
+   that drifted red the moment the account earned a real at-fault dispute. */
+const OPS_EXCLUDED_STATUSES = ['requested', 'negotiating', 'expired'];
+async function expectedFaultRate(subjectType, uid) {
+  const column = subjectType === 'customer' ? 'customer_id' : 'provider_id';
+  const { data: bks } = await service.from('bookings').select('id, status').eq(column, uid);
+  const counted = (bks ?? []).filter((b) => !OPS_EXCLUDED_STATUSES.includes(b.status));
+  if (counted.length === 0) return 0;
+  // numerator counts resolved-against-you DISPUTE rows; denominator counts distinct bookings
+  const { count: atFault } = await service.from('disputes')
+    .select('id', { head: true, count: 'exact' })
+    .eq('status', 'resolved').eq('fault_party', subjectType)
+    .in('booking_id', counted.map((b) => b.id));
+  return (atFault ?? 0) / counted.length;
+}
+
 // neutralize the rater: with no customer snapshot, the engine must default to weight 1.0
 const clearRaterHistory = () =>
   service.from('reputation_snapshots').delete().eq('subject_type', 'customer').eq('subject_id', customerId);
@@ -359,11 +379,21 @@ try {
     if (snap && Number(snap.score) === sc && Number(bd.review_count) === expectedReviews)
       ok(`customer snapshot written (review_score=${bd.review_score} from all ${bd.review_count} provider reviews incl. the seeded one)`);
     else no(`customer snapshot not as expected (review_count=${bd.review_count}, DB has ${expectedReviews}): ` + JSON.stringify(snap));
-    // Same Step-8 rule on the customer side: cancellations count, a merely-disputed booking
-    // does not (only a dispute resolved AGAINST the customer would).
-    if (Number(bd.cancellation) > 0 && Number(bd.dispute_fault_rate) === 0)
-      ok(`customer ops reflect their own record (cancellation=${bd.cancellation}; dispute_fault_rate=0 — disputed but never found at fault)`);
-    else no('customer ops did not pick up their cancelled bookings: ' + JSON.stringify(bd));
+    // Same Step-8 rule on the customer side: cancellations count, and the dispute term is
+    // FAULT-based — only a dispute resolved AGAINST this customer contributes, never one they
+    // merely raised or won. The expectation is computed from the DB (see expectedFaultRate), so
+    // this stays true as the live account accumulates real disputes instead of drifting red.
+    // The anti-frivolous property itself is pinned on synthetic data in case (e), where the
+    // subject is freshly created and 0 is guaranteed.
+    const wantFault = await expectedFaultRate('customer', customerId);
+    const gotFault = Number(bd.dispute_fault_rate);
+    if (Number(bd.cancellation) > 0 && Math.abs(gotFault - wantFault) < 0.0005) {
+      ok(`customer ops reflect their own record (cancellation=${bd.cancellation}; ` +
+         `dispute_fault_rate=${gotFault} matches the ${wantFault === 0 ? 'zero ' : ''}rate computed from the DB)`);
+    } else {
+      no(`customer ops not as expected (cancellation=${bd.cancellation} should be >0; ` +
+         `dispute_fault_rate=${gotFault}, DB says ${wantFault.toFixed(3)}): ` + JSON.stringify(bd));
+    }
 
     const { data: prof } = await service.from('profiles').select('reputation_score').eq('id', customerId).maybeSingle();
     if (Number(prof?.reputation_score) === sc) ok(`denormalized profiles.reputation_score = ${sc}`);
