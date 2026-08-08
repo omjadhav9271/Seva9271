@@ -109,6 +109,39 @@ Need signed vendors, credentials, and/or compliance review. **Not bugs — delib
 
 ---
 
+## Feature-enablement conditions — when deferred payment options become safe to turn on
+
+> These are **preconditions, not a backlog.** Enable by precondition, **not** by calendar date or feature-parity envy. A future session must not switch these on just because they're stubbed and "look ready."
+
+### Cash / COD — enable only when payment can be ENFORCED
+Cash has no escrow protection; the platform never holds the money, so it cannot claw it back. Safe to enable **only when ALL of these exist**:
+1. **Two-sided cash confirmation** built — both customer *and* provider confirm the cash changed hands; neither self-attests alone; a mismatch opens a dispute. (Provider must NEVER be able to mark themselves paid — same self-attestation rule as everywhere.)
+2. **Dispute cash-path** built — the "I paid" / "they didn't" mismatch resolves through the admin/evidence flow.
+3. **Reputation-gated eligibility** — new/low-reputation customers get no COD (or a tiny cap); COD unlocks as they build trustworthy history. (Reputation engine exists; the gating rule does not yet.)
+4. **Incentive alignment** — online remains the priced/nudged default so cash self-selects to a small, watchable population.
+
+Until all four: **Cash stays off.** This is the fraud hole deliberately closed at launch — do not reopen it early. *(Enforced in the DB today: the INSERT-only COD guard from `20260721120000` refuses new `payment_method='cod'` bookings.)*
+
+### Seva Wallet (CUSTOMER prepay balance) — enable only when money can be HELD responsibly
+⚠️ **Distinct from the existing provider payout ledger**, which is live and is NOT this. A customer-facing prepay balance is new, unbuilt, and higher-risk (holding customers' funds). Safe to enable **only when ALL of these exist**:
+1. **Top-up flow + reconciling ledger** — customer loads money via UPI; every rupee in/out/held is a ledger entry that reconciles exactly.
+2. **Refund & closure rules** — how a customer withdraws their balance, and what happens to it on account closure — answered **before** holding a single rupee.
+3. **Regulatory check** — holding customer prepaid balances can trigger RBI prepaid-instrument (PPI) rules in India; get a real look before enabling, not after.
+4. **A concrete benefit over UPI** — instant refunds-to-wallet, cashback, or faster checkout. If UPI already does the job, the wallet is complexity for its own sake.
+
+Until all four: **customer wallet stays off.** "Uber has a wallet" is not a reason — Uber's solves a problem; only build ours when it solves one of ours.
+
+### Honest signposting (principle)
+Every deferred capability is surfaced as **"Coming soon"** or **"verified manually for now"** — **never** a dead button, a silent no-op, or an alarming "not connected" error. Applies to DigiLocker in KYC ("Coming soon — upload documents, our team verifies them"), EPFO (removed / "not required"), and any other stub. The interface is honest about what isn't built yet.
+
+> 🔴 **As-built exception at CHECKOUT — read before "restoring" this.** Item 18 removed the payment chooser outright: the customer sees **one** path (UPI/card/netbanking into escrow) and **no** disabled Cash or Seva Wallet placeholders. That is deliberate and is **asserted** — `ui-check-step10` requires the Payment section to contain **zero selectable controls**, and that "Seva Wallet" appears nowhere on the booking page.
+>
+> The reasoning: signposting is honest when it tells someone about a capability they might look for. At checkout it does the opposite — a disabled "Seva Wallet" tells a customer we hold balances (we don't, for customers) and a greyed "Cash" invites the exact off-platform arrangement escrow exists to prevent. A chooser with one enabled option is also just a worse control than no chooser.
+>
+> So: signpost deferred features **where someone would go looking for them** (KYC, help/FAQ, the how-it-works page), **not** in the checkout path. If the "Coming soon" treatment is ever wanted at checkout, it is a deliberate reversal of item 18 and requires updating that assertion — it must not be added by a session that reads only the principle above.
+
+---
+
 ## Principles reaffirmed during the issue passes
 
 - **Friction asymmetric to intent:** customers frictionless; providers do a short, one-time, honestly-status'd application; strict guarantees underneath.
