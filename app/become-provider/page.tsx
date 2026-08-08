@@ -549,10 +549,18 @@ function DocCapture({ docCode, label, captureMethod, uploading, idType, onIdType
         </div>
       )}
       <div className="flex gap-2">
+        {/* Item 22 — labelled for what it is. It reads "Coming soon" rather than "Fetch from
+            DigiLocker", which promised a capability that does not exist and made the upload look
+            like a fallback for something that had failed. Still clickable on purpose: the click
+            explains and points at upload, where a disabled chip would just be a mystery. */}
         {captureMethod === 'digilocker' && (
           <button type="button" onClick={() => onDigiLocker(docCode)}
-            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-[#FF9933]/10 border border-[#FF9933]/30 text-[#FF9933] hover:bg-[#FF9933]/20 transition-all">
-            <Download className="w-3.5 h-3.5" /> Fetch from DigiLocker
+            title="DigiLocker is coming soon — upload the document and our team verifies it"
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-[#2a2a2a] bg-[#161616] text-gray-400 hover:text-gray-200 transition-all">
+            <Download className="w-3.5 h-3.5" /> DigiLocker
+            <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-[#2a2a2a] text-gray-500">
+              Coming soon
+            </span>
           </button>
         )}
         <input ref={inputRef} type="file" accept={KYC_ACCEPT} className="hidden"
@@ -564,7 +572,9 @@ function DocCapture({ docCode, label, captureMethod, uploading, idType, onIdType
         <button type="button" onClick={() => inputRef.current?.click()} disabled={uploading}
           className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-[#2a2a2a] text-gray-400 hover:text-white transition-all disabled:opacity-60">
           {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-          {captureMethod === 'digilocker' ? 'or upload' : 'Upload'}
+          {/* Upload is the ACTIVE path, so it stops being phrased as the alternative ("or upload")
+              to a control that cannot do anything yet. */}
+          {uploading ? 'Uploading…' : 'Upload'}
         </button>
       </div>
     </div>

@@ -10,6 +10,7 @@ import { useAuth } from '@/lib/auth-context';
 import { useRouter } from 'next/navigation';
 import { supabase, type ReputationSnapshot } from '@/lib/supabase';
 import { makeOffer } from '@/lib/bargaining';
+import { COMING_SOON_PAYMENTS } from '@/lib/bookings';
 import TrustTierBadge from '@/components/trust-tier-badge';
 import { toast } from 'sonner';
 
@@ -581,22 +582,54 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                       </div>
                     </div>
 
-                    {/* Payment — ONE path, so there is nothing to choose (Bucket C item 18).
-                        COD stays disabled (no escrow protection until it is re-enabled), and the
-                        Seva Wallet was never a customer payment method: it is the PROVIDER's
-                        payout ledger, which escrow releases into and disputes claw back from.
-                        Offering it here created bookings that could never settle. */}
+                    {/* Payment (item 18 + item 22) — the full list is shown, but only UPI can be
+                        chosen. The other two are `disabled` and say WHY, rather than being hidden
+                        (a customer wondering "can I pay cash?" gets an answer) or being dead
+                        buttons that appear to work.
+
+                        🔴 "Seva Wallet — Coming soon" means a FUTURE CUSTOMER PREPAY BALANCE.
+                        It is NOT the existing wallet, which is the PROVIDER PAYOUT LEDGER that
+                        escrow releases into and disputes claw back from. Do not wire this option
+                        to that system: crediting a booking from the payout ledger would let a
+                        customer spend a provider's earnings. See /docs/Seva-Decisions-Log.md.
+
+                        Presentation only — the DB refuses both regardless: INSERT guards reject
+                        payment_method 'cod' (20260721120000) and 'wallet' (20260817120000). */}
                     <div>
                       <label className="text-xs font-medium text-gray-400 uppercase tracking-wide block mb-2">Payment</label>
-                      <div className="flex items-start gap-3 px-3 py-2.5 rounded-xl border border-[#138808]/30 bg-[#138808]/5">
-                        <span className="text-base leading-none mt-0.5">📱</span>
-                        <div>
-                          <p className="text-sm text-white">UPI, card or netbanking</p>
-                          <p className="text-xs text-gray-400 mt-0.5">
-                            Paid online after the provider accepts. Your money is held in escrow and
-                            released only once you confirm the work is done.
-                          </p>
+                      <div className="space-y-2">
+                        <div className="flex items-start gap-3 px-3 py-2.5 rounded-xl border border-[#138808]/30 bg-[#138808]/5">
+                          <span className="text-base leading-none mt-0.5">📱</span>
+                          <div>
+                            <p className="text-sm text-white">UPI, card or netbanking</p>
+                            <p className="text-xs text-gray-400 mt-0.5">
+                              Paid online after the provider accepts. Your money is held in escrow and
+                              released only once you confirm the work is done.
+                            </p>
+                          </div>
                         </div>
+
+                        {COMING_SOON_PAYMENTS.map((m) => (
+                          <button
+                            key={m.method}
+                            type="button"
+                            disabled
+                            aria-disabled="true"
+                            title={`${m.label} — coming soon`}
+                            className="w-full flex items-start gap-3 px-3 py-2.5 rounded-xl border border-[#2a2a2a] bg-[#161616] text-left opacity-60 cursor-not-allowed"
+                          >
+                            <span className="text-base leading-none mt-0.5 grayscale">{m.icon}</span>
+                            <div className="min-w-0">
+                              <p className="text-sm text-gray-300 flex items-center gap-2">
+                                {m.label}
+                                <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-[#2a2a2a] text-gray-400">
+                                  Coming soon
+                                </span>
+                              </p>
+                              <p className="text-xs text-gray-500 mt-0.5">{m.why}</p>
+                            </div>
+                          </button>
+                        ))}
                       </div>
                     </div>
                   </div>

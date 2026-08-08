@@ -363,14 +363,18 @@ console.log('\n[public copy: no wallet-as-payment-method claims]');
 {
   const ORIGIN = (env.WEBHOOK_URL || process.env.WEBHOOK_URL || 'http://localhost:3000/api/payments/webhook')
     .replace(/\/api\/.*$/, '');
-  // Each is a CLAIM, not a mere mention of the word. The wallet may legitimately be described as
-  // the payout ledger and the refund destination — it may not be offered as a way to pay.
+  // Each is a PRESENT-TENSE claim that the wallet is a usable payment method, not a mere mention
+  // of the word. Since item 18 was revised the wallet may legitimately appear in payment copy —
+  // it is shown at checkout marked "Coming soon" — and the FAQ has to explain the difference
+  // between the live provider payout ledger and the unbuilt customer balance. So a bare mention
+  // cannot be the trigger; only a claim that you can pay with it TODAY can be.
   const banned = [
     /UPI\s+or\s+Seva\s+Wallet/i,
     /Seva\s+Wallet\s+or\s+UPI/i,
-    /(?:accepted|accept|methods?)[^.]{0,80}Seva\s+Wallet/i,
-    /Seva\s+Wallet[^.]{0,60}faster\s+checkout/i,
     /pay\s+(?:with|via|by|using)\s+(?:the\s+)?Seva\s+Wallet/i,
+    /Seva\s+Wallet\s+holds\s+your\s+balance/i,
+    // "…and the Seva Wallet" in a list of what is accepted — the original drift.
+    /(?:accepted|we\s+accept)[^.]{0,60}and\s+the\s+Seva\s+Wallet/i,
   ];
   let checked = 0;
   for (const path of ['/', '/how-it-works']) {

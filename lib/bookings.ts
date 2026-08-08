@@ -48,9 +48,38 @@ export type BookingRow = {
 export const BOOKING_SELECT =
   'id, customer_id, provider_id, scheduled_date, scheduled_time, duration_hours, hourly_rate, created_at, total_amount, price_agreed, price_charged, status, payment_method, payment_status, service_type, address, notes, service_providers(business_name, city, service_categories(name, slug)), service_categories(name, slug)';
 
+/* Item 18 + item 22 — the payment methods shown at checkout but NOT selectable.
+   Displayed rather than hidden so the list looks complete and a customer wondering "can I pay
+   cash?" gets an answer instead of silence. Each says WHY it is off, because "Coming soon" with
+   no reason reads as an arbitrary restriction.
+
+   🔴 'wallet' here means a FUTURE CUSTOMER PREPAY BALANCE — money a customer loads and spends.
+   It is NOT the wallet that exists today, which is the PROVIDER PAYOUT LEDGER (escrow releases
+   into it; disputes claw back from it). They share a name and nothing else. Wiring this option
+   to the existing ledger would let a customer pay with a provider's earnings.
+
+   These are labels only. The database refuses both on INSERT regardless of what any client
+   sends — see the COD guard (20260721120000) and the wallet guard (20260817120000) — because a
+   disabled attribute is a UI affordance, never a control. The enablement preconditions for each
+   are recorded in /docs/Seva-Decisions-Log.md; do not turn either on until they are met. */
+export const COMING_SOON_PAYMENTS: { method: string; label: string; icon: string; why: string }[] = [
+  {
+    method: 'cod',
+    label: 'Cash',
+    icon: '💵',
+    why: 'Cash can\'t be held in escrow, so we can\'t protect or refund it yet.',
+  },
+  {
+    method: 'wallet',
+    label: 'Seva Wallet',
+    icon: '👛',
+    why: 'A prepaid Seva balance for faster checkout. Not open to customers yet.',
+  },
+];
+
 // How the money was (or will be) paid. 'upi' covers UPI/card/netbanking through Razorpay —
-// customers are offered nothing else (Bucket C item 18). The other two are legacy values on
-// existing rows: 'cod' from before Step 5.5, 'wallet' from before Bucket C.
+// the only method a customer can actually select (Bucket C item 18). The other two are legacy
+// values on existing rows: 'cod' from before Step 5.5, 'wallet' from before Bucket C.
 export const paymentMethodLabel = (method: string | null): string => {
   switch (method) {
     case 'upi':    return 'UPI · online';

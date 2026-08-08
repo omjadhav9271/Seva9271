@@ -20,23 +20,53 @@ const popularServices = [
   { label: 'Tutoring Services', href: '/services?category=tutor' },
 ];
 
+/* Item 22 — a link that goes somewhere unrelated is worse than one that admits it isn't built.
+   Seven of these nine pointed at /how-it-works, so "Privacy Policy" quietly delivered the
+   how-it-works page: the user cannot tell whether they misread the link or the site is broken,
+   and there is nothing to signal which. Unbuilt destinations are now rendered as plain text with
+   a "Soon" chip instead of links that misroute.
+
+   ⚠️ Privacy Policy and Terms of Service are marked the same way, but they are NOT the same kind
+   of gap: they are a legal requirement before public launch, not a nice-to-have. Flagged in
+   /docs/Seva-Decisions-Log.md so the honest label here doesn't become a way to forget them. */
+
 // 'Become a Provider' is split out rather than filtered by label — a string comparison against
 // display copy silently stops working the day someone rewords the link.
 const company = [
-  { label: 'About Us', href: '/how-it-works' },
+  { label: 'About Us', soon: true },
   { label: 'How It Works', href: '/how-it-works' },
-  { label: 'Careers', href: '/how-it-works' },
-  { label: 'Press & Media', href: '/how-it-works' },
+  { label: 'Careers', soon: true },
+  { label: 'Press & Media', soon: true },
 ];
 
 const becomeProvider = { label: 'Become a Provider', href: '/become-provider' };
 
 const support = [
-  { label: 'Help Center', href: '/how-it-works' },
-  { label: 'Safety Guidelines', href: '/how-it-works' },
-  { label: 'Privacy Policy', href: '/how-it-works' },
-  { label: 'Terms of Service', href: '/how-it-works' },
+  { label: 'Help Center', soon: true },
+  { label: 'Safety Guidelines', soon: true },
+  { label: 'Privacy Policy', soon: true },
+  { label: 'Terms of Service', soon: true },
 ];
+
+type FooterLink = { label: string; href?: string; soon?: boolean };
+
+function FooterItem({ item }: { item: FooterLink }) {
+  if (item.href) {
+    return (
+      <Link href={item.href} className="text-sm text-blue-200/70 hover:text-white transition-colors">
+        {item.label}
+      </Link>
+    );
+  }
+  return (
+    <span className="text-sm text-blue-200/40 inline-flex items-center gap-1.5 cursor-default" title={`${item.label} — coming soon`}>
+      {item.label}
+      <span className="text-[9px] font-semibold uppercase tracking-wide px-1 py-0.5 rounded bg-white/10 text-blue-200/50">
+        Soon
+      </span>
+    </span>
+  );
+}
 
 export default function Footer() {
   const { profile } = useAuth();
@@ -85,11 +115,7 @@ export default function Footer() {
             <h3 className="text-white font-semibold mb-5">Company</h3>
             <ul className="space-y-3">
               {companyLinks.map((c) => (
-                <li key={c.label}>
-                  <Link href={c.href} className="text-sm text-blue-200/70 hover:text-white transition-colors">
-                    {c.label}
-                  </Link>
-                </li>
+                <li key={c.label}><FooterItem item={c} /></li>
               ))}
             </ul>
           </div>
@@ -99,11 +125,7 @@ export default function Footer() {
             <h3 className="text-white font-semibold mb-5">Support</h3>
             <ul className="space-y-3 mb-5">
               {support.map((s) => (
-                <li key={s.label}>
-                  <Link href={s.href} className="text-sm text-blue-200/70 hover:text-white transition-colors">
-                    {s.label}
-                  </Link>
-                </li>
+                <li key={s.label}><FooterItem item={s} /></li>
               ))}
             </ul>
             <div className="space-y-2">

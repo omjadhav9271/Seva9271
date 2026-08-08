@@ -106,13 +106,18 @@ export async function recordDocument(input: {
 
 /* DigiLocker is the preferred capture path: issuer-signed, machine-readable, and it means we
    store no photocopy at all. It needs registered credentials, so it is an ADAPTER STUB for now
-   (same pattern as Step 9's request_ekyc) — the UI offers it, and falls back to upload. */
+   (same pattern as Step 9's request_ekyc) — the UI offers it, and falls back to upload.
+
+   Item 22 (honest signposting): the copy says "coming soon" and names the working alternative.
+   It used to read "DigiLocker isn't connected yet", which sounds like an outage the applicant
+   has hit — something broken, possibly their fault, possibly worth retrying. Nothing is broken:
+   the feature isn't built. An error voice for an unbuilt feature costs trust and support time. */
 export async function requestDigiLocker(docCode: string): Promise<{ configured: boolean; message: string }> {
   const { data, error } = await supabase.rpc('request_digilocker_pull', { p_doc_code: docCode });
   if (error) return { configured: false, message: error.message };
   return {
     configured: data !== 'digilocker_not_configured',
-    message: 'DigiLocker isn\'t connected yet — upload the document instead and our team will check it.',
+    message: 'DigiLocker is coming soon. For now, upload the document and our team verifies it — usually within 24–48 hours.',
   };
 }
 

@@ -286,33 +286,45 @@ try {
   if (!leakedInState) ok('...and "floor_price" appears in no serialized page state');
   else no('🔴 floor_price is present in the page payload');
 
-  // ---- Bucket C (18): this is the checkout, so guard the UPI-only contract here ----
-  // Proven by hand in a browser on 2026-08-08 and then left unprotected, which is how it would
-  // quietly come back. The assertion is deliberately structural rather than textual: counting
-  // SELECTABLE controls catches a re-added chooser whatever its options are labelled, where a
-  // grep for "wallet" would pass a chooser offering "Balance" or "Seva Credit".
+  // ---- item 18 (revised) + item 22: the full payment list is SHOWN, only UPI is SELECTABLE ----
+  // The earlier version of this asserted zero controls in the section, from when the chooser was
+  // removed outright. Item 18 was revised: Cash and Seva Wallet are now displayed as visible
+  // "Coming soon" entries so checkout looks complete and the roadmap is legible. That makes the
+  // guarantee STRONGER, not weaker — it is no longer "there is nothing to click" but "these two
+  // exist and cannot be chosen", which is the property that actually protects the customer.
   const pay = await evaluate(`(() => {
     const label = [...document.querySelectorAll('label')].find(l => l.textContent.trim() === 'Payment');
     if (!label) return { found: false };
     const section = label.parentElement;
+    const controls = [...section.querySelectorAll('button, input[type=radio], input[type=checkbox], select')];
     return {
       found: true,
-      controls: section.querySelectorAll('button, input[type=radio], input[type=checkbox], select').length,
+      total: controls.length,
+      enabled: controls.filter(c => !c.disabled).length,
+      comingSoon: controls.filter(c => /coming soon/i.test(c.textContent)).length,
+      cashDisabled: controls.some(c => /cash/i.test(c.textContent) && c.disabled),
+      walletDisabled: controls.some(c => /seva wallet/i.test(c.textContent) && c.disabled),
       text: section.innerText.replace(/\\s+/g, ' ').trim(),
     };
   })()`);
 
   if (pay.found) ok('the booking panel has a Payment section');
   else no('no Payment section on the booking panel — the checkout changed shape');
-  if (pay.found && pay.controls === 0) ok('...offering ONE path, with nothing to choose (no chooser)');
-  else if (pay.found) no(`🔴 the customer is being offered a payment CHOICE again (${pay.controls} control(s)) — item 18 says UPI only`);
-  if (pay.found && /UPI/i.test(pay.text)) ok('...and that path is UPI/online into escrow');
-  else if (pay.found) no('the single payment path is not UPI: ' + pay.text.slice(0, 80));
+  if (pay.found && /UPI/i.test(pay.text)) ok('...UPI/online into escrow is offered');
+  else if (pay.found) no('UPI is not offered at checkout: ' + pay.text.slice(0, 80));
 
-  // The wallet is the PROVIDER payout ledger. It must not be offered to a customer as a way to
-  // pay — anywhere on the page that takes the booking.
-  if (!/seva wallet/i.test(providerPage)) ok('the Seva Wallet is not offered to the customer at checkout');
-  else no('🔴 "Seva Wallet" is back on the checkout page — it is the payout ledger, not a payment method');
+  // 🔴 The one that matters. Every control in the section must be disabled — the ONLY live path
+  // is the plain UPI card, which is not a control at all. If a deferred method ever becomes
+  // clickable, a customer can create a booking that escrow cannot protect.
+  if (pay.found && pay.enabled === 0) ok(`...and every listed alternative is NON-selectable (${pay.total} disabled control(s))`);
+  else if (pay.found) no(`🔴 ${pay.enabled} payment control(s) at checkout are SELECTABLE — a deferred method can be chosen`);
+
+  if (pay.found && pay.cashDisabled) ok('Cash is shown but disabled');
+  else if (pay.found) no('Cash is not shown as a disabled "coming soon" option (item 18 revised)');
+  if (pay.found && pay.walletDisabled) ok('Seva Wallet is shown but disabled');
+  else if (pay.found) no('Seva Wallet is not shown as a disabled "coming soon" option (item 18 revised)');
+  if (pay.found && pay.comingSoon >= 2) ok('...both are labelled "Coming soon" rather than left as mystery dead buttons (item 22)');
+  else if (pay.found) no(`only ${pay.comingSoon} deferred method(s) carry a "Coming soon" label`);
 
   // make the offer
   if (await clickContaining('Make an offer')) ok('opened the offer sheet');

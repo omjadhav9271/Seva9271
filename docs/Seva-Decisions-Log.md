@@ -42,7 +42,7 @@ Migration `20260817120000_seva_bucket_c_onboarding_and_upi_only.sql`. Principle 
 - **(10) Multiple documents, labeled and bounded — ✅** One extra, *named* slot (**Secondary ID**, `requirement='optional'`), not an open-ended upload pile: an unlabelled heap of files is worse for the reviewer than one document, because nothing says what any of it is. Each document also records **which** ID it is (`meta.id_type`), so the admin screen reads "Primary photo ID · Aadhaar" instead of "img_2043.jpg". Same private `kyc-docs` bucket. It never blocks approval, and it is **excluded from `recompute_trust_tier`** — a PAN photocopy must not buy the credential-verified tier that a trade certificate means.
 - **(14) Live camera selfie — ✅** `getUserMedia` → `<video>` → canvas frame → the private bucket. No file input on that slot at all. **Degrades, never dead-ends:** denied permission, no camera, camera busy and insecure-context each get their own sentence plus a retry, and only *after* a failed attempt is an upload fallback offered — flagged `meta.capture='upload_fallback'` so the reviewer knows it wasn't live. Deliberately **no** blink/turn-head liveness (vendor feature, later). Honest limit: `meta.capture` is a **reviewer hint, not a security control** — it is client-asserted; the gate is still a human looking at the photo.
 - **(16) Sensible Indian IDs — ✅** Primary = **Aadhaar / Voter ID (EPIC) / Driving licence** (all carry a photo, so the selfie has something to match). **PAN is secondary only** — no address, weak alone. **Passport is offered last and is never the default or required.** The doc *code* stays `photo_id` — renaming a key that every requirement row and document points at, for a label, would break data for cosmetics.
-- **(18) Customer payment = UPI only — ✅** The checkout chooser is gone; UPI/card/netbanking into escrow is the single path (COD still deferred). 🔴 **The wallet is untouched and still the provider payout ledger** — escrow releases into it, disputes claw back from it. Nothing in the migration touches `credit_wallet`, `debit_wallet`, `wallet_transactions`, `release_escrow_on_confirm` or `resolve_dispute`; both were re-proven working after the change.
+- **(18) Customer payment = UPI only — ✅** *(presentation revised 2026-08-08 — see "Item 18 was REVISED" below: the full list is now shown with Cash and Seva Wallet visible-but-disabled as "Coming soon". UPI remains the only method a customer can actually select, and the DB guards are unchanged.)* UPI/card/netbanking into escrow is the single active path (COD still deferred). 🔴 **The wallet is untouched and still the provider payout ledger** — escrow releases into it, disputes claw back from it. Nothing in the migration touches `credit_wallet`, `debit_wallet`, `wallet_transactions`, `release_escrow_on_confirm` or `resolve_dispute`; both were re-proven working after the change.
 - **(20) Booking detail polish — ✅** Display only. Service, the other party *with which side they are*, date/time, work hours + listed rate, the price labeled for what it actually is (charged › agreed › listed), payment method + escrow state, booked-on, the customer's brief, and a **status timeline** read from the existing `booking_events` audit trail. The list rows gained hours and an escrow badge.
 
 ### Bucket C verification pass (2026-08-08) — browser-proven end to end
@@ -131,14 +131,31 @@ Until all four: **Cash stays off.** This is the fraud hole deliberately closed a
 
 Until all four: **customer wallet stays off.** "Uber has a wallet" is not a reason — Uber's solves a problem; only build ours when it solves one of ours.
 
-### Honest signposting (principle)
-Every deferred capability is surfaced as **"Coming soon"** or **"verified manually for now"** — **never** a dead button, a silent no-op, or an alarming "not connected" error. Applies to DigiLocker in KYC ("Coming soon — upload documents, our team verifies them"), EPFO (removed / "not required"), and any other stub. The interface is honest about what isn't built yet.
+### (22) Honest signposting of unbuilt features (✅ DONE — principle, applies app-wide)
 
-> 🔴 **As-built exception at CHECKOUT — read before "restoring" this.** Item 18 removed the payment chooser outright: the customer sees **one** path (UPI/card/netbanking into escrow) and **no** disabled Cash or Seva Wallet placeholders. That is deliberate and is **asserted** — `ui-check-step10` requires the Payment section to contain **zero selectable controls**, and that "Seva Wallet" appears nowhere on the booking page.
->
-> The reasoning: signposting is honest when it tells someone about a capability they might look for. At checkout it does the opposite — a disabled "Seva Wallet" tells a customer we hold balances (we don't, for customers) and a greyed "Cash" invites the exact off-platform arrangement escrow exists to prevent. A chooser with one enabled option is also just a worse control than no chooser.
->
-> So: signpost deferred features **where someone would go looking for them** (KYC, help/FAQ, the how-it-works page), **not** in the checkout path. If the "Coming soon" treatment is ever wanted at checkout, it is a deliberate reversal of item 18 and requires updating that assertion — it must not be added by a session that reads only the principle above.
+Anywhere a capability is deferred, show a calm **"Coming soon"** or **"verified manually for now"** — **never** a dead button, a silent no-op, or an alarming "not connected" error. An error voice for a feature that was simply never built reads as an outage the user has hit: something broken, possibly their fault, possibly worth retrying. It costs trust and generates support contacts about a system working exactly as intended.
+
+As applied:
+
+- **Checkout** — Cash and Seva Wallet are **shown, disabled, and labelled "Coming soon", each with the reason** ("Cash can't be held in escrow…", "A prepaid Seva balance… not open to customers yet"). Listing them is what makes the checkout look complete and the roadmap legible; saying *why* is what stops "Coming soon" reading as an arbitrary restriction.
+- **KYC / DigiLocker** — the control reads **"DigiLocker · Coming soon"**, and the message is *"DigiLocker is coming soon. For now, upload the document and our team verifies it — usually within 24–48 hours."* It previously said **"DigiLocker isn't connected yet"**, which sounds like a fault. Upload is now phrased as the active path (**"Upload"**), not the consolation prize (**"or upload"**) for a control that cannot do anything.
+- **EPFO** — absent from the UI entirely (item 11, rejected for launch). Verified: no `.tsx` surface references it; only an unused adapter export remains in `lib/provider-application.ts`.
+- **Footer** — the audit turned up the worst case of this: **seven of nine footer links pointed at `/how-it-works`**, so "Privacy Policy" silently delivered the how-it-works page. A misrouting link is worse than a dead one — the user cannot tell whether they misread it or the site is broken. Unbuilt destinations (About Us, Careers, Press & Media, Help Center, Safety Guidelines) now render as plain text with a "Soon" chip rather than links that go somewhere else.
+
+> ⚠️ **Privacy Policy and Terms of Service are a LAUNCH BLOCKER, not a "coming soon" feature.** They now carry the same honest "Soon" chip, which is better than misrouting — but they are a legal requirement for a marketplace handling payments and KYC documents in India, not an optional page. **The label must not become the reason they are forgotten.** They need real content before public launch; the chip is a stopgap for a pre-launch build.
+
+**How to apply it to something new:** show it, disable it, label it "Coming soon", say why in one line, and make sure the working alternative is the visually primary control. Never leave the reason to a tooltip alone.
+
+### 🔴 Item 18 was REVISED here — the earlier "no chooser at all" is superseded
+
+The first implementation removed the payment chooser outright, and this log carried a note arguing checkout should *not* signpost deferred methods. **That is no longer the decision.** The current, intended behaviour is the one described above: the full list is visible, only UPI is selectable.
+
+Recorded because the reasoning still matters and will resurface:
+
+- The concern was that a disabled "Seva Wallet" implies we hold customer balances (we do not — see the two-wallets warning above) and that a greyed "Cash" advertises the off-platform arrangement escrow exists to prevent.
+- The answer is the **reason line on each entry**, which the earlier version lacked. "Cash — Coming soon" alone invites the customer to ask for it off-platform; "Cash — can't be held in escrow, so we can't protect or refund it yet" tells them why the platform is safer, at the exact moment they are deciding.
+- The assertion changed with it and is now **stronger**, not weaker: `ui-check-step10` no longer checks "there is nothing to click" but that **every control in the Payment section is disabled**, that Cash and Seva Wallet are each present-and-disabled, and that both carry a "Coming soon" label. The property that protects the customer is *non-selectability*, not absence.
+- **Defence in depth is unchanged:** a `disabled` attribute is a UI affordance, never a control. The DB still refuses both on INSERT — the COD guard (`20260721120000`) and the wallet guard (`20260817120000`).
 
 ---
 
