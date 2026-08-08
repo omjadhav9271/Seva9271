@@ -57,7 +57,13 @@ console.log('[sessions]');
 const { client: providerClient, userId: providerUser } = await authClient('PROVIDER');
 const { client: customer, userId: customerId } = await authClient('CUSTOMER');
 const { client: stranger, userId: strangerId } = await authClient('STRANGER');
-console.log('  provider:', providerUser ?? 'NONE', '| customer:', customerId ?? 'NONE', '| stranger:', strangerId ?? 'NONE', '\n');
+// OPTIONAL fourth session: a signed-in NON-ADMIN who is not a party to the booking. STRANGER_* is
+// the admin, who may legitimately read offers for dispute handling, so it can never prove the
+// isolation in (e) below. Without this account that case is untested — not merely unasserted.
+// Unset is fine: authClient returns userId null and (e) degrades to the old skip.
+const { client: outsider, userId: outsiderId } = await authClient('OUTSIDER');
+console.log('  provider:', providerUser ?? 'NONE', '| customer:', customerId ?? 'NONE', '| stranger:', strangerId ?? 'NONE',
+  '| outsider:', outsiderId ?? 'not configured', '\n');
 if (!providerUser || !customerId || !strangerId) { console.log('Cannot run: need three sessions.'); process.exit(0); }
 
 // ---------------------------------------------------------------- preflight + fixture
@@ -266,6 +272,16 @@ try {
     // test3 is the admin, who is allowed to see everything for dispute handling
     if ((asAnon.data ?? []).length === 0) ok('anon sees no offers');
     else no('ANON read the offers');
+    // The case that actually matters: a signed-in stranger who is NOT an admin. Anon is covered
+    // above and the parties are covered too, so without this an RLS change that exposed offers to
+    // every authenticated user would pass this file clean.
+    if (outsiderId) {
+      const asNonAdmin = await outsider.from('offers').select('id').eq('booking_id', midBooking);
+      if ((asNonAdmin.data ?? []).length === 0) ok('a signed-in NON-ADMIN outsider sees no offers');
+      else no(`🔴 a signed-in non-party read ${(asNonAdmin.data ?? []).length} offer(s) — the round history is not private`);
+    } else {
+      sk('no OUTSIDER_* account configured — the signed-in non-admin stranger case is UNTESTED');
+    }
     if ((asOutsider.data ?? []).length > 0) sk('STRANGER_EMAIL is the admin — admin offer access is intentional');
     else ok('a non-party non-admin sees no offers');
   }
