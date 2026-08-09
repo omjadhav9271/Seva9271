@@ -73,3 +73,22 @@ export function requireAccounts(prefixes) {
 // The three accounts verify-all hands to every child process. ADMIN is the real name of the third
 // one; verify-all also exports it as STRANGER_* for the scripts that still ask for that.
 export const SUITE_PREFIXES = ['CUSTOMER', 'PROVIDER', 'ADMIN'];
+
+/* Every auth user, paginated.
+   `service.auth.admin.listUsers()` returns ONE page — 50 by default, and the scripts that passed
+   `{ perPage: 200 }` were only ever buying headroom, not correctness. The moment the project held
+   more than that, "find the user whose email is test1@…" started returning undefined and five
+   ui-check scripts aborted with "Cannot run: test accounts not found" — which reads like missing
+   credentials, not a truncated list. (Found by seeding 480 scale-test users; it would have hit
+   just as hard on the 201st real signup.) Always page until a short page comes back. */
+export async function listAllUsers(service, { perPage = 1000, maxPages = 100 } = {}) {
+  const all = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const { data, error } = await service.auth.admin.listUsers({ page, perPage });
+    if (error) throw new Error('listUsers: ' + error.message);
+    const users = data?.users ?? [];
+    all.push(...users);
+    if (users.length < perPage) break;
+  }
+  return all;
+}

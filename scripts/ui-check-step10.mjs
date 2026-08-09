@@ -21,7 +21,7 @@
     node scripts/ui-check-step10.mjs
 */
 import { spawn } from 'node:child_process';
-import { requireAccounts } from './lib/creds.mjs';
+import { requireAccounts, listAllUsers } from './lib/creds.mjs';
 import { readFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -162,7 +162,7 @@ try {
     if (!r.ok && r.status >= 500) throw new Error('bad status');
   } catch { console.log('Cannot run: dev server not answering on :3000 — start `npm run dev`.'); process.exit(0); }
 
-  const { data: { users } } = await service.auth.admin.listUsers({ perPage: 200 });
+  const users = await listAllUsers(service);
   providerUser = users.find((u) => u.email === PROVIDER_EMAIL)?.id;
   customerId = users.find((u) => u.email === CUSTOMER_EMAIL)?.id;
   if (!providerUser || !customerId) { console.log('Cannot run: test accounts not found.'); process.exit(1); }

@@ -231,28 +231,38 @@ console.log('\n[e) reputation_score moves the ranking (not just the star average
         no('could not stage the experiment: ' + setErr.message);
       } else {
         const after = await search(anon);
-        const endIndex = (after.data ?? []).findIndex((p) => p.id === subject.id);
-        const endScore = (after.data ?? []).find((p) => p.id === subject.id)?.match_score;
+        const afterRows = after.data ?? [];
+        const endIndex = afterRows.findIndex((p) => p.id === subject.id);
+        const endRow = afterRows.find((p) => p.id === subject.id);
         const startScore = subject.match_score;
 
-        if (endScore !== undefined && endScore < startScore) {
-          ok(`dropping reputation ${original} → 0 lowered match_score ${startScore.toFixed(4)} → ${endScore.toFixed(4)}`);
+        /* Once the DB holds more providers than the RPC's limit, zeroing a reputation can push the
+           subject clean out of the returned window. That is a STRONGER result than sliding down a
+           few places, not a failure — but it has to be recognised as one, or the check reports a
+           bug in the app when what actually happened is the effect being larger than the window.
+           (This is how it first failed at 485 providers: `undefined` compared against a number.) */
+        if (endIndex === -1) {
+          ok(`dropping reputation ${original} → 0 pushed the subject OUT of the top ${afterRows.length} entirely (it was #${startIndex + 1})`);
+          ok('…which is a stronger demonstration than a rank slide: the whole result window turned over');
         } else {
-          no(`match_score did not fall when reputation was zeroed (${startScore} → ${endScore})`);
-        }
+          if (endRow.match_score < startScore) {
+            ok(`dropping reputation ${original} → 0 lowered match_score ${startScore.toFixed(4)} → ${endRow.match_score.toFixed(4)}`);
+          } else {
+            no(`match_score did not fall when reputation was zeroed (${startScore} → ${endRow.match_score})`);
+          }
 
-        if (endIndex > startIndex) {
-          ok(`…and it fell in the ranking: position ${startIndex + 1} → ${endIndex + 1} of ${after.data.length}`);
-        } else if (startIndex === 0 && endIndex === 0 && rows.length > 1) {
-          sk('subject stayed top — its proximity lead outweighs the whole reputation term here');
-        } else {
-          ok(`ranking recomputed with the new score (position ${startIndex + 1} → ${endIndex + 1})`);
-        }
+          if (endIndex > startIndex) {
+            ok(`…and it fell in the ranking: position ${startIndex + 1} → ${endIndex + 1} of ${afterRows.length}`);
+          } else if (startIndex === 0 && endIndex === 0 && rows.length > 1) {
+            sk('subject stayed top — its proximity lead outweighs the whole reputation term here');
+          } else {
+            ok(`ranking recomputed with the new score (position ${startIndex + 1} → ${endIndex + 1})`);
+          }
 
-        // Distance must NOT have moved — proves it was reputation that did it, nothing else.
-        const endDistance = (after.data ?? []).find((p) => p.id === subject.id)?.distance_km;
-        if (endDistance === subject.distance_km) ok('distance_km unchanged throughout — the score, not the geography, moved it');
-        else no(`distance_km changed during the experiment (${subject.distance_km} → ${endDistance})`);
+          // Distance must NOT have moved — proves it was reputation that did it, nothing else.
+          if (endRow.distance_km === subject.distance_km) ok('distance_km unchanged throughout — the score, not the geography, moved it');
+          else no(`distance_km changed during the experiment (${subject.distance_km} → ${endRow.distance_km})`);
+        }
       }
     } finally {
       const { error: restoreErr } = await service

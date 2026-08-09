@@ -21,7 +21,7 @@ import { readFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createClient } from '@supabase/supabase-js';
-import { requireAccounts } from './lib/creds.mjs';
+import { requireAccounts, listAllUsers } from './lib/creds.mjs';
 
 const APP = 'http://localhost:3000';
 const { CUSTOMER, PROVIDER } = requireAccounts(['CUSTOMER', 'PROVIDER']);
@@ -171,7 +171,7 @@ try {
     if (!r.ok && r.status >= 500) throw new Error('bad status');
   } catch { console.log('Cannot run: dev server not answering on :3000 — start `npm run dev`.'); process.exit(0); }
 
-  const { data: { users } } = await service.auth.admin.listUsers({ perPage: 200 });
+  const users = await listAllUsers(service);
   const customerId = users.find((u) => u.email === CUSTOMER.email)?.id;
   const providerUserId = users.find((u) => u.email === PROVIDER.email)?.id;
   if (!customerId || !providerUserId) { console.log('Cannot run: test accounts not found.'); process.exit(1); }

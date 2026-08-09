@@ -13,6 +13,7 @@
    Run:  node scripts/seed-step8-browser.mjs [--released]
    Undo: node scripts/seed-step8-browser.mjs --clean   (deletes bookings tagged in notes) */
 import { createClient } from '@supabase/supabase-js';
+import { listAllUsers } from './lib/creds.mjs';
 import { readFileSync } from 'node:fs';
 
 const env = Object.fromEntries(readFileSync('.env.local', 'utf8').split(/\r?\n/)
@@ -25,10 +26,10 @@ const TAG = 'STEP8-BROWSER-SEED';
 const test1Email = 'test1@gmail.com', test2Email = 'test2@gmail.com';
 
 const uid = async (email) => {
-  // service role can read auth via admin API
-  const { data, error } = await service.auth.admin.listUsers();
-  if (error) throw new Error('listUsers: ' + error.message);
-  const u = data.users.find((x) => x.email === email);
+  // service role can read auth via admin API — but listUsers() returns ONE page (50 by default),
+  // so paginate or this stops finding the test accounts as soon as the project outgrows a page.
+  const users = await listAllUsers(service);
+  const u = users.find((x) => x.email === email);
   if (!u) throw new Error('no user ' + email);
   return u.id;
 };

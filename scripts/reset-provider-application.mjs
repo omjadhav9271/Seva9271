@@ -25,7 +25,7 @@
 */
 import { readFileSync } from 'node:fs';
 import { createClient } from '@supabase/supabase-js';
-import { requireAccounts } from './lib/creds.mjs';
+import { requireAccounts, listAllUsers } from './lib/creds.mjs';
 
 const env = Object.fromEntries(
   readFileSync('.env.local', 'utf8').split(/\r?\n/)
@@ -38,7 +38,7 @@ const service = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_
 const { PROVIDER } = requireAccounts(['PROVIDER']);
 const email = process.argv[2] ?? PROVIDER.email;
 
-const { data: { users } } = await service.auth.admin.listUsers({ perPage: 200 });
+const users = await listAllUsers(service);
 const user = users.find((u) => u.email === email);
 if (!user) { console.log(`No such user: ${email}`); process.exit(1); }
 

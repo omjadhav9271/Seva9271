@@ -7,6 +7,7 @@
    Run:  node scripts/seed-step8-evidence.mjs
    Undo: node scripts/seed-step8-evidence.mjs --clean   (deletes tagged bookings + their storage) */
 import { createClient } from '@supabase/supabase-js';
+import { listAllUsers } from './lib/creds.mjs';
 import { readFileSync, writeFileSync } from 'node:fs';
 import zlib from 'node:zlib';
 
@@ -20,9 +21,10 @@ const BUCKET = 'dispute-evidence';
 const SCRATCH = 'C:/Users/omjad/AppData/Local/Temp/claude/D--Resume-Projects-Seva9271/5ca469b5-b7fd-4af5-8254-5abf9f07c2cd/scratchpad';
 
 const uidOf = async (email) => {
-  const { data, error } = await service.auth.admin.listUsers();
-  if (error) throw new Error('listUsers: ' + error.message);
-  const u = data.users.find((x) => x.email === email);
+  // listUsers() returns ONE page (50 by default) — paginate, or this silently stops finding the
+  // test accounts once the project holds more users than a page. See listAllUsers in lib/creds.
+  const users = await listAllUsers(service);
+  const u = users.find((x) => x.email === email);
   if (!u) throw new Error('no user ' + email);
   return u.id;
 };

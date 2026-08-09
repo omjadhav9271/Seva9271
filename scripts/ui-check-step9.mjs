@@ -20,7 +20,7 @@
   the default — see the launch-flag comment further down for the measurements behind that.
 */
 import { spawn } from 'node:child_process';
-import { requireAccounts } from './lib/creds.mjs';
+import { requireAccounts, listAllUsers } from './lib/creds.mjs';
 import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -156,7 +156,7 @@ try {
     if (!r.ok && r.status >= 500) throw new Error('bad status');
   } catch { console.log('Cannot run: dev server not answering on :3000 — start `npm run dev`.'); process.exit(0); }
 
-  const { data: { users } } = await service.auth.admin.listUsers({ perPage: 200 });
+  const users = await listAllUsers(service);
   const applicant = users.find((u) => u.email === EMAIL);
   if (!applicant) { console.log(`Cannot run: ${EMAIL} not found.`); process.exit(1); }
   const existing = await service.from('service_providers').select('id').eq('user_id', applicant.id).maybeSingle();
@@ -535,7 +535,7 @@ try {
   if (providerId) {
     await service.from('service_providers').delete().eq('id', providerId);
     // approving/rejecting notifies the provider — drop what this run generated
-    const { data: { users: all } } = await service.auth.admin.listUsers({ perPage: 200 });
+    const all = await listAllUsers(service);
     const uid = all.find((u) => u.email === EMAIL)?.id;
     if (uid) await service.from('notifications').delete().eq('user_id', uid).eq('link', '/become-provider');
     console.log('  removed the application, its document and its notifications');

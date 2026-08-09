@@ -87,7 +87,12 @@ export async function searchProviders(opts: {
  */
 export function formatDistance(km: number | null | undefined): string | null {
   if (km === null || km === undefined || !Number.isFinite(km)) return null;
-  if (km < 1) return 'Under 1 km away';
+  /* Sub-kilometre results get metres, rounded to the nearest 100 m. "Under 1 km away" was the
+     first cut and it fails exactly where this feature matters most: in a dense locality (the
+     Kalyan scale test put 7 of the top 12 inside 1 km) it collapses 130 m and 920 m into one
+     label, so the customer cannot tell the difference between next door and a 12-minute walk.
+     100 m buckets sit just outside the ±139 m snap bound, so they inform without overclaiming. */
+  if (km < 1) return `~${Math.max(100, Math.round((km * 1000) / 100) * 100)} m away`;
   return `${km.toFixed(1)} km away`;
 }
 

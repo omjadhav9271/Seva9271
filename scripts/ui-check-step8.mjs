@@ -24,7 +24,7 @@
     node scripts/ui-check-step8.mjs
 */
 import { spawn } from 'node:child_process';
-import { requireAccounts } from './lib/creds.mjs';
+import { requireAccounts, listAllUsers } from './lib/creds.mjs';
 import { readFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -195,7 +195,7 @@ try {
   } catch { console.log('Cannot run: dev server not answering on :3000 — start `npm run dev`.'); process.exit(0); }
 
   // ---- accounts ----
-  const { data: { users } } = await service.auth.admin.listUsers({ perPage: 200 });
+  const users = await listAllUsers(service);
   customerId = users.find((u) => u.email === CUSTOMER_EMAIL)?.id;
   providerUserId = users.find((u) => u.email === PROVIDER_EMAIL)?.id;
   adminId = users.find((u) => u.email === ADMIN_EMAIL)?.id;
