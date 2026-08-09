@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import {
   CheckCircle, Clock, AlertTriangle, ShieldCheck, Upload, X, FileText, Loader2, Ban,
-  Download, Briefcase, Plus, BadgeCheck, Handshake, Camera, IdCard,
+  Download, Briefcase, Plus, BadgeCheck, Handshake, Camera, IdCard, MapPin, Search,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { supabase } from '@/lib/supabase';
@@ -15,6 +15,7 @@ import {
   KYC_ACCEPT, ID_OPTIONS_FOR, idTypeLabel, type MyApplication,
 } from '@/lib/provider-application';
 import { fetchMyPricing, saveMyPricing } from '@/lib/bargaining';
+import { geocodeAddress, setServiceBase, type GeocodeHit } from '@/lib/matching';
 import TrustTierBadge from '@/components/trust-tier-badge';
 import LiveSelfieCapture from '@/components/live-selfie-capture';
 import type {
@@ -25,6 +26,10 @@ import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 
 type CategoryRow = { id: string; name: string; slug: string };
+
+/** Step 11 — a provider's static service base. Coordinates are the provider's OWN data here; they
+ *  are never sent to a customer, who only ever receives a distance. */
+type BasePoint = { lat: number; lng: number; label: string };
 
 const BIO_MAX = 300;
 
@@ -55,6 +60,11 @@ export default function BecomeProviderPage() {
   const [experience, setExperience] = useState<ProviderExperience[]>([]);
   const [expForm, setExpForm] = useState({ employer: '', role: '', from: '', to: '' });
   const [submitting, setSubmitting] = useState(false);
+  /* Step 11 — the STATIC service base. A typed address geocoded to a point, NOT the device's live
+     position: a provider isn't always standing at their base, and the base is what ranking needs
+     (live position is Step-15 tracking). Held here until the provider row exists, then written by
+     set_provider_service_base. */
+  const [basePoint, setBasePoint] = useState<BasePoint | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -86,6 +96,20 @@ export default function BecomeProviderPage() {
       experience: row.experience_years ? String(row.experience_years) : '',
       bio: row.bio ?? '',
     });
+    setBasePoint(
+      row.latitude != null && row.longitude != null
+        ? { lat: Number(row.latitude), lng: Number(row.longitude), label: [row.address, row.city].filter(Boolean).join(', ') || 'Saved location' }
+        : null,
+    );
+  }, []);
+
+  // Used by the status screens, where the row already exists: write the base immediately instead
+  // of pushing the provider back through submit (which would re-stamp applied_at for a move).
+  const persistServiceBase = useCallback(async (point: BasePoint) => {
+    const res = await setServiceBase({ lat: point.lat, lng: point.lng });
+    if (res.error) return { error: res.error };
+    toast.success('Service base saved — customers nearby can find you now.');
+    return {};
   }, []);
 
   const refreshProviderState = useCallback(async (providerId: string) => {
@@ -188,9 +212,25 @@ export default function BecomeProviderPage() {
     }
     setPendingFiles({});
     setPendingMeta({});
-    setApplication(result.data);
-    prefill(result.data);
-    await refreshProviderState(result.data.id);
+
+    // The service base needs the row to exist, so it's written after the application, not with it.
+    // A failure here is not fatal to the application — say so rather than rolling anything back.
+    let saved: MyApplication = result.data;
+    if (basePoint) {
+      const baseRes = await setServiceBase({
+        lat: basePoint.lat, lng: basePoint.lng,
+        address: form.area.trim() || null, city: form.city.trim() || null,
+      });
+      if (baseRes.error) {
+        toast.error(`Saved, but your location didn't stick: ${baseRes.error}`);
+      } else {
+        saved = (await fetchMyApplication()) ?? result.data;
+      }
+    }
+
+    setApplication(saved);
+    prefill(saved);
+    await refreshProviderState(saved.id);
     setSubmitting(false);
     setEditing(false);
     toast.success('Application submitted — we\'ll review it within 24–48 hours.');
@@ -234,6 +274,11 @@ export default function BecomeProviderPage() {
               Go to my bookings
             </Link>
           </div>
+          {/* Step 11: a live provider with no service base is invisible to nearby search, which is
+              the worst version of this — approved, bookable, and findable by nobody. Saves through
+              its own RPC, so moving your base never sends you back through the application gate. */}
+          <ServiceBaseSection value={basePoint} onChange={setBasePoint} onPersist={persistServiceBase}
+            defaultQuery={[application.address, application.city].filter(Boolean).join(', ')} />
           {/* Step 10: only an approved provider can be booked, so only they can be haggled with —
               start_negotiation refuses anyone else. */}
           <PricingSection providerId={application.id} />
@@ -305,6 +350,8 @@ export default function BecomeProviderPage() {
           className="px-6 py-3 rounded-xl border border-[#2a2a2a] text-sm text-gray-300 hover:text-white transition-colors mb-8">
           {submitted ? 'Edit my details' : 'Edit my details and resubmit'}
         </button>
+        <ServiceBaseSection value={basePoint} onChange={setBasePoint} onPersist={persistServiceBase}
+          defaultQuery={[application.address, application.city].filter(Boolean).join(', ')} />
         <DocumentSection checklist={checklist} uploading={uploading} idTypes={idTypes}
           onIdType={(code, v) => setIdTypes((prev) => ({ ...prev, [code]: v }))}
           onFile={handleFile} onDigiLocker={tryDigiLocker} />
@@ -383,6 +430,12 @@ export default function BecomeProviderPage() {
                 className={inputClass} placeholder="Andheri, Bandra" />
             </Field>
           </div>
+
+          <ServiceBaseSection
+            value={basePoint}
+            onChange={setBasePoint}
+            defaultQuery={[form.area, form.city].filter(Boolean).join(', ')}
+          />
 
           <div className="grid sm:grid-cols-2 gap-4">
             <Field label="Your hourly rate (₹)">
@@ -489,6 +542,122 @@ function Field({ label, required, children }: { label: string; required?: boolea
         {label}{required && <span className="text-[#FF9933]"> *</span>}
       </label>
       {children}
+    </div>
+  );
+}
+
+/* Step 11 — the provider's STATIC service base.
+   Type an address, we geocode it, they confirm the match. Deliberately NOT the device's live
+   position: a provider is often not at their base when filling this in, and the base is what
+   ranking needs (live position belongs to Step-15 tracking). `onPersist` is supplied on the status
+   screens, where the row exists and the base can be saved on the spot; in the application form it
+   is omitted and the point is written straight after the row is created. */
+function ServiceBaseSection({ value, onChange, onPersist, defaultQuery }: {
+  value: BasePoint | null;
+  onChange: (point: BasePoint | null) => void;
+  onPersist?: (point: BasePoint) => Promise<{ error?: string }>;
+  defaultQuery?: string;
+}) {
+  const [query, setQuery] = useState(defaultQuery ?? '');
+  const [hits, setHits] = useState<GeocodeHit[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const find = async () => {
+    const q = query.trim();
+    if (q.length < 3) { setError('Type at least 3 characters of your address.'); return; }
+    setSearching(true); setError(null); setHits([]);
+    const res = await geocodeAddress(q);
+    setSearching(false);
+    if ('error' in res) { setError(res.error); return; }
+    if (!res.results.length) {
+      setError('No match for that. Try adding the area and city — e.g. “Andheri East, Mumbai”.');
+      return;
+    }
+    setHits(res.results);
+  };
+
+  const choose = async (hit: GeocodeHit) => {
+    const point: BasePoint = { lat: hit.lat, lng: hit.lng, label: hit.label };
+    setHits([]); setError(null);
+    if (onPersist) {
+      setSaving(true);
+      const res = await onPersist(point);
+      setSaving(false);
+      if (res.error) { setError(res.error); return; }
+    }
+    onChange(point);
+  };
+
+  return (
+    <div className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-5 sm:p-6 text-left mb-8">
+      <h3 className="font-semibold text-white flex items-center gap-2 mb-1">
+        <MapPin className="w-4 h-4 text-[#FF9933]" />
+        Where you work from
+      </h3>
+      <p className="text-xs text-gray-400 mb-4 leading-relaxed">
+        We use this to show you to customers nearby. They only ever see <span className="text-gray-300">how far away you are</span> —
+        never your address or the point on a map.
+      </p>
+
+      <div className="flex flex-col sm:flex-row gap-2">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); find(); } }}
+          className={inputClass}
+          placeholder="Shop No 4, Andheri East, Mumbai"
+        />
+        <button type="button" onClick={find} disabled={searching || saving}
+          className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-[#2a2a2a] text-sm text-gray-300 hover:text-white hover:border-[#FF9933]/50 transition-all disabled:opacity-60 whitespace-nowrap">
+          {searching ? <><Loader2 className="w-4 h-4 animate-spin" />Looking…</> : <><Search className="w-4 h-4" />Find this location</>}
+        </button>
+      </div>
+
+      {hits.length > 0 && (
+        <ul className="mt-3 space-y-1.5">
+          {hits.map((hit, i) => (
+            <li key={`${hit.lat},${hit.lng},${i}`}>
+              <button type="button" onClick={() => choose(hit)} disabled={saving}
+                className="w-full text-left text-xs text-gray-300 bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-3 py-2.5 hover:border-[#FF9933]/50 hover:text-white transition-all disabled:opacity-60">
+                {hit.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {saving && (
+        <p className="mt-3 text-xs text-gray-400 flex items-center gap-1.5">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" />Saving your location…
+        </p>
+      )}
+
+      {error && (
+        <p className="mt-3 text-xs text-orange-300 flex items-start gap-1.5">
+          <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />{error}
+        </p>
+      )}
+
+      {value ? (
+        <div className="mt-4 flex items-start gap-2 bg-[#138808]/10 border border-[#138808]/30 rounded-xl px-3 py-2.5">
+          <CheckCircle className="w-4 h-4 text-[#138808] flex-shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-[#4ade80]">Service base set</p>
+            <p className="text-xs text-gray-400 break-words">{value.label}</p>
+          </div>
+        </div>
+      ) : (
+        /* Honest, not alarming: this is a thing they haven't done yet, not an error. */
+        <div className="mt-4 flex items-start gap-2 bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-3 py-2.5">
+          <AlertTriangle className="w-4 h-4 text-gray-500 flex-shrink-0 mt-0.5" />
+          <p className="text-xs text-gray-400">
+            No location set yet — you <span className="text-gray-300">won&apos;t appear</span> when customers search for
+            providers near them. Everything else about your profile still works.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

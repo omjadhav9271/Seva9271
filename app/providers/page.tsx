@@ -1,9 +1,20 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { Search, Star, MapPin, Clock, CheckCircle, Users } from 'lucide-react';
+import { Search, Star, MapPin, Clock, CheckCircle, Users, Navigation, Loader2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import type { ProviderSearchResult } from '@/lib/supabase';
+import {
+  CITY_ANCHORS, DEFAULT_RADIUS_KM, formatDistance, requestBrowserLocation, searchProviders,
+  type SearchOrigin,
+} from '@/lib/matching';
+
+/* Step 11: the list is now RANKED, not sorted by star average. Two sources feed the same card:
+   the search_providers RPC once we know where the customer is (ranked by proximity + the Step-7
+   reputation_score + availability, each row carrying a distance), and the plain catalog query when
+   we don't (they declined, or haven't asked yet). Declining location must never dead-end them —
+   it just costs the distance line and the ranking. Provider coordinates appear in neither path. */
 
 type ProviderRow = {
   id: string;
@@ -17,6 +28,23 @@ type ProviderRow = {
   is_verified: boolean;
   is_available: boolean;
   service_categories: { name: string; slug: string } | null;
+};
+
+/** One shape for the card, whichever source produced it. distanceKm is null in catalog mode. */
+type Card = {
+  id: string;
+  business_name: string | null;
+  bio: string | null;
+  rating: number;
+  total_reviews: number;
+  hourly_rate: number;
+  experience_years: number;
+  city: string | null;
+  is_verified: boolean;
+  is_available: boolean;
+  categoryName: string;
+  categorySlug: string;
+  distanceKm: number | null;
 };
 
 const categoryGradient: Record<string, string> = {
@@ -40,11 +68,16 @@ function initials(name: string | null): string {
 }
 
 export default function ProvidersPage() {
-  const [providers, setProviders] = useState<ProviderRow[]>([]);
+  const [catalog, setCatalog] = useState<ProviderRow[]>([]);
+  const [ranked, setRanked] = useState<ProviderSearchResult[] | null>(null);
   const [loading, setLoading] = useState(true);
+  const [locating, setLocating] = useState(false);
+  const [origin, setOrigin] = useState<SearchOrigin | null>(null);
+  const [locationNote, setLocationNote] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [cityFilter, setCityFilter] = useState('');
 
+  // The catalog always loads: it's the fallback, and it supplies the city list.
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -56,24 +89,103 @@ export default function ProvidersPage() {
       if (!mounted) return;
       if (error) {
         console.error('Failed to load providers:', error.message);
-        setProviders([]);
+        setCatalog([]);
       } else {
-        setProviders((data ?? []) as unknown as ProviderRow[]);
+        setCatalog((data ?? []) as unknown as ProviderRow[]);
       }
       setLoading(false);
     })();
     return () => { mounted = false; };
   }, []);
 
-  const filtered = providers.filter((p) => {
+  const runSearch = useCallback(async (next: SearchOrigin) => {
+    setOrigin(next);
+    const res = await searchProviders({ origin: next, radiusKm: DEFAULT_RADIUS_KM });
+    if ('error' in res) {
+      console.error('search_providers failed:', res.error);
+      setRanked(null);
+      setLocationNote('Could not rank by distance just now — showing all providers instead.');
+      return;
+    }
+    setRanked(res.data);
+    setLocationNote(null);
+  }, []);
+
+  const useMyLocation = async () => {
+    setLocating(true);
+    setLocationNote(null);
+    const pos = await requestBrowserLocation();
+    setLocating(false);
+    if ('error' in pos) {
+      // Declined or unavailable — stay on the catalog and say so plainly.
+      setRanked(null);
+      setOrigin(null);
+      setLocationNote(pos.error);
+      return;
+    }
+    await runSearch({ ...pos, label: 'your location' });
+  };
+
+  // Picking a city we have an anchor for searches from there, so ranking still applies without
+  // sharing a device location. Cities we don't know simply filter the catalog, as before.
+  const onCityChange = async (city: string) => {
+    setCityFilter(city);
+    if (!city) {
+      if (origin?.label !== 'your location') { setOrigin(null); setRanked(null); }
+      return;
+    }
+    const anchor = CITY_ANCHORS[city];
+    if (anchor) {
+      setLocationNote(null);
+      await runSearch({ ...anchor, label: city });
+    } else {
+      setOrigin(null);
+      setRanked(null);
+    }
+  };
+
+  const cards: Card[] = ranked
+    ? ranked.map((p) => ({
+        id: p.id,
+        business_name: p.business_name,
+        bio: p.bio,
+        rating: Number(p.rating),
+        total_reviews: p.total_reviews,
+        hourly_rate: p.hourly_rate,
+        experience_years: p.experience_years,
+        city: p.city,
+        is_verified: p.is_verified,
+        is_available: p.is_available,
+        categoryName: p.category_name ?? 'Service',
+        categorySlug: p.category_slug ?? '',
+        distanceKm: p.distance_km,
+      }))
+    : catalog.map((p) => ({
+        id: p.id,
+        business_name: p.business_name,
+        bio: p.bio,
+        rating: Number(p.rating),
+        total_reviews: p.total_reviews,
+        hourly_rate: p.hourly_rate,
+        experience_years: p.experience_years,
+        city: p.city,
+        is_verified: p.is_verified,
+        is_available: p.is_available,
+        categoryName: p.service_categories?.name ?? 'Service',
+        categorySlug: p.service_categories?.slug ?? '',
+        distanceKm: null,
+      }));
+
+  const filtered = cards.filter((p) => {
     const name = p.business_name ?? '';
-    const category = p.service_categories?.name ?? '';
-    const matchesSearch = !search || name.toLowerCase().includes(search.toLowerCase()) || category.toLowerCase().includes(search.toLowerCase());
-    const matchesCity = !cityFilter || (p.city ?? '').toLowerCase() === cityFilter.toLowerCase();
+    const matchesSearch = !search || name.toLowerCase().includes(search.toLowerCase()) || p.categoryName.toLowerCase().includes(search.toLowerCase());
+    // In ranked mode the radius already scopes the result set — re-filtering by city name would
+    // hide a provider 3 km away who happens to sit in the next municipality.
+    const matchesCity = ranked ? true : !cityFilter || (p.city ?? '').toLowerCase() === cityFilter.toLowerCase();
     return matchesSearch && matchesCity;
   });
 
-  const cities = Array.from(new Set(providers.map((p) => p.city).filter(Boolean))) as string[];
+  const cities = Array.from(new Set(catalog.map((p) => p.city).filter(Boolean))) as string[];
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] pt-20">
@@ -86,7 +198,7 @@ export default function ProvidersPage() {
           </div>
           <p className="text-gray-400 mb-6">Browse independent professionals on Seva — every one ID-verified before approval</p>
 
-          <div className="flex flex-col sm:flex-row gap-3 max-w-2xl">
+          <div className="flex flex-col sm:flex-row gap-3 max-w-3xl">
             <div className="flex-1 flex items-center gap-3 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3">
               <Search className="w-5 h-5 text-gray-500" />
               <input
@@ -97,15 +209,31 @@ export default function ProvidersPage() {
                 className="flex-1 bg-transparent text-white placeholder-gray-500 text-sm focus:outline-none"
               />
             </div>
+            <button
+              type="button"
+              onClick={useMyLocation}
+              disabled={locating}
+              className="flex items-center justify-center gap-2 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3 text-sm text-white hover:border-[#FF9933] transition-colors disabled:opacity-60"
+            >
+              {locating
+                ? <><Loader2 className="w-4 h-4 animate-spin" />Finding you…</>
+                : <><Navigation className="w-4 h-4 text-[#FF9933]" />Use my location</>}
+            </button>
             <select
               value={cityFilter}
-              onChange={(e) => setCityFilter(e.target.value)}
+              onChange={(e) => onCityChange(e.target.value)}
               className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-[#FF9933] min-w-[150px]"
             >
               <option value="">All Cities</option>
               {cities.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
+
+          {locationNote && (
+            <p className="text-xs text-gray-400 mt-3 flex items-center gap-1.5">
+              <MapPin className="w-3.5 h-3.5 text-gray-500" />{locationNote}
+            </p>
+          )}
         </div>
       </div>
 
@@ -116,18 +244,26 @@ export default function ProvidersPage() {
           <>
             <p className="text-gray-400 text-sm mb-6">
               Showing <span className="text-white font-semibold">{filtered.length}</span> providers
+              {origin && ranked
+                ? <> near <span className="text-white font-semibold">{origin.label}</span>, best match first</>
+                : <> — sorted by rating. <span className="text-gray-500">Share your location to rank by distance.</span></>}
             </p>
 
             {filtered.length === 0 ? (
               <div className="text-center py-20">
                 <Users className="w-12 h-12 text-gray-600 mx-auto mb-4" />
                 <p className="text-gray-400 text-lg mb-2">No providers found</p>
-                <p className="text-gray-600 text-sm">Try adjusting your search or city filter.</p>
+                <p className="text-gray-600 text-sm">
+                  {origin && ranked
+                    ? `No approved providers within ${DEFAULT_RADIUS_KM} km of ${origin.label} yet. Try another city.`
+                    : 'Try adjusting your search or city filter.'}
+                </p>
               </div>
             ) : (
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
                 {filtered.map((p) => {
-                  const gradient = categoryGradient[p.service_categories?.slug ?? ''] ?? 'from-slate-500 to-slate-600';
+                  const gradient = categoryGradient[p.categorySlug] ?? 'from-slate-500 to-slate-600';
+                  const distance = formatDistance(p.distanceKm);
                   return (
                     <Link
                       key={p.id}
@@ -148,7 +284,7 @@ export default function ProvidersPage() {
                             <h3 className="font-bold text-white group-hover:text-[#FF9933] transition-colors">{p.business_name}</h3>
                             {p.is_verified && <CheckCircle className="w-4 h-4 text-[#138808] flex-shrink-0" />}
                           </div>
-                          <p className="text-xs text-[#FF9933] font-medium mt-0.5">{p.service_categories?.name ?? 'Service'}</p>
+                          <p className="text-xs text-[#FF9933] font-medium mt-0.5">{p.categoryName}</p>
                           {/* Step 9.5: an unrated provider is NEW, not 0.0 — the engine already
                               starts them at the Bayesian prior, the card just never said so. */}
                           <div className="flex items-center gap-1 mt-1">
@@ -170,7 +306,11 @@ export default function ProvidersPage() {
                       <p className="text-xs text-gray-400 leading-relaxed mb-4 line-clamp-2">{p.bio}</p>
 
                       <div className="flex items-center gap-3 text-xs text-gray-500 mb-4">
-                        <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{p.city}</span>
+                        {/* Distance, never a location: the customer learns how far, not where. */}
+                        <span className="flex items-center gap-1">
+                          <MapPin className="w-3 h-3" />
+                          {distance ? <span className="text-[#FF9933] font-medium">{distance}</span> : p.city}
+                        </span>
                         <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{p.experience_years}y experience</span>
                       </div>
 

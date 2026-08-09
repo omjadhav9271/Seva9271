@@ -66,7 +66,9 @@ if (!customerId || !providerId || customerId === providerId) {
 // ================= (a) sensitive columns are server-only =================
 console.log('[a) phone / addresses / coordinates / documents denied to anon AND authenticated]');
 {
-  const SENSITIVE = ['phone', 'address', 'work_address', 'latitude', 'longitude', 'documents'];
+  // `geo` joined the list in Step 11: it is a generated PostGIS point derived from lat/lng, so
+  // granting it would re-open exactly what revoking the coordinates closed.
+  const SENSITIVE = ['phone', 'address', 'work_address', 'latitude', 'longitude', 'documents', 'geo'];
   for (const [label, client] of [['anon', anon], ['authenticated', customerClient]]) {
     let allDenied = true, leaked = [];
     for (const col of SENSITIVE) {

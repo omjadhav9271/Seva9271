@@ -1,15 +1,20 @@
 'use client';
 
-import { useState, useEffect, Suspense } from 'react';
+import { useState, useEffect, useCallback, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   Search, MapPin, Star, Filter, ChevronDown, SlidersHorizontal,
   Zap, Wrench, ChefHat, Sparkles, Heart, Car, Stethoscope,
   GraduationCap, Settings, Hammer, Leaf, Scissors, ShoppingBasket, Truck,
-  CheckCircle, Clock, X
+  CheckCircle, Clock, X, Navigation, Loader2
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import type { ProviderSearchResult } from '@/lib/supabase';
+import {
+  CITY_ANCHORS, DEFAULT_RADIUS_KM, formatDistance, requestBrowserLocation, searchProviders,
+  type SearchOrigin,
+} from '@/lib/matching';
 
 const categories = [
   { icon: Zap, name: 'Electrician', slug: 'electrician', color: '#FF9933' },
@@ -43,6 +48,8 @@ type ProviderCard = {
   avatar: string;
   color: string;
   bio: string | null;
+  /* Step 11: null until we know where the customer is. Distance, never coordinates. */
+  distanceKm: number | null;
 };
 
 const categoryGradient: Record<string, string> = {
@@ -70,9 +77,16 @@ function ServicesContent() {
   const [showFilters, setShowFilters] = useState(false);
   const [minRating, setMinRating] = useState(0);
   const [availableOnly, setAvailableOnly] = useState(false);
-  const [providers, setProviders] = useState<ProviderCard[]>([]);
+  const [catalog, setCatalog] = useState<ProviderCard[]>([]);
+  const [ranked, setRanked] = useState<ProviderCard[] | null>(null);
   const [loading, setLoading] = useState(true);
+  const [locating, setLocating] = useState(false);
+  const [origin, setOrigin] = useState<SearchOrigin | null>(null);
+  const [locationNote, setLocationNote] = useState<string | null>(null);
+  const [cityChoice, setCityChoice] = useState('');
 
+  // The catalog always loads: it is the fallback when the customer won't share a location, and it
+  // is what the city list is built from.
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -84,7 +98,7 @@ function ServicesContent() {
       if (!mounted) return;
       if (error) {
         console.error('Failed to load providers:', error.message);
-        setProviders([]);
+        setCatalog([]);
       } else {
         const mapped: ProviderCard[] = (data ?? []).map((p: any) => ({
           id: p.id,
@@ -101,13 +115,77 @@ function ServicesContent() {
           avatar: initials(p.business_name),
           color: categoryGradient[p.service_categories?.slug ?? ''] ?? 'from-slate-500 to-slate-600',
           bio: p.bio,
+          distanceKm: null,
         }));
-        setProviders(mapped);
+        setCatalog(mapped);
       }
       setLoading(false);
     })();
     return () => { mounted = false; };
   }, []);
+
+  /* Step 11 — the ranked path. search_providers blends proximity, the Step-7 reputation_score and
+     availability server-side; we keep its order and simply render it. */
+  const runSearch = useCallback(async (next: SearchOrigin) => {
+    setOrigin(next);
+    const res = await searchProviders({ origin: next, radiusKm: DEFAULT_RADIUS_KM, limit: 60 });
+    if ('error' in res) {
+      console.error('search_providers failed:', res.error);
+      setRanked(null);
+      setLocationNote('Could not rank by distance just now — showing all providers instead.');
+      return;
+    }
+    setRanked(res.data.map((p: ProviderSearchResult) => ({
+      id: p.id,
+      business_name: p.business_name,
+      category: p.category_name ?? 'Service',
+      slug: p.category_slug ?? '',
+      rating: Number(p.rating),
+      total_reviews: p.total_reviews,
+      hourly_rate: p.hourly_rate,
+      experience_years: p.experience_years,
+      city: p.city,
+      is_verified: p.is_verified,
+      is_available: p.is_available,
+      avatar: initials(p.business_name),
+      color: categoryGradient[p.category_slug ?? ''] ?? 'from-slate-500 to-slate-600',
+      bio: p.bio,
+      distanceKm: p.distance_km,
+    })));
+    setLocationNote(null);
+    setSortBy('match');
+  }, []);
+
+  const useMyLocation = async () => {
+    setLocating(true);
+    setLocationNote(null);
+    const pos = await requestBrowserLocation();
+    setLocating(false);
+    if ('error' in pos) {
+      // Declined or unavailable: fall back to the full list and say so plainly — never a dead end.
+      setRanked(null);
+      setOrigin(null);
+      if (sortBy === 'match') setSortBy('rating');
+      setLocationNote(pos.error);
+      return;
+    }
+    setCityChoice('');
+    await runSearch({ ...pos, label: 'your location' });
+  };
+
+  const onCityChoice = async (city: string) => {
+    setCityChoice(city);
+    if (!city) {
+      setOrigin(null);
+      setRanked(null);
+      if (sortBy === 'match') setSortBy('rating');
+      return;
+    }
+    setLocationNote(null);
+    await runSearch({ ...CITY_ANCHORS[city], label: city });
+  };
+
+  const providers = ranked ?? catalog;
 
   const filtered = providers.filter((p) => {
     const matchesSearch = !searchQuery ||
@@ -120,6 +198,9 @@ function ServicesContent() {
   });
 
   const sorted = [...filtered].sort((a, b) => {
+    // 'match' = the server's blended ranking. Return 0 and let the stable sort preserve the exact
+    // order search_providers gave us — re-sorting it here would quietly discard the ranking.
+    if (sortBy === 'match') return 0;
     if (sortBy === 'rating') return b.rating - a.rating;
     if (sortBy === 'price_low') return a.hourly_rate - b.hourly_rate;
     if (sortBy === 'price_high') return b.hourly_rate - a.hourly_rate;
@@ -135,8 +216,10 @@ function ServicesContent() {
           <h1 className="text-3xl font-black text-white mb-2">Browse Services</h1>
           <p className="text-gray-400 mb-6">Find verified professionals near you</p>
 
-          {/* Search Bar */}
-          <div className="flex flex-col sm:flex-row gap-3 max-w-2xl">
+          {/* Search Bar. The "Location" box here used to be an input wired to nothing — a dead
+              control, which the honest-signposting principle forbids. It is now the real Step-11
+              location choice: device location, or a city to search from if they'd rather not. */}
+          <div className="flex flex-col sm:flex-row gap-3 max-w-3xl">
             <div className="flex-1 flex items-center gap-3 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3">
               <Search className="w-5 h-5 text-gray-500 flex-shrink-0" />
               <input
@@ -147,15 +230,31 @@ function ServicesContent() {
                 className="flex-1 bg-transparent text-white placeholder-gray-500 text-sm focus:outline-none"
               />
             </div>
-            <div className="flex items-center gap-3 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3 min-w-[180px]">
-              <MapPin className="w-5 h-5 text-gray-500 flex-shrink-0" />
-              <input
-                type="text"
-                placeholder="Location"
-                className="flex-1 bg-transparent text-white placeholder-gray-500 text-sm focus:outline-none"
-              />
-            </div>
+            <button
+              type="button"
+              onClick={useMyLocation}
+              disabled={locating}
+              className="flex items-center justify-center gap-2 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3 text-sm text-white hover:border-[#FF9933] transition-colors disabled:opacity-60"
+            >
+              {locating
+                ? <><Loader2 className="w-4 h-4 animate-spin" />Finding you…</>
+                : <><Navigation className="w-4 h-4 text-[#FF9933]" />Use my location</>}
+            </button>
+            <select
+              value={cityChoice}
+              onChange={(e) => onCityChoice(e.target.value)}
+              className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-[#FF9933] min-w-[150px]"
+            >
+              <option value="">Or pick a city</option>
+              {Object.keys(CITY_ANCHORS).map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
           </div>
+
+          {locationNote && (
+            <p className="text-xs text-gray-400 mt-3 flex items-center gap-1.5">
+              <MapPin className="w-3.5 h-3.5 text-gray-500" />{locationNote}
+            </p>
+          )}
         </div>
       </div>
 
@@ -198,7 +297,7 @@ function ServicesContent() {
                   Filters
                 </h3>
                 <button
-                  onClick={() => { setMinRating(0); setAvailableOnly(false); setSortBy('rating'); }}
+                  onClick={() => { setMinRating(0); setAvailableOnly(false); setSortBy(ranked ? 'match' : 'rating'); }}
                   className="text-xs text-[#FF9933] hover:text-[#e8872e]"
                 >
                   Reset
@@ -210,6 +309,9 @@ function ServicesContent() {
                 <label className="text-sm font-medium text-gray-300 block mb-3">Sort By</label>
                 <div className="space-y-2">
                   {[
+                    // Only offered once we know where they are — it's the server's blended
+                    // proximity + reputation + availability ranking, not a client-side sort.
+                    ...(ranked ? [{ value: 'match', label: 'Best match' }] : []),
                     { value: 'rating', label: 'Highest Rated' },
                     { value: 'reviews', label: 'Most Reviewed' },
                     { value: 'price_low', label: 'Price: Low to High' },
@@ -271,6 +373,9 @@ function ServicesContent() {
             <div className="flex items-center justify-between mb-6">
               <p className="text-gray-400 text-sm">
                 <span className="text-white font-semibold">{sorted.length}</span> providers found
+                {origin && ranked
+                  ? <> near <span className="text-white font-semibold">{origin.label}</span></>
+                  : <> <span className="text-gray-500">— share your location to rank by distance.</span></>}
               </p>
             </div>
 
@@ -315,9 +420,12 @@ function ServicesContent() {
                             <span className="text-sm font-semibold text-white">{provider.rating}</span>
                             <span className="text-xs text-gray-500">({provider.total_reviews})</span>
                           </div>
+                          {/* How far, never where — provider coordinates never reach the client. */}
                           <div className="flex items-center gap-1">
                             <MapPin className="w-3 h-3 text-gray-500" />
-                            <span className="text-xs text-gray-400">{provider.city}</span>
+                            {formatDistance(provider.distanceKm)
+                              ? <span className="text-xs text-[#FF9933] font-medium">{formatDistance(provider.distanceKm)}</span>
+                              : <span className="text-xs text-gray-400">{provider.city}</span>}
                           </div>
                           <div className="flex items-center gap-1">
                             <Clock className="w-3 h-3 text-gray-500" />

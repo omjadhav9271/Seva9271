@@ -86,6 +86,32 @@ export type ServiceProvider = {
   service_categories?: ServiceCategory;
 };
 
+/* Step 11 — one row from the search_providers RPC, the ONLY matching entry point.
+   Note what is absent and must stay absent: latitude, longitude, geo. The customer is told HOW FAR
+   a provider is, never WHERE they are — many providers are individuals working from home, so a
+   recoverable address is a stalking risk (see 20260727120000 and the Step-11 migration header).
+   distance_km is measured from a ~250 m grid-snapped point, so it is accurate to roughly ±0.3 km;
+   render it to one decimal rather than implying metre precision it does not have. */
+export type ProviderSearchResult = {
+  id: string;
+  business_name: string | null;
+  bio: string | null;
+  category_id: string | null;
+  category_name: string | null;
+  category_slug: string | null;
+  rating: number;
+  total_reviews: number;
+  reputation_score: number;
+  trust_tier: number;
+  hourly_rate: number;
+  experience_years: number;
+  is_verified: boolean;
+  is_available: boolean;
+  city: string | null;
+  distance_km: number;
+  match_score: number;
+};
+
 export type KycStatus = 'unsubmitted' | 'submitted' | 'verified' | 'rejected';
 
 /* ── Step 9.5: category-aware KYC ─────────────────────────────────────────────

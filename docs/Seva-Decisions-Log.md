@@ -79,7 +79,41 @@ Now asserted and passing: *"a signed-in NON-ADMIN outsider sees no offers."* Wir
 
 ---
 
+## Step 11 — PostGIS matching & ranking (✅ DONE, verified DB + browser)
+
+Migrations `20260818120000_seva_matching_postgis.sql` and `20260818130000_seva_service_base_signed_in_guard.sql`. The Step-7 `reputation_score` now drives what customers see; before this, `/providers` and `/services` sorted by a plain star average and distance counted for nothing.
+
+- **`search_providers` is the only matching entry point** — `SECURITY DEFINER`, granted to anon + authenticated, returning `distance_km` and a blended `match_score` (0.45 proximity decay at an 8 km scale + 0.40 reputation_score + 0.10 availability + 0.05 trust_tier). Filter is `ST_DWithin` against a GIST index.
+- **Both listing pages rank through it**, with "Use my location" (`navigator.geolocation`) or a city anchor, and the card shows **"2.3 km away"**. Declining location keeps the full catalog with an honest sentence — never a dead end.
+- **Providers set a STATIC service base** at onboarding: typed address → geocoded (`/api/geocode`) → confirm. Not device location; that is Step-15 tracking.
+
+### 🔴 The coordinate-privacy invariant was strengthened, because "distance only" did not deliver it
+
+The spec treated *"the RPC returns distance, not lat/lng"* as the safety property. It isn't sufficient. **The attacker chooses the origin.** Three calls from three points trilaterate a provider's exact home from the returned distances — the precise stalking risk `20260727120000` exists to prevent, with every coordinate column still correctly revoked.
+
+**The fix: `geo` is a generated column snapped to a ~250 m grid (`ST_SnapToGrid`, 0.0025°), and the precise point never enters the matching path at all.** The RPC cannot leak what it never computes with.
+
+- **Why snapping, not jitter.** A per-provider offset derived from the provider id is *reversible* — the id is in the URL, so a known algorithm is subtractable. Snapping **destroys** the information: even with full knowledge of the algorithm an attacker recovers the grid node, with the true position uniformly distributed in the cell. The guarantee survives the source being public. This is Airbnb's approach (approximate circle pre-booking), the settled answer where an individual's home is the service location.
+- **Cost: none.** `STORED` generated column → the GIST index is built on the snapped point → `ST_DWithin` stays index-driven. Measured displacement 54–148 m; ranking moves ~3% at the 8 km decay scale.
+- **Consequence for the UI:** distances render to **one decimal**. `2.31 km` would advertise precision that deliberately does not exist. Asserted.
+
+### Two deviations from the spec's migration, both load-bearing
+
+1. **PostGIS installs into `extensions`, not `public`** — every other extension here does. The spec's `SET search_path = public` would leave `ST_Distance`/`geography` unresolvable and the function would fail to create. All PostGIS references in DDL are schema-qualified because generated-column expressions resolve at DDL time.
+2. **A separate `set_provider_service_base` RPC** instead of new parameters on `submit_provider_application`. Adding parameters would create an **overload**, not a replacement, and PostgREST could no longer resolve the existing 9-argument call. It also means moving your base never re-stamps `applied_at` or re-enters the application gate — **verified: status, is_verified and applied_at are untouched by a base change.**
+
+### Found while verifying my own migration (⚠️ read this before writing another definer function)
+
+`20260818120000` did `REVOKE ALL … FROM PUBLIC; GRANT EXECUTE … TO authenticated;` and I read that as "anon excluded". **It isn't.** Supabase ships `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO anon, authenticated, service_role`, so a new function is created with EXECUTE granted **directly to `anon`** — and revoking from `PUBLIC` does not remove a direct role grant. The first verify run passed on *"No provider application found"*, which looked like a refusal but was actually anon executing the function and matching no row (`auth.uid()` is NULL). `20260818130000` closed it with an explicit `must be signed in` guard, a named `REVOKE … FROM anon`, and a `DO` block that fails the migration if either half stops holding.
+
+**The lesson generalises: "it happens to write nothing" is not "it refuses", and a test that accepts any error will not tell them apart.**
+
+---
+
 ## Known-open — tracked, low priority (⚠️ not regressions, do NOT re-flag as new bugs)
+
+- **Most `SECURITY DEFINER` functions in `public` are executable by `anon`** — ambient, pre-existing, and NOT a Step-11 regression. Same root cause as the note above (Supabase's default function privileges). `submit_provider_application`, `transition_booking`, `submit_review`, `respond_offer`, `start_negotiation` and others each defend themselves with an internal `auth.uid()` check, which is why nothing is exploitable today. But the outer fence is missing across the board and every one of those functions moves money or state. **Deliberately not swept during Step 11** — auditing ~15 money- and state-changing functions is a security-scope session, not a footnote to a matching step. Do it before public launch.
+- **The geocoder is Nominatim (OpenStreetMap), keyless.** Fine for launch scale: onboarding-time only, one call per provider, server-proxied with an identifying User-Agent and a 1 req/s throttle (their usage policy). It is **not** a production geocoder at volume — Architecture §3 names Google/Mapbox, and `GEOCODER_URL` / `GEOCODER_USER_AGENT` exist so the swap is config, not code.
 
 - ~~**`verify-step7` red assertion — fixture drift.**~~ **RESOLVED** (commit `8d4bf50`): the test now derives the expected `dispute_fault_rate` from the DB instead of hardcoding 0, which is the honest fix that was called for. `verify-step7` is 31/0. Left here only so the old note isn't mistaken for a live issue.
 - ~~**Footer / homepage still show "Become a Provider" to admins.**~~ **FOOTER RESOLVED** (2026-08-08): the footer is site-wide *navigation*, so it now follows the same rule as the navbar — `useAuth()` → an admin doesn't get the link. Asserted in `ui-check-admin` in **both** directions: absent for an admin, still present for a customer (hiding it from everyone would pass the first check while deleting the main signup path). **The homepage CTA is a deliberate NO-FIX (❌):** that band is marketing, not navigation, and "Book a Service Now" beside it has the identical mismatch for an admin — hiding one is incoherent, hiding both empties the band, and `app/page.tsx` is statically rendered, so making it auth-aware trades static rendering for a cosmetic gain on a page admins rarely land on. Navigation implies *your* options; a landing pitch does not.
@@ -132,6 +166,8 @@ Real Indian trades often run on **shops that dispatch interchangeable workers** 
 ## Location & tracking — two features that merely share an input (decided pre-Step-11)
 
 A recurring source of confusion, named here because it makes Step 11 feel far bigger than it is: **proximity-matching and live tracking are separate features that both happen to use location.** Keep them apart.
+
+> ✅ **Step 11 is now BUILT** — see "Step 11 — PostGIS matching & ranking" below for what shipped, including the grid-snap hardening the coordinate invariant turned out to need. The split described here held: matching took one static point per provider and nothing else. The map-pin half of "address and/or pin" was not built — typed-address geocoding covers it; a pin needs a map dependency and can come later.
 
 - **Matching (Step 11 — NOW).** Needs location **once, at search time**: the provider's **service base** (typed address and/or a dropped map pin, geocoded to lat/lng, set at onboarding) and the customer's search location (**"near me"** device geolocation *or* a typed address, with the existing city-list fallback when permission is declined). Rank by distance + reputation + availability; return **distance only — coordinates never leak** (existing safety invariant). **One static location per provider. No device tracking, no animation, no ETA.**
 - **Live tracking (Step 15 — LATER).** The Uber-style experience: continuous device GPS between `en_route` and `arrived`, "he's 5 minutes away", the moving dot, the path, the ETA — needing realtime streaming, maps, and battery/permission handling. This is also the **only** place where two further distinctions matter: **urgent** (watch the provider approach live) vs **scheduled** (check the ETA before a 5 pm appointment), and the **dual location** a shop-affiliated worker has (the shop's fixed base vs the worker's live position — which additionally depends on the post-launch affiliation model above). All of it ships with the arrival OTP. **Do not pull any of it into Step 11.**

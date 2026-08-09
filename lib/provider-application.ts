@@ -174,13 +174,18 @@ export function verifiedYears(rows: ProviderExperience[]): number {
 export type MyApplication = Pick<ServiceProvider,
   | 'id' | 'category_id' | 'business_name' | 'bio' | 'experience_years' | 'hourly_rate'
   | 'city' | 'state' | 'address' | 'status' | 'is_verified' | 'kyc_status' | 'kyc_documents'
-  | 'rejection_reason' | 'applied_at' | 'reviewed_at' | 'trust_tier'>;
+  | 'rejection_reason' | 'applied_at' | 'reviewed_at' | 'trust_tier'>
+  // Step 11: the provider's OWN service base, so the form can show whether it's set. Read through
+  // my_provider_profile only — these columns carry no SELECT grant on service_providers itself,
+  // which is what keeps another user's coordinates unreadable.
+  & { latitude: number | null; longitude: number | null };
 
 // trust_tier needs no column grant here: my_provider_profile is a view filtered to auth.uid() and
-// granted wholesale, so the owner reads their own tier through it.
+// granted wholesale, so the owner reads their own tier through it. Same for latitude/longitude.
 const MY_APPLICATION_COLUMNS =
   'id, category_id, business_name, bio, experience_years, hourly_rate, city, state, address, ' +
-  'status, is_verified, kyc_status, kyc_documents, rejection_reason, applied_at, reviewed_at, trust_tier';
+  'status, is_verified, kyc_status, kyc_documents, rejection_reason, applied_at, reviewed_at, trust_tier, ' +
+  'latitude, longitude';
 
 const extFromName = (name: string) => {
   const dot = name.lastIndexOf('.');
