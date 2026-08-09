@@ -21,13 +21,33 @@ export const DEFAULT_RADIUS_KM = 25;
 
 /* ── The customer's search location ──────────────────────────────────────────── */
 
-/** Fallback anchors for customers who decline location sharing — never dead-end them. */
+export type CityAnchor = LatLng & { city: string; provider_count: number };
+
+/* Last-resort anchors, used only when city_anchors() cannot be reached. This list used to be the
+   ONLY source, and that was a bug: the /providers dropdown was built from the cities present in
+   the data, so any city missing here (Kalyan, Bengaluru and Mumbai Suburban — 312 of 485
+   providers) silently fell through to the unranked catalog with no distances and no explanation.
+   The live list now comes from the DB, so the cities offered and the cities that can rank are the
+   same set by construction. Never re-introduce a hardcoded list as the primary source. */
 export const CITY_ANCHORS: Record<string, LatLng> = {
   Mumbai: { lat: 19.076, lng: 72.8777 },
   Thane: { lat: 19.2183, lng: 72.9781 },
   'Navi Mumbai': { lat: 19.033, lng: 73.0297 },
   Pune: { lat: 18.5204, lng: 73.8567 },
 };
+
+/**
+ * Cities a customer can search from, straight from the provider data. The RPC returns a coarse,
+ * grid-snapped city point built from at least three providers — never an individual position.
+ */
+export async function fetchCityAnchors(): Promise<CityAnchor[]> {
+  const { data, error } = await supabase.rpc('city_anchors');
+  if (error) {
+    console.error('city_anchors failed, falling back to the static list:', error.message);
+    return Object.entries(CITY_ANCHORS).map(([city, p]) => ({ city, ...p, provider_count: 0 }));
+  }
+  return (data ?? []) as CityAnchor[];
+}
 
 /**
  * One-shot browser geolocation. Resolves to an error STRING rather than throwing, because every

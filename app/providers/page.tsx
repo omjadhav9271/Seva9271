@@ -6,8 +6,8 @@ import { Search, Star, MapPin, Clock, CheckCircle, Users, Navigation, Loader2 } 
 import { supabase } from '@/lib/supabase';
 import type { ProviderSearchResult } from '@/lib/supabase';
 import {
-  CITY_ANCHORS, DEFAULT_RADIUS_KM, formatDistance, requestBrowserLocation, searchProviders,
-  type SearchOrigin,
+  DEFAULT_RADIUS_KM, fetchCityAnchors, formatDistance, requestBrowserLocation, searchProviders,
+  type CityAnchor, type SearchOrigin,
 } from '@/lib/matching';
 
 /* Step 11: the list is now RANKED, not sorted by star average. Two sources feed the same card:
@@ -76,6 +76,9 @@ export default function ProvidersPage() {
   const [locationNote, setLocationNote] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [cityFilter, setCityFilter] = useState('');
+  // The cities we can actually rank from. Built from the data, so the dropdown can never offer a
+  // city that then silently degrades to the unranked list.
+  const [anchors, setAnchors] = useState<CityAnchor[]>([]);
 
   // The catalog always loads: it's the fallback, and it supplies the city list.
   useEffect(() => {
@@ -95,6 +98,12 @@ export default function ProvidersPage() {
       }
       setLoading(false);
     })();
+    return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    fetchCityAnchors().then((list) => { if (mounted) setAnchors(list); });
     return () => { mounted = false; };
   }, []);
 
@@ -126,22 +135,20 @@ export default function ProvidersPage() {
     await runSearch({ ...pos, label: 'your location' });
   };
 
-  // Picking a city we have an anchor for searches from there, so ranking still applies without
-  // sharing a device location. Cities we don't know simply filter the catalog, as before.
+  // Every city in the dropdown comes from city_anchors(), so picking one always ranks. The old
+  // version looked the city up in a hardcoded map and quietly showed the unranked catalog when it
+  // missed — which is precisely how Kalyan, Bengaluru and Mumbai Suburban ended up with no
+  // ordering and no distances.
   const onCityChange = async (city: string) => {
     setCityFilter(city);
     if (!city) {
       if (origin?.label !== 'your location') { setOrigin(null); setRanked(null); }
       return;
     }
-    const anchor = CITY_ANCHORS[city];
-    if (anchor) {
-      setLocationNote(null);
-      await runSearch({ ...anchor, label: city });
-    } else {
-      setOrigin(null);
-      setRanked(null);
-    }
+    const anchor = anchors.find((a) => a.city === city);
+    if (!anchor) { setLocationNote(`We don't have enough providers in ${city} to search from yet.`); return; }
+    setLocationNote(null);
+    await runSearch({ lat: anchor.lat, lng: anchor.lng, label: city });
   };
 
   const cards: Card[] = ranked
@@ -185,7 +192,6 @@ export default function ProvidersPage() {
     return matchesSearch && matchesCity;
   });
 
-  const cities = Array.from(new Set(catalog.map((p) => p.city).filter(Boolean))) as string[];
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] pt-20">
@@ -225,7 +231,7 @@ export default function ProvidersPage() {
               className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-[#FF9933] min-w-[150px]"
             >
               <option value="">All Cities</option>
-              {cities.map((c) => <option key={c} value={c}>{c}</option>)}
+              {anchors.map((a) => <option key={a.city} value={a.city}>{a.city} ({a.provider_count})</option>)}
             </select>
           </div>
 

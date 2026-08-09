@@ -339,7 +339,103 @@ try {
     }
   }
 
-  // ================= 6) nothing blew up =================
+  /* ===== 6) REGRESSION: every city offered must be a city we can rank from =====
+     The dropdown used to be built from the cities present in the provider rows while the anchors
+     were a hardcoded list of four. Any city missing from that list (Kalyan, Bengaluru, Mumbai
+     Suburban — 312 of 485 providers at the time) silently fell back to the unranked catalog: no
+     ordering, no distances, no explanation. A choice the ranking cannot honour must not be offered. */
+  console.log('\n[city dropdown: every option can actually rank]');
+  {
+    const { data: cityAnchors, error: caErr } = await service.rpc('city_anchors');
+    if (caErr) {
+      no('city_anchors() failed: ' + caErr.message);
+    } else if (!cityAnchors?.length) {
+      sk('city_anchors() returned nothing — too few providers per city to anchor');
+    } else {
+      await setGeolocation({ granted: true, ...ORIGIN });
+      await send('Page.navigate', { url: `${APP}/providers` });
+      await waitFor(`document.querySelectorAll('select option').length > 1`, { label: 'city options', timeout: 60000 });
+      const options = await evaluate(`[...document.querySelectorAll('select option')]
+        .slice(1).map(o => o.value)`);
+      const anchorCities = cityAnchors.map((c) => c.city);
+      const unrankable = options.filter((o) => !anchorCities.includes(o));
+      if (unrankable.length === 0) ok(`all ${options.length} offered cities have an anchor (${anchorCities.length} available)`);
+      else no('cities offered that CANNOT rank: ' + unrankable.join(', '));
+
+      // And prove it end to end on the biggest one, rather than trusting the list comparison.
+      const target = anchorCities[0];
+      const picked = await evaluate(`(() => { const s = document.querySelector('select');
+        const set = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype,'value').set;
+        set.call(s, ${JSON.stringify(target)}); s.dispatchEvent(new Event('change',{bubbles:true})); return true; })()`);
+      if (picked) {
+        try {
+          await waitFor(`document.body.innerText.includes(${JSON.stringify('near ' + target)})`,
+            { label: `results near ${target}`, timeout: 25000 });
+          const withDistance = await evaluate(`[...document.querySelectorAll('a[href^="/providers/"]')]
+            .filter(a => /km away|m away/.test(a.innerText)).length`);
+          const total = await evaluate(`document.querySelectorAll('a[href^="/providers/"]').length`);
+          if (total > 0 && withDistance === total) ok(`picking "${target}" ranks and shows a distance on all ${total} cards`);
+          else no(`picking "${target}" left ${total - withDistance} of ${total} cards with no distance`);
+        } catch {
+          no(`picking "${target}" did not produce ranked results — it fell back to the flat list`);
+        }
+      }
+    }
+  }
+
+  /* ===== 7) REGRESSION: the category filters the QUERY, not the results =====
+     /services used to call the RPC unfiltered with limit 60 and filter by category in the browser.
+     A filter applied after a ranked cut is a sample, not a filter: electricians near Kalyan showed
+     2 of the 7 in range, and the 5 it dropped included nearer ones. */
+  console.log('\n[category filtering happens server-side]');
+  {
+    /* Drive the labels the PAGE offers, not the DB's category names: /services carries its own
+       hardcoded chip list, so the DB's "Farm Fresh Delivery" is the button "Farm Fresh" and a
+       click on the DB name silently finds nothing. (That list also covers only some of the
+       categories that exist — noted in the decisions log, pre-dates Step 11.) */
+    const { data: cats } = await service.from('service_categories').select('id, name, slug');
+    await send('Page.navigate', { url: `${APP}/services` });
+    await waitFor(`document.body.innerText.includes('providers found')`, { label: 'the services list', timeout: 60000 });
+    await sleep(2000);   // let the slug→id map land before the category is picked
+    const chips = await evaluate(`[...document.querySelectorAll('button')]
+      .map(b => b.textContent.trim())
+      .filter(t => t && t !== 'All Services' && t.length < 24)`);
+
+    let best = null;
+    for (const c of cats ?? []) {
+      const chip = chips.find((t) => c.name.toLowerCase().startsWith(t.toLowerCase()));
+      if (!chip) continue;
+      const { data } = await service.rpc('search_providers', {
+        p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: c.id, p_radius_km: 25, p_limit: 500,
+      });
+      if ((data?.length ?? 0) > (best?.count ?? 0)) best = { ...c, chip, count: data.length };
+    }
+    if (!best || best.count === 0) {
+      sk('no category reachable from the page chips has providers in range');
+    } else {
+      const expected = Math.min(best.count, 60);   // the page asks for 60
+      const pickedCat = await clickUntil(best.chip, `document.body.innerText.includes('providers found')`);
+      await sleep(1200);
+      const located = await clickUntil('Use my location', `/km away|m away/.test(document.body.innerText)`);
+      if (!pickedCat || !located) {
+        no(`could not drive "${best.chip}" + location on /services`);
+      } else {
+        await sleep(1500);
+        const shown = await evaluate(`document.querySelectorAll('a[href^="/providers/"]').length`);
+        if (shown === expected) {
+          ok(`"${best.chip}" near the origin returns all ${expected} in range (server-side filter)`);
+        } else {
+          no(`"${best.chip}" showed ${shown} of ${expected} in range — the category is applied AFTER the ranked cut`);
+        }
+        const noDistance = await evaluate(`[...document.querySelectorAll('a[href^="/providers/"]')]
+          .filter(a => !/km away|m away/.test(a.innerText)).length`);
+        if (noDistance === 0) ok('every category-filtered card still shows a distance');
+        else no(`${noDistance} category-filtered cards show no distance`);
+      }
+    }
+  }
+
+  // ================= 8) nothing blew up =================
   console.log('\n[page health]');
   {
     const errors = await evaluate(`window.__sevaErrors ? window.__sevaErrors.length : 0`).catch(() => 0);

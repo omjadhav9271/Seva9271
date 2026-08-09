@@ -12,8 +12,8 @@ import {
 import { supabase } from '@/lib/supabase';
 import type { ProviderSearchResult } from '@/lib/supabase';
 import {
-  CITY_ANCHORS, DEFAULT_RADIUS_KM, formatDistance, requestBrowserLocation, searchProviders,
-  type SearchOrigin,
+  DEFAULT_RADIUS_KM, fetchCityAnchors, formatDistance, requestBrowserLocation, searchProviders,
+  type CityAnchor, type SearchOrigin,
 } from '@/lib/matching';
 
 const categories = [
@@ -84,6 +84,10 @@ function ServicesContent() {
   const [origin, setOrigin] = useState<SearchOrigin | null>(null);
   const [locationNote, setLocationNote] = useState<string | null>(null);
   const [cityChoice, setCityChoice] = useState('');
+  const [anchors, setAnchors] = useState<CityAnchor[]>([]);
+  // slug → category id, so the chosen category can be pushed INTO the RPC instead of being
+  // filtered out of its results afterwards.
+  const [categoryIds, setCategoryIds] = useState<Record<string, string>>({});
 
   // The catalog always loads: it is the fallback when the customer won't share a location, and it
   // is what the city list is built from.
@@ -124,11 +128,31 @@ function ServicesContent() {
     return () => { mounted = false; };
   }, []);
 
+  useEffect(() => {
+    let mounted = true;
+    fetchCityAnchors().then((list) => { if (mounted) setAnchors(list); });
+    supabase.from('service_categories').select('id, slug').then(({ data }) => {
+      if (!mounted || !data) return;
+      setCategoryIds(Object.fromEntries(data.map((c: any) => [c.slug, c.id])));
+    });
+    return () => { mounted = false; };
+  }, []);
+
   /* Step 11 — the ranked path. search_providers blends proximity, the Step-7 reputation_score and
-     availability server-side; we keep its order and simply render it. */
-  const runSearch = useCallback(async (next: SearchOrigin) => {
+     availability server-side; we keep its order and simply render it.
+
+     The category goes INTO the query. It used to be applied client-side to an unfiltered top-60,
+     which quietly hid most of the results: searching electricians near Kalyan returned 2 of the 7
+     within range, and the 5 it dropped included nearer ones. A filter applied after a ranked cut
+     is not a filter, it is a sample. */
+  const runSearch = useCallback(async (next: SearchOrigin, categorySlug = '') => {
     setOrigin(next);
-    const res = await searchProviders({ origin: next, radiusKm: DEFAULT_RADIUS_KM, limit: 60 });
+    const res = await searchProviders({
+      origin: next,
+      categoryId: categorySlug ? categoryIds[categorySlug] ?? null : null,
+      radiusKm: DEFAULT_RADIUS_KM,
+      limit: 60,
+    });
     if ('error' in res) {
       console.error('search_providers failed:', res.error);
       setRanked(null);
@@ -154,7 +178,17 @@ function ServicesContent() {
     })));
     setLocationNote(null);
     setSortBy('match');
-  }, []);
+  }, [categoryIds]);
+
+  // Changing the category while a location is known must re-query the server, not re-filter what
+  // we already have — otherwise the category is applied to a ranked sample of the wrong set.
+  useEffect(() => {
+    if (!origin || !ranked) return;
+    runSearch(origin, selectedCategory);
+    // categoryIds is a dependency on purpose: if the slug→id map is still loading when a category
+    // is picked, the first query goes out unfiltered — this re-runs it properly once ids arrive.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCategory, categoryIds]);
 
   const useMyLocation = async () => {
     setLocating(true);
@@ -170,7 +204,7 @@ function ServicesContent() {
       return;
     }
     setCityChoice('');
-    await runSearch({ ...pos, label: 'your location' });
+    await runSearch({ ...pos, label: 'your location' }, selectedCategory);
   };
 
   const onCityChoice = async (city: string) => {
@@ -181,8 +215,10 @@ function ServicesContent() {
       if (sortBy === 'match') setSortBy('rating');
       return;
     }
+    const anchor = anchors.find((a) => a.city === city);
+    if (!anchor) { setLocationNote(`We don't have enough providers in ${city} to search from yet.`); return; }
     setLocationNote(null);
-    await runSearch({ ...CITY_ANCHORS[city], label: city });
+    await runSearch({ lat: anchor.lat, lng: anchor.lng, label: city }, selectedCategory);
   };
 
   const providers = ranked ?? catalog;
@@ -201,6 +237,7 @@ function ServicesContent() {
     // 'match' = the server's blended ranking. Return 0 and let the stable sort preserve the exact
     // order search_providers gave us — re-sorting it here would quietly discard the ranking.
     if (sortBy === 'match') return 0;
+    if (sortBy === 'distance') return (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity);
     if (sortBy === 'rating') return b.rating - a.rating;
     if (sortBy === 'price_low') return a.hourly_rate - b.hourly_rate;
     if (sortBy === 'price_high') return b.hourly_rate - a.hourly_rate;
@@ -246,7 +283,7 @@ function ServicesContent() {
               className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-[#FF9933] min-w-[150px]"
             >
               <option value="">Or pick a city</option>
-              {Object.keys(CITY_ANCHORS).map((c) => <option key={c} value={c}>{c}</option>)}
+              {anchors.map((a) => <option key={a.city} value={a.city}>{a.city} ({a.provider_count})</option>)}
             </select>
           </div>
 
@@ -311,7 +348,14 @@ function ServicesContent() {
                   {[
                     // Only offered once we know where they are — it's the server's blended
                     // proximity + reputation + availability ranking, not a client-side sort.
-                    ...(ranked ? [{ value: 'match', label: 'Best match' }] : []),
+                    ...(ranked ? [
+                      { value: 'match', label: 'Best match' },
+                      // "Best match" trades a little distance for reputation, which is right by
+                      // default but not always what someone wants — if you need a plumber NOW,
+                      // nearest is the question you are asking. Only offered when we know where
+                      // the customer is; there is nothing to sort by otherwise.
+                      { value: 'distance', label: 'Nearest first' },
+                    ] : []),
                     { value: 'rating', label: 'Highest Rated' },
                     { value: 'reviews', label: 'Most Reviewed' },
                     { value: 'price_low', label: 'Price: Low to High' },
