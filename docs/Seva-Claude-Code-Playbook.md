@@ -114,6 +114,8 @@ Finish by reporting exactly what you changed and how you verified it.
 ## Step 11 — PostGIS matching & ranking
 **Depends on:** Phase 1. **Architecture:** §5.
 **Build:** enable PostGIS; give providers a geography point + service radius; filter candidates with `ST_DWithin`; rank by the `match_score` blend (proximity + reputation + availability + price_fit + `exploration_bonus` for newcomers). Mirror it: providers see incoming requests ranked by customer reputation.
+**How location is captured:** the provider's geography point is a **static service base** set at onboarding from **typed address and/or a dropped map pin** (geocoded to lat/lng) — *not* their live device location. The customer supplies a search location via **"near me"** or a typed address, with the existing city-list fallback if permission is declined. Return **distance only**; coordinates never leak.
+**Not now:** live device tracking, ETA, the moving dot, urgent-vs-scheduled behaviour, and a shop's fixed base vs a worker's live position — **all Step 15**, and pulling them in here is what makes this step feel bigger than it is. Providers are individuals only; shop/org affiliation is post-launch. See the Decisions Log: "Location & tracking" and "Supply-side model".
 **Done when:** searching a category near a location returns the nearest eligible providers in ranked order, and a brand-new good provider still surfaces sometimes (exploration).
 
 ## Step 12 — Full reputation engine
@@ -134,6 +136,7 @@ Finish by reporting exactly what you changed and how you verified it.
 ## Step 15 — Tiers, incentives, subscriptions, live tracking
 **Depends on:** Steps 7/12, 5. **Architecture:** §6.4, §7.3.
 **Build:** wallet tiers (silver/gold/platinum) tied to reputation; recurring **subscriptions** for daily cook/cleaning with a flat monthly fee (a disintermediation defense); live-location tracking on the booking map between `en_route` and `arrived`.
+**Everything location-in-motion lands here, not in Step 11:** continuous device GPS, ETA / "5 minutes away", the moving dot and path, the **urgent vs scheduled** distinction (watch him approach *vs* check the ETA before a 5 pm slot), and — if shop affiliation exists by then — a worker's live position vs the shop's fixed base. Ships alongside the **arrival OTP** (Decisions Log: "Open OTP / anti-substitution decision"), which is what turns `arrived` from provider-self-reported into customer-attested.
 **Done when:** a subscription auto-creates recurring bookings; tier perks apply; the customer sees the provider move on the map en route.
 
 ---

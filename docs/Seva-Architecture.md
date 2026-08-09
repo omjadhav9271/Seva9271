@@ -107,7 +107,8 @@ The spine of the whole system is the **Booking (Job)** and its **state machine**
 ### Key entities
 
 - **User** — base account (phone-verified). A user can be a **Customer**, a **Provider**, or **both**.
-- **ProviderProfile** — bio, KYC status, service areas (geo polygons/points + radius), availability schedule, categories offered.
+- **ProviderProfile** — bio, KYC status, service areas (geo polygons/points + radius), availability schedule, categories offered. The geo point is a **static service base** (address/pin at onboarding), not a live device position — see §5 and the Decisions Log, "Location & tracking".
+- **Org / Shop *(post-launch, NOT built — see the Decisions Log, "Supply-side model")*** — a shop an individual provider may **affiliate** with: it earns a cut of its workers' jobs and carries a **blended** reputation from theirs. The **individual always remains the provider and the unit of reputation**, and customers always book a named person, so a shop can never dispatch a substitute. Recorded here so the entity model has a place for it; do not build it before real demand exposes a supply gap.
 - **ServiceCategory** — your taxonomy (Home Cleaning, Cook, Electrician…). Hierarchical.
 - **Listing** — "this provider offers *this category* in *this area* at *this indicative price*."
 - **Booking (Job)** — the transaction. Has a **status** (state machine below), scheduled time, location, price agreed, and the actual price charged.

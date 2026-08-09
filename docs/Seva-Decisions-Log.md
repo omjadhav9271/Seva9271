@@ -105,7 +105,40 @@ Need signed vendors, credentials, and/or compliance review. **Not bugs — delib
 ## Open OTP / anti-substitution decision (🔜 noted for Step 15)
 
 - **Uber-style arrival OTP:** the customer holds an OTP; the provider must enter it to transition to `arrived`. Decision: **implement at Step 15** (with live tracking). Confirms the *verified* individual actually showed up (anti-substitution — core to the "trusted individuals" model) and upgrades `arrived` from provider-self-reported to customer-attested.
-- **Provider substitution (sending someone else): rejected (❌).** Destroys the verified-individual trust model and creates a safety liability. The "provider is busy / knows someone capable" case is served by **that person onboarding as their own verified provider**, not by substitution.
+- **Provider substitution (sending someone else): rejected (❌).** Destroys the verified-individual trust model and creates a safety liability. The "provider is busy / knows someone capable" case is served by **that person onboarding as their own verified provider**, not by substitution. *(The supply-side version of this same problem — a shop dispatching whichever worker is free — is answered in "Supply-side model" below.)*
+
+---
+
+## Supply-side model — individuals vs shops (architectural, decided pre-Step-11, ⏸️ POST-LAUNCH)
+
+Real Indian trades often run on **shops that dispatch interchangeable workers** — an electrician-shop owner sends whichever of his two or three workers is free. That collides head-on with Seva's core promise (**verified individuals with portable reputation**): the customer read reviews for the shop, but a stranger arrives, so the reputation they trusted describes nobody who is in their home. **This is the substitution problem again, arriving from the supply side instead of the fraud side** — and it gets the same answer, because the reasoning that rejected substitution above does not stop applying just because the request comes from an owner rather than a provider.
+
+**Decision — a two-tier model in which the INDIVIDUAL is always the unit:**
+
+- The **worker is always the provider** — own profile, own KYC, own reputation. Non-negotiable; this is what Seva *is*, and no affiliation arrangement may erode it.
+- A worker MAY **affiliate with a shop/org**. The shop gets a page and an owner dashboard, **earns a cut of its affiliated workers' jobs**, and carries a **blended** reputation derived from theirs.
+- Customers always book a **named individual** ("Suresh, 4.8★, affiliated with Ravi's Electrical"), never "an electrician from the shop". The reputation is Suresh's; the shop rides on it.
+
+**Why this shape and not the obvious two:** it converts the shop owner from an obstacle into a distributor. The naive objection to individuals-only is *"why would the owner let his workers join?"* — he'd read it as poaching. Under affiliation he profits from their platform jobs and his shop's standing grows through them, so he **wants** them on Seva; but he still **cannot** dispatch a substitute, because the booking names a person whose own reputation is on the line. The incentive is aligned *with* the trust model rather than against it.
+
+**Rejected alternatives (both are coherent — they're rejected for what they cost):**
+- **Individuals-only forever** — fights the existing shop economy, so supply acquisition stays hard in shop-dominated trades.
+- **Shops-as-providers** — this is Urban Company, the employment model Seva defines itself against (`CLAUDE.md`: *a store of individuals, not an employer of workers*). Reputation detaches from the person and the "verified individual in your home" promise is gone.
+
+**Sequencing — do NOT build this now (⏸️).** Orgs, affiliations, revenue splits and blended reputation are a large entity model; bolting them on now would derail matching and probably the reputation engine. **Launch with individuals only** — independent tradespeople who want direct customers without a shop's cut exist in quantity, and that is all launch requires. Supply in shop-dominated trades is a **go-to-market problem, not a Step-11 problem**: add affiliation when real customer demand exposes a supply gap you cannot fill. Recorded here now so it is neither lost nor allowed to creep into Step 11.
+
+---
+
+## Location & tracking — two features that merely share an input (decided pre-Step-11)
+
+A recurring source of confusion, named here because it makes Step 11 feel far bigger than it is: **proximity-matching and live tracking are separate features that both happen to use location.** Keep them apart.
+
+- **Matching (Step 11 — NOW).** Needs location **once, at search time**: the provider's **service base** (typed address and/or a dropped map pin, geocoded to lat/lng, set at onboarding) and the customer's search location (**"near me"** device geolocation *or* a typed address, with the existing city-list fallback when permission is declined). Rank by distance + reputation + availability; return **distance only — coordinates never leak** (existing safety invariant). **One static location per provider. No device tracking, no animation, no ETA.**
+- **Live tracking (Step 15 — LATER).** The Uber-style experience: continuous device GPS between `en_route` and `arrived`, "he's 5 minutes away", the moving dot, the path, the ETA — needing realtime streaming, maps, and battery/permission handling. This is also the **only** place where two further distinctions matter: **urgent** (watch the provider approach live) vs **scheduled** (check the ETA before a 5 pm appointment), and the **dual location** a shop-affiliated worker has (the shop's fixed base vs the worker's live position — which additionally depends on the post-launch affiliation model above). All of it ships with the arrival OTP. **Do not pull any of it into Step 11.**
+
+**Why the split matters:** designing live tracking now is precisely what makes matching feel overwhelming — it mixes a simple static feature with a hard realtime one, and the hard one has no bearing on *ranking*. Both the urgent and the scheduled case need the identical thing from matching: one provider location, one customer location, distance computed once. Their difference only appears once movement is being shown.
+
+**Effect on the Step 11 spec: essentially none.** The playbook already says *"give providers a geography point + service radius"* and Architecture §5 already filters with `ST_DWithin` — both are static-service-base by construction. The single clarification is **how that point is captured: address text and/or map pin at onboarding, never the provider's live device location.** A provider is not always standing at their base, and their base is what ranking needs.
 
 ---
 
