@@ -89,6 +89,9 @@ export async function searchProviders(opts: {
   categoryId?: string | null;
   radiusKm?: number;
   limit?: number;
+  /** Free text matched server-side against business name, category and city. Passing it here
+   *  rather than filtering the returned rows is the point: filtering a ranked cut is a sample. */
+  query?: string | null;
 }): Promise<{ data: ProviderSearchResult[] } | { error: string }> {
   const { data, error } = await supabase.rpc('search_providers', {
     p_lat: opts.origin.lat,
@@ -96,6 +99,7 @@ export async function searchProviders(opts: {
     p_category_id: opts.categoryId ?? null,
     p_radius_km: opts.radiusKm ?? DEFAULT_RADIUS_KM,
     p_limit: opts.limit ?? 30,
+    p_query: opts.query?.trim() || null,
   });
   if (error) return { error: error.message };
   return { data: (data ?? []) as ProviderSearchResult[] };

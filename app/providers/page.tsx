@@ -96,9 +96,13 @@ export default function ProvidersPage() {
     return () => { mounted = false; };
   }, []);
 
-  const runSearch = useCallback(async (next: SearchOrigin) => {
+  /* The typed text goes INTO the query. It used to filter the 30 rows the RPC had already ranked,
+     which meant "electrician" searched whatever happened to come back rather than the electricians
+     in range — a nearer, better-rated one sitting at rank 31 was invisible while the box looked
+     like it worked. Same defect as the category filter, one page over. */
+  const runSearch = useCallback(async (next: SearchOrigin, query = '') => {
     setOrigin(next);
-    const res = await searchProviders({ origin: next, radiusKm: DEFAULT_RADIUS_KM });
+    const res = await searchProviders({ origin: next, radiusKm: DEFAULT_RADIUS_KM, query });
     if ('error' in res) {
       console.error('search_providers failed:', res.error);
       setRanked(null);
@@ -108,6 +112,14 @@ export default function ProvidersPage() {
     setRanked(res.data);
     setLocationNote(null);
   }, []);
+
+  // Re-query as they type, but not on every keystroke.
+  useEffect(() => {
+    if (!origin || !ranked) return;
+    const t = setTimeout(() => { runSearch(origin, search); }, 350);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
 
   const useMyLocation = async () => {
     setLocating(true);
@@ -121,7 +133,7 @@ export default function ProvidersPage() {
       setLocationNote(pos.error);
       return;
     }
-    await runSearch({ ...pos, label: 'your location' });
+    await runSearch({ ...pos, label: 'your location' }, search);
   };
 
   // Every city in the dropdown comes from city_anchors(), so picking one always ranks. The old
@@ -137,7 +149,7 @@ export default function ProvidersPage() {
     const anchor = anchors.find((a) => a.city === city);
     if (!anchor) { setLocationNote(`We don't have enough providers in ${city} to search from yet.`); return; }
     setLocationNote(null);
-    await runSearch({ lat: anchor.lat, lng: anchor.lng, label: city });
+    await runSearch({ lat: anchor.lat, lng: anchor.lng, label: city }, search);
   };
 
   const cards: Card[] = ranked
@@ -174,7 +186,11 @@ export default function ProvidersPage() {
 
   const filtered = cards.filter((p) => {
     const name = p.business_name ?? '';
-    const matchesSearch = !search || name.toLowerCase().includes(search.toLowerCase()) || p.categoryName.toLowerCase().includes(search.toLowerCase());
+    // In ranked mode the SERVER already applied the text search across everything in range, so
+    // re-applying it here would only narrow a correct result set. The client-side match remains
+    // for catalog mode, where there is no query to push down.
+    const matchesSearch = ranked ? true
+      : !search || name.toLowerCase().includes(search.toLowerCase()) || p.categoryName.toLowerCase().includes(search.toLowerCase());
     // In ranked mode the radius already scopes the result set — re-filtering by city name would
     // hide a provider 3 km away who happens to sit in the next municipality.
     const matchesCity = ranked ? true : !cityFilter || (p.city ?? '').toLowerCase() === cityFilter.toLowerCase();

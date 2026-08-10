@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, Suspense } from 'react';
+import { useState, useEffect, useCallback, useMemo, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -62,7 +62,15 @@ function ServicesContent() {
      here at all. slug → id is kept alongside so the choice can be pushed INTO the RPC rather than
      filtered out of its results afterwards. */
   const [categories, setCategories] = useState<CategoryRow[]>([]);
-  const categoryIds = Object.fromEntries(categories.map((c) => [c.slug, c.id]));
+  /* useMemo is load-bearing, not a micro-optimisation. This map is an effect dependency (below),
+     and an object literal rebuilt every render is a NEW identity every render — so the effect
+     re-queried, setRanked produced a new array, that re-rendered, and round it went: measured at
+     **13.5 search_providers calls per second on a page nobody was touching**. Keyed to `categories`,
+     the identity only changes when the categories actually do. */
+  const categoryIds = useMemo(
+    () => Object.fromEntries(categories.map((c) => [c.slug, c.id])),
+    [categories],
+  );
 
   // The catalog always loads: it is the fallback when the customer won't share a location, and it
   // is what the city list is built from.
@@ -113,17 +121,20 @@ function ServicesContent() {
   /* Step 11 — the ranked path. search_providers blends proximity, the Step-7 reputation_score and
      availability server-side; we keep its order and simply render it.
 
-     The category goes INTO the query. It used to be applied client-side to an unfiltered top-60,
-     which quietly hid most of the results: searching electricians near Kalyan returned 2 of the 7
-     within range, and the 5 it dropped included nearer ones. A filter applied after a ranked cut
-     is not a filter, it is a sample. */
-  const runSearch = useCallback(async (next: SearchOrigin, categorySlug = '') => {
+     The category AND the typed text both go INTO the query. Either one applied client-side to an
+     unfiltered top-60 quietly hides most of the results: searching electricians near Kalyan
+     returned 2 of the 7 within range, and the 5 it dropped included nearer ones. Measured again
+     from Mumbai centre on 2026-08-10, the text box was worse — "electric" showed **2 of the 11**
+     in range, because only 2 of the matches happened to sit in the 60 rows the browser was
+     filtering. A filter applied after a ranked cut is not a filter, it is a sample. */
+  const runSearch = useCallback(async (next: SearchOrigin, categorySlug = '', query = '') => {
     setOrigin(next);
     const res = await searchProviders({
       origin: next,
       categoryId: categorySlug ? categoryIds[categorySlug] ?? null : null,
       radiusKm: DEFAULT_RADIUS_KM,
       limit: 60,
+      query,
     });
     if ('error' in res) {
       console.error('search_providers failed:', res.error);
@@ -156,11 +167,19 @@ function ServicesContent() {
   // we already have — otherwise the category is applied to a ranked sample of the wrong set.
   useEffect(() => {
     if (!origin || !ranked) return;
-    runSearch(origin, selectedCategory);
+    runSearch(origin, selectedCategory, searchQuery);
     // categoryIds is a dependency on purpose: if the slug→id map is still loading when a category
     // is picked, the first query goes out unfiltered — this re-runs it properly once ids arrive.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCategory, categoryIds]);
+
+  // Re-query as they type, but not on every keystroke.
+  useEffect(() => {
+    if (!origin || !ranked) return;
+    const t = setTimeout(() => { runSearch(origin, selectedCategory, searchQuery); }, 350);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery]);
 
   const useMyLocation = async () => {
     setLocating(true);
@@ -176,7 +195,7 @@ function ServicesContent() {
       return;
     }
     setCityChoice('');
-    await runSearch({ ...pos, label: 'your location' }, selectedCategory);
+    await runSearch({ ...pos, label: 'your location' }, selectedCategory, searchQuery);
   };
 
   const onCityChoice = async (city: string) => {
@@ -190,13 +209,29 @@ function ServicesContent() {
     const anchor = anchors.find((a) => a.city === city);
     if (!anchor) { setLocationNote(`We don't have enough providers in ${city} to search from yet.`); return; }
     setLocationNote(null);
-    await runSearch({ lat: anchor.lat, lng: anchor.lng, label: city }, selectedCategory);
+    await runSearch({ lat: anchor.lat, lng: anchor.lng, label: city }, selectedCategory, searchQuery);
   };
+
+  /* The homepage hero sends the city it was given as ?city=. Honouring it here is what makes that
+     control real: the customer arrives already ranked from their city, rather than on the flat
+     catalog with their choice silently dropped. Waits for the anchors, since the city is only
+     meaningful once we have a point to search from; an unknown city says so rather than pretending. */
+  const cityParam = searchParams.get('city') || '';
+  const [cityParamApplied, setCityParamApplied] = useState(false);
+  useEffect(() => {
+    if (cityParamApplied || !cityParam || anchors.length === 0) return;
+    setCityParamApplied(true);
+    onCityChoice(cityParam);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anchors, cityParam, cityParamApplied]);
 
   const providers = ranked ?? catalog;
 
   const filtered = providers.filter((p) => {
-    const matchesSearch = !searchQuery ||
+    /* In ranked mode the SERVER already applied the text search across everything in range, so
+       re-applying it here could only narrow a correct result set back down to a sample. The
+       client-side match remains for catalog mode, where there is no query to push down. */
+    const matchesSearch = ranked ? true : !searchQuery ||
       (p.business_name ?? '').toLowerCase().includes(searchQuery.toLowerCase()) ||
       p.category.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesCategory = !selectedCategory || p.slug === selectedCategory;

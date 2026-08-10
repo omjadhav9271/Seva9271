@@ -112,9 +112,15 @@ async function setGeolocation({ granted, lat, lng }) {
    only place a real leak could arrive; the coordinate KEY shape is still searched everywhere. */
 const responses = [];
 const urlOf = new Map();
+/* Outbound search_providers calls, counted separately from response bodies: a page that re-queries
+   in a render loop is invisible to every other assertion here — it renders the right cards, shows
+   the right distances, leaks nothing — while hammering the database. Only the request RATE shows it. */
+let rpcRequests = 0;
 function watchNetwork() {
   ws.addEventListener('message', async (ev) => {
     const msg = JSON.parse(ev.data);
+    if (msg.method === 'Network.requestWillBeSent'
+        && /rpc\/search_providers/.test(msg.params?.request?.url ?? '')) rpcRequests++;
     if (msg.method === 'Network.responseReceived' && msg.params?.requestId) {
       urlOf.set(msg.params.requestId, msg.params.response?.url ?? '');
     }
@@ -165,8 +171,15 @@ try {
     .filter((s) => s && s.length >= 6);
 
   const profile = mkdtempSync(join(tmpdir(), 'seva-cdp11-'));
+  /* Headed by default (same convention as ui-check-step9): this check's whole point is the part a
+     human has to see — ranking order, distance copy, the fallback sentence. HEADLESS=1 for CI.
+     The window size is explicit either way: the navbar links are `hidden md:flex`, so Chrome's
+     default headless viewport puts them at display:none and every nav assertion fails against a
+     perfectly correct page. */
+  const HEADLESS = process.env.HEADLESS === '1';
   chrome = spawn(CHROME, [
-    '--headless=new', '--remote-debugging-port=9224', `--user-data-dir=${profile}`,
+    ...(HEADLESS ? ['--headless=new'] : []),
+    '--remote-debugging-port=9224', `--user-data-dir=${profile}`, '--window-size=1440,900',
     '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-dev-shm-usage',
     'about:blank',
   ], { stdio: 'ignore' });
@@ -193,7 +206,9 @@ try {
   };
   await send('Page.enable'); await send('Runtime.enable'); await send('Network.enable');
   watchNetwork();
-  console.log('driving real Chrome (headless) against ' + APP);
+  await send('Emulation.setDeviceMetricsOverride',
+    { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+  console.log(`driving real Chrome (${HEADLESS ? 'headless' : 'headed'}) against ` + APP);
   console.log('expected top-ranked provider: ' + expected[0].business_name +
     ` (${expected[0].distance_km} km, reputation ${expected[0].reputation_score})\n`);
 
@@ -464,7 +479,199 @@ try {
     }
   }
 
-  // ================= 8) nothing blew up =================
+  /* ===== 8) REGRESSION: the text box searches the QUERY, not the returned page =====
+     /providers used to filter the 30 already-ranked rows by the typed text, so a search hit
+     sitting at rank 31 was invisible while the box looked like it worked. The server now applies
+     the query across everything in range, which is provable: type a term and the page must show
+     the same count the category-filtered RPC does, including hits that were never in the top 30. */
+  console.log('\n[text search is applied server-side]');
+  {
+    const { data: cats } = await service.from('service_categories').select('id, name, slug');
+    const term = 'electric';
+    const cat = (cats ?? []).find((c) => c.name.toLowerCase().includes(term));
+    const { data: expectedRows } = await service.rpc('search_providers', {
+      p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null,
+      p_radius_km: 25, p_limit: 500, p_query: term,
+    });
+    const { data: top30 } = await service.rpc('search_providers', {
+      p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null, p_radius_km: 25, p_limit: 30,
+    });
+    const inTop30 = (top30 ?? []).filter((p) => (p.category_name ?? '').toLowerCase().includes(term)
+      || (p.business_name ?? '').toLowerCase().includes(term)).length;
+    const expected = Math.min(expectedRows?.length ?? 0, 30);   // the page asks for 30
+
+    if (!expected) {
+      sk(`nothing matches "${term}" near the origin`);
+    } else {
+      await setGeolocation({ granted: true, ...ORIGIN });
+      await send('Page.navigate', { url: `${APP}/providers` });
+      await waitFor(`document.querySelector('h1') &&
+        document.querySelector('h1').textContent.includes('All Providers')`,
+        { label: 'the /providers heading', timeout: 60000 });
+      const located = await clickUntil('Use my location', `document.body.innerText.includes('km away') ||
+        document.body.innerText.includes('m away')`);
+      if (!located) {
+        no('could not put /providers into ranked mode');
+      } else {
+        await evaluate(`(() => {
+          const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
+          const box = document.querySelector('input[type=text]');
+          set.call(box, ${JSON.stringify(term)});
+          box.dispatchEvent(new Event('input', { bubbles: true }));
+          return true; })()`);
+        await sleep(2500);   // debounce (350ms) + round-trip
+        const shown = await evaluate(`document.querySelectorAll('a[href^="/providers/"]').length`);
+        if (shown === expected) {
+          ok(`"${term}" shows all ${expected} matches in range (the top-30 alone held ${inTop30})`);
+        } else {
+          no(`"${term}" showed ${shown}, expected ${expected} — the text is filtering the returned page, not the query`);
+        }
+        if (expected > inTop30) {
+          ok(`…and that is strictly more than filtering the ranked page would have found (${inTop30})`);
+        } else {
+          sk('every match already sat in the top 30 here, so this data cannot prove the difference');
+        }
+      }
+    }
+  }
+
+  /* ===== 9) REGRESSION: /services searches the QUERY too =====
+     The same defect as section 8, one page over, and it outlived the /providers fix by a day:
+     /services asked for 60 rows and filtered THOSE by the typed text, so "electric" near Mumbai
+     centre showed 2 of the 11 in range — 9 matching providers invisible. It matters more here than
+     on /providers, because the homepage search box lands on this page. */
+  console.log('\n[/services: text search is applied server-side]');
+  {
+    const term = 'electric';
+    const { data: everything } = await service.rpc('search_providers', {
+      p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null, p_radius_km: 25, p_limit: 500, p_query: null,
+    });
+    const hits = (r) => (r.business_name ?? '').toLowerCase().includes(term)
+      || (r.category_name ?? '').toLowerCase().includes(term);
+    const expected = Math.min((everything ?? []).filter(hits).length, 60);  // the page asks for 60
+    const inTop60 = (everything ?? []).slice(0, 60).filter(hits).length;
+
+    if (!expected) {
+      sk(`nothing matches "${term}" near the origin`);
+    } else {
+      await setGeolocation({ granted: true, ...ORIGIN });
+      await send('Page.navigate', { url: `${APP}/services` });
+      await waitFor(`document.querySelector('h1') !== null`, { label: 'the /services heading', timeout: 60000 });
+      const located = await clickUntil('Use my location', `document.body.innerText.includes('km away') ||
+        document.body.innerText.includes('m away')`);
+      if (!located) {
+        no('could not put /services into ranked mode');
+      } else {
+        await evaluate(`(() => {
+          const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
+          const box = [...document.querySelectorAll('input')]
+            .find(i => (i.placeholder || '').includes('Search services or providers'));
+          set.call(box, ${JSON.stringify(term)});
+          box.dispatchEvent(new Event('input', { bubbles: true }));
+          return true; })()`);
+        await sleep(2500);   // debounce (350ms) + round-trip
+        const shown = await evaluate(`document.querySelectorAll('a[href^="/providers/"]').length`);
+        if (shown === expected) ok(`/services: "${term}" shows all ${expected} matches in range`);
+        else no(`/services: "${term}" showed ${shown}, expected ${expected} — filtering the returned page, not the query`);
+        if (expected > inTop60) ok(`…more than filtering the 60 rows it had would have found (${inTop60})`);
+        else sk('every match already sat in the top 60 here, so this data cannot prove the difference');
+      }
+    }
+  }
+
+  /* ===== 10) REGRESSION: the homepage location control is real =====
+     The hero's "Your location" was a free-text input writing ?location=, a parameter /services has
+     never read: the customer's city was silently discarded and they landed on an unranked national
+     list. A dead control on the front door of a location-matching product. It is now a city picker
+     built from city_anchors(), emitting ?city=, which /services ranks from on arrival. */
+  console.log('\n[homepage: the location control actually locates]');
+  {
+    const { data: cityAnchors } = await service.rpc('city_anchors');
+    const pick = (cityAnchors ?? []).find((a) => a.provider_count >= 3) ?? (cityAnchors ?? [])[0];
+    if (!pick) {
+      sk('no city anchors available to test the hero with');
+    } else {
+      await send('Page.navigate', { url: `${APP}/` });
+      await waitFor(`[...document.querySelectorAll('input')].some(i => (i.placeholder||'').includes('What service do you need'))`,
+        { label: 'the homepage hero', timeout: 60000 });
+      await sleep(1500);   // the anchors arrive from the DB after hydration
+
+      const dead = await evaluate(
+        `[...document.querySelectorAll('input')].some(i => (i.placeholder||'').includes('Your location'))`);
+      if (dead) no('the homepage still carries the free-text "Your location" input wired to nothing');
+      else ok('no dead free-text location input on the homepage');
+
+      const options = await evaluate(`(() => {
+        const s = document.querySelector('select[aria-label="City to search from"]');
+        return s ? [...s.options].map(o => o.value).filter(Boolean) : null; })()`);
+      const offered = new Set(options ?? []);
+      const rankable = (cityAnchors ?? []).map((a) => a.city);
+      if (!options) {
+        no('the homepage hero has no city picker');
+      } else if (rankable.every((c) => offered.has(c)) && [...offered].every((c) => rankable.includes(c))) {
+        ok(`the hero offers exactly the ${rankable.length} cities we can rank from (city_anchors, not a hardcoded list)`);
+      } else {
+        no(`hero cities and rankable cities differ: offered ${[...offered].join(', ')} vs ${rankable.join(', ')}`);
+      }
+
+      if (options) {
+        await evaluate(`(() => {
+          const s = document.querySelector('select[aria-label="City to search from"]');
+          const set = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype,'value').set;
+          set.call(s, ${JSON.stringify(pick.city)});
+          s.dispatchEvent(new Event('change', { bubbles: true }));
+          const box = [...document.querySelectorAll('input')].find(i => (i.placeholder||'').includes('What service do you need'));
+          box.closest('form').requestSubmit();
+          return true; })()`);
+        await waitFor(`location.pathname === '/services'`, { label: '/services after the hero search', timeout: 30000 });
+        const url = await evaluate('location.href');
+        if (url.includes(`city=${encodeURIComponent(pick.city)}`)) ok(`the hero emits ?city=${pick.city}, not the dead ?location=`);
+        else no(`the hero navigated to ${url} — the chosen city is not in the URL`);
+
+        try {
+          await waitFor(`document.body.innerText.includes('km away') || document.body.innerText.includes('m away')`,
+            { label: `distances after landing on ?city=${pick.city}`, timeout: 30000 });
+          const shown = await evaluate(`document.querySelectorAll('a[href^="/providers/"]').length`);
+          ok(`/services ranks from ${pick.city} on arrival — ${shown} cards, each with a distance`);
+          const selected = await evaluate(`(() => {
+            const s = [...document.querySelectorAll('select')]
+              .find(x => [...x.options].some(o => o.value === ${JSON.stringify(pick.city)}));
+            return s ? s.value : null; })()`);
+          if (selected === pick.city) ok(`the /services city picker shows "${pick.city}" — the choice is visible, not implicit`);
+          else no(`the /services city picker shows "${selected}" after arriving with ?city=${pick.city}`);
+        } catch {
+          no(`landing on ?city=${pick.city} did not rank — the location choice is still being dropped`);
+        }
+      }
+    }
+  }
+
+  /* ===== 11) REGRESSION: a settled page must stop querying =====
+     /services re-queried in a render loop — 162 calls in 12 idle seconds (13.5/s) — because its
+     slug→id map was rebuilt every render and used as an effect dependency, so each result set
+     triggered the next query. Every other check in this file passed throughout: the cards, the
+     ranking, the distances and the privacy were all correct while it hammered the database. A
+     ranked page that nobody is touching must make ZERO further requests. */
+  console.log('\n[a settled page stops querying]');
+  {
+    const IDLE_MS = 8000;
+    for (const path of ['/services', '/providers']) {
+      await setGeolocation({ granted: true, ...ORIGIN });
+      await send('Page.navigate', { url: APP + path });
+      await waitFor(`document.querySelector('h1') !== null`, { label: `the ${path} heading`, timeout: 60000 });
+      const located = await clickUntil('Use my location', `document.body.innerText.includes('km away') ||
+        document.body.innerText.includes('m away')`);
+      if (!located) { sk(`could not put ${path} into ranked mode`); continue; }
+      await sleep(2500);        // let the initial burst settle
+      rpcRequests = 0;
+      await sleep(IDLE_MS);     // nothing touches the page in this window
+      if (rpcRequests === 0) ok(`${path} is silent while idle — no re-query loop`);
+      else no(`${path} fired ${rpcRequests} search_providers calls in ${IDLE_MS / 1000}s idle ` +
+        `(${(rpcRequests / (IDLE_MS / 1000)).toFixed(1)}/s) — it is re-querying in a render loop`);
+    }
+  }
+
+  // ================= 12) nothing blew up =================
   console.log('\n[page health]');
   {
     const errors = await evaluate(`window.__sevaErrors ? window.__sevaErrors.length : 0`).catch(() => 0);

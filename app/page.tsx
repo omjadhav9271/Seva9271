@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { fetchCityAnchors, type CityAnchor } from '@/lib/matching';
 import {
   Search, MapPin, Star, CheckCircle, Shield, Clock, Users, Zap, Wrench,
   ChefHat, Sparkles, Heart, Car, Stethoscope, GraduationCap, Settings,
@@ -57,14 +58,29 @@ const features = [
 
 export default function Home() {
   const [searchQuery, setSearchQuery] = useState('');
-  const [location, setLocation] = useState('');
+  const [city, setCity] = useState('');
+  /* The cities we can actually rank from, straight from the provider data — the same source
+     /services and /providers use, so the hero can never offer a city that then does nothing. */
+  const [anchors, setAnchors] = useState<CityAnchor[]>([]);
   const router = useRouter();
 
+  useEffect(() => {
+    let mounted = true;
+    fetchCityAnchors().then((list) => { if (mounted) setAnchors(list); });
+    return () => { mounted = false; };
+  }, []);
+
+  /* This box used to be a free-text "Your location" input that wrote ?location=… — a parameter
+     /services has never read. The customer typed their city, pressed the button, and landed on an
+     unranked national list with their choice silently discarded: a dead control, which the
+     honest-signposting principle forbids, on the front door of a location-matching product. The
+     same defect was fixed on /services itself; the hero was missed. It now emits ?city=, which
+     /services honours by ranking from that city's anchor. */
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     const params = new URLSearchParams();
     if (searchQuery) params.set('q', searchQuery);
-    if (location) params.set('location', location);
+    if (city) params.set('city', city);
     router.push(`/services?${params.toString()}`);
   };
 
@@ -129,13 +145,19 @@ export default function Home() {
                   <div className="hidden sm:block w-px bg-[#2a2a2a] self-stretch" />
                   <div className="flex items-center gap-3 flex-1 min-w-0 px-4 py-2">
                     <MapPin className="w-5 h-5 text-gray-500 flex-shrink-0" />
-                    <input
-                      type="text"
-                      placeholder="Your location"
-                      value={location}
-                      onChange={(e) => setLocation(e.target.value)}
-                      className="flex-1 min-w-0 bg-transparent text-white placeholder-gray-500 text-sm focus:outline-none"
-                    />
+                    <select
+                      value={city}
+                      onChange={(e) => setCity(e.target.value)}
+                      aria-label="City to search from"
+                      className="flex-1 min-w-0 bg-transparent text-white text-sm focus:outline-none [&>option]:bg-[#1a1a1a] [&>option]:text-white"
+                    >
+                      {/* Empty is a real choice, not a placeholder: /services then shows everything
+                          and still offers "Use my location" once they arrive. */}
+                      <option value="">Anywhere in India</option>
+                      {anchors.map((a) => (
+                        <option key={a.city} value={a.city}>{a.city} ({a.provider_count})</option>
+                      ))}
+                    </select>
                   </div>
                   <button
                     type="submit"
