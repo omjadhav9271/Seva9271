@@ -9,6 +9,7 @@ import {
   DEFAULT_RADIUS_KM, fetchCityAnchors, formatDistance, requestBrowserLocation, searchProviders,
   type CityAnchor, type SearchOrigin,
 } from '@/lib/matching';
+import { styleFor } from '@/lib/categories';
 
 /* Step 11: the list is now RANKED, not sorted by star average. Two sources feed the same card:
    the search_providers RPC once we know where the customer is (ranked by proximity + the Step-7
@@ -47,20 +48,8 @@ type Card = {
   distanceKm: number | null;
 };
 
-const categoryGradient: Record<string, string> = {
-  electrician: 'from-amber-500 to-orange-600',
-  'house-cleaning': 'from-pink-500 to-rose-600',
-  plumber: 'from-blue-500 to-cyan-600',
-  'home-cook': 'from-red-500 to-orange-500',
-  'farm-fresh': 'from-green-500 to-emerald-600',
-  delivery: 'from-orange-500 to-amber-500',
-  doctor: 'from-teal-500 to-cyan-600',
-  carpenter: 'from-yellow-500 to-amber-600',
-  caretaker: 'from-purple-500 to-violet-600',
-  tutor: 'from-indigo-500 to-purple-600',
-  'appliance-repair': 'from-gray-500 to-slate-600',
-  beauty: 'from-rose-500 to-pink-600',
-};
+/* Category colours live in lib/categories.ts — this page carried its own partial copy covering 12
+   of 25 slugs, so half the catalog rendered slate-grey. One map, one place, with a default. */
 
 function initials(name: string | null): string {
   if (!name) return '?';
@@ -268,7 +257,7 @@ export default function ProvidersPage() {
             ) : (
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
                 {filtered.map((p) => {
-                  const gradient = categoryGradient[p.categorySlug] ?? 'from-slate-500 to-slate-600';
+                  const gradient = styleFor(p.categorySlug).gradient;
                   const distance = formatDistance(p.distanceKm);
                   return (
                     <Link

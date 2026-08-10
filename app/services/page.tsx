@@ -5,8 +5,6 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   Search, MapPin, Star, Filter, ChevronDown, SlidersHorizontal,
-  Zap, Wrench, ChefHat, Sparkles, Heart, Car, Stethoscope,
-  GraduationCap, Settings, Hammer, Leaf, Scissors, ShoppingBasket, Truck,
   CheckCircle, Clock, X, Navigation, Loader2
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
@@ -15,23 +13,7 @@ import {
   DEFAULT_RADIUS_KM, fetchCityAnchors, formatDistance, requestBrowserLocation, searchProviders,
   type CityAnchor, type SearchOrigin,
 } from '@/lib/matching';
-
-const categories = [
-  { icon: Zap, name: 'Electrician', slug: 'electrician', color: '#FF9933' },
-  { icon: Wrench, name: 'Plumber', slug: 'plumber', color: '#3b82f6' },
-  { icon: ChefHat, name: 'Home Cook', slug: 'home-cook', color: '#ef4444' },
-  { icon: Sparkles, name: 'Cleaning', slug: 'house-cleaning', color: '#22c55e' },
-  { icon: Heart, name: 'Caretaker', slug: 'caretaker', color: '#ec4899' },
-  { icon: Car, name: 'Driver', slug: 'driver', color: '#94a3b8' },
-  { icon: Stethoscope, name: 'Doctor', slug: 'doctor', color: '#14b8a6' },
-  { icon: GraduationCap, name: 'Tutor', slug: 'tutor', color: '#a855f7' },
-  { icon: Settings, name: 'Appliance', slug: 'appliance-repair', color: '#6366f1' },
-  { icon: Hammer, name: 'Carpenter', slug: 'carpenter', color: '#f59e0b' },
-  { icon: Leaf, name: 'Gardening', slug: 'gardening', color: '#84cc16' },
-  { icon: Scissors, name: 'Beauty', slug: 'beauty', color: '#f43f5e' },
-  { icon: ShoppingBasket, name: 'Farm Fresh', slug: 'farm-fresh', color: '#10b981' },
-  { icon: Truck, name: 'Delivery', slug: 'delivery', color: '#f97316' },
-];
+import { chipLabel, fetchCategories, styleFor, type CategoryRow } from '@/lib/categories';
 
 type ProviderCard = {
   id: string;
@@ -50,17 +32,6 @@ type ProviderCard = {
   bio: string | null;
   /* Step 11: null until we know where the customer is. Distance, never coordinates. */
   distanceKm: number | null;
-};
-
-const categoryGradient: Record<string, string> = {
-  electrician: 'from-amber-500 to-orange-600',
-  'house-cleaning': 'from-pink-500 to-rose-600',
-  plumber: 'from-blue-500 to-cyan-600',
-  'home-cook': 'from-red-500 to-orange-500',
-  'farm-fresh': 'from-green-500 to-emerald-600',
-  delivery: 'from-orange-500 to-amber-500',
-  doctor: 'from-teal-500 to-cyan-600',
-  carpenter: 'from-yellow-500 to-amber-600',
 };
 
 function initials(name: string | null): string {
@@ -85,9 +56,13 @@ function ServicesContent() {
   const [locationNote, setLocationNote] = useState<string | null>(null);
   const [cityChoice, setCityChoice] = useState('');
   const [anchors, setAnchors] = useState<CityAnchor[]>([]);
-  // slug → category id, so the chosen category can be pushed INTO the RPC instead of being
-  // filtered out of its results afterwards.
-  const [categoryIds, setCategoryIds] = useState<Record<string, string>>({});
+  /* The category chips come from the DB, not a hardcoded array: service_categories is
+     admin-managed, so a mirrored list goes stale on the next insert. It already had — 11 of 25
+     categories (Laundry, Maid, Painter, Tailor, Security, Water Tanker…) could not be filtered
+     here at all. slug → id is kept alongside so the choice can be pushed INTO the RPC rather than
+     filtered out of its results afterwards. */
+  const [categories, setCategories] = useState<CategoryRow[]>([]);
+  const categoryIds = Object.fromEntries(categories.map((c) => [c.slug, c.id]));
 
   // The catalog always loads: it is the fallback when the customer won't share a location, and it
   // is what the city list is built from.
@@ -117,7 +92,7 @@ function ServicesContent() {
           is_verified: p.is_verified,
           is_available: p.is_available,
           avatar: initials(p.business_name),
-          color: categoryGradient[p.service_categories?.slug ?? ''] ?? 'from-slate-500 to-slate-600',
+          color: styleFor(p.service_categories?.slug).gradient,
           bio: p.bio,
           distanceKm: null,
         }));
@@ -131,10 +106,7 @@ function ServicesContent() {
   useEffect(() => {
     let mounted = true;
     fetchCityAnchors().then((list) => { if (mounted) setAnchors(list); });
-    supabase.from('service_categories').select('id, slug').then(({ data }) => {
-      if (!mounted || !data) return;
-      setCategoryIds(Object.fromEntries(data.map((c: any) => [c.slug, c.id])));
-    });
+    fetchCategories().then((list) => { if (mounted) setCategories(list); });
     return () => { mounted = false; };
   }, []);
 
@@ -172,7 +144,7 @@ function ServicesContent() {
       is_verified: p.is_verified,
       is_available: p.is_available,
       avatar: initials(p.business_name),
-      color: categoryGradient[p.category_slug ?? ''] ?? 'from-slate-500 to-slate-600',
+      color: styleFor(p.category_slug).gradient,
       bio: p.bio,
       distanceKm: p.distance_km,
     })));
@@ -308,20 +280,25 @@ function ServicesContent() {
           >
             All Services
           </button>
-          {categories.map((cat) => (
-            <button
-              key={cat.slug}
-              onClick={() => setSelectedCategory(selectedCategory === cat.slug ? '' : cat.slug)}
-              className={`flex-shrink-0 flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
-                selectedCategory === cat.slug
-                  ? 'bg-[#FF9933] text-white shadow-lg shadow-[#FF9933]/20'
-                  : 'bg-[#1a1a1a] border border-[#2a2a2a] text-gray-300 hover:border-[#FF9933]/50'
-              }`}
-            >
-              <cat.icon className="w-4 h-4" style={{ color: selectedCategory === cat.slug ? 'white' : cat.color }} />
-              {cat.name}
-            </button>
-          ))}
+          {categories.map((cat) => {
+            const { icon: Icon, color } = styleFor(cat.slug);
+            const active = selectedCategory === cat.slug;
+            return (
+              <button
+                key={cat.slug}
+                onClick={() => setSelectedCategory(active ? '' : cat.slug)}
+                title={cat.name}
+                className={`flex-shrink-0 flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+                  active
+                    ? 'bg-[#FF9933] text-white shadow-lg shadow-[#FF9933]/20'
+                    : 'bg-[#1a1a1a] border border-[#2a2a2a] text-gray-300 hover:border-[#FF9933]/50'
+                }`}
+              >
+                <Icon className="w-4 h-4" style={{ color: active ? 'white' : color }} />
+                {chipLabel(cat.name)}
+              </button>
+            );
+          })}
         </div>
 
         <div className="flex flex-col lg:flex-row gap-8">

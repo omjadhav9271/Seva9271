@@ -395,6 +395,35 @@ try {
        categories that exist — noted in the decisions log, pre-dates Step 11.) */
     const { data: cats } = await service.from('service_categories').select('id, name, slug');
     await send('Page.navigate', { url: `${APP}/services` });
+    const labelOf = (name) => {
+      const short = name.split('/')[0].trim();
+      return short.length <= 20 ? short : short.split('&')[0].trim();
+    };
+    /* Wait for THIS page before waiting for anything on it. A category label is not a unique
+       marker — /providers renders category names on its cards, so waiting for "Appliance Repair"
+       matched the page we were leaving, and the chips were then read off /providers, which has
+       none. Anchor on the <h1> first, then on a chip. */
+    await waitFor(`document.querySelector('h1') &&
+      document.querySelector('h1').textContent.includes('Browse Services')`,
+      { label: 'the /services heading', timeout: 60000 });
+    const firstLabel = labelOf((cats ?? [{ name: 'Electrician' }])[0].name);
+    await waitFor(`[...document.querySelectorAll('button')]
+      .some(b => b.textContent.trim() === ${JSON.stringify(firstLabel)})`,
+      { label: `a category chip ("${firstLabel}")`, timeout: 60000 });
+
+    /* REGRESSION: the chips must come from service_categories, not a hardcoded mirror of it.
+       The page shipped a 14-entry array against a 25-row table, so Laundry, Maid, Mason, Painter,
+       Security, Tailor, Water Tanker, Mobile Repair, Cycle Repair, Auto Rickshaw and Cow Dung
+       could not be filtered here at all. Categories are admin-managed, so a mirrored list goes
+       stale on the very next insert. */
+    {
+      const chipTexts = await evaluate(`[...document.querySelectorAll('button')]
+        .map(b => b.textContent.trim()).filter(Boolean)`);
+      const missing = (cats ?? []).filter((c) => !chipTexts.includes(labelOf(c.name)));
+      if (missing.length === 0) ok(`all ${cats.length} categories from the DB have a chip`);
+      else no(`${missing.length} categories have no chip: ` + missing.map((c) => c.name).join(', '));
+    }
+
     await waitFor(`document.body.innerText.includes('providers found')`, { label: 'the services list', timeout: 60000 });
     await sleep(2000);   // let the slug→id map land before the category is picked
     const chips = await evaluate(`[...document.querySelectorAll('button')]
