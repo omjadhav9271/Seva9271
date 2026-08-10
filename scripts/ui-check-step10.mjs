@@ -42,9 +42,10 @@ const env = Object.fromEntries(
 const service = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY,
   { auth: { persistSession: false, autoRefreshToken: false } });
 
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, skip = 0;
 const ok = (m) => { console.log('  ✓ PASS  ' + m); pass++; };
 const no = (m) => { console.log('  ✗ FAIL  ' + m); fail++; };
+const sk = (m) => { console.log('  – SKIP  ' + m); skip++; };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const CHROME = [
@@ -326,6 +327,23 @@ try {
   if (pay.found && pay.comingSoon >= 2) ok('...both are labelled "Coming soon" rather than left as mystery dead buttons (item 22)');
   else if (pay.found) no(`only ${pay.comingSoon} deferred method(s) carry a "Coming soon" label`);
 
+  /* The service address is now required on BOTH booking paths (20260823120000) — someone has to
+     travel to this job, so an offer without an address is not a bookable offer. Filling it here is
+     not incidental setup: without it handleOffer refuses, and this whole section would fail at
+     "Send offer" with no clue why. */
+  const SERVICE_ADDRESS = 'Flat 9, Seaview CHS, Carter Road, Bandra West';
+  const SERVICE_PINCODE = '400050';
+  await evaluate(`(() => {
+    ${REACT_SET}
+    const addr = document.querySelector('textarea[aria-label="Service address"]');
+    const pin = document.querySelector('input[aria-label="Service pincode"]');
+    if (!addr || !pin) return false;
+    reactSet(addr, ${JSON.stringify(SERVICE_ADDRESS)});
+    reactSet(pin, ${JSON.stringify(SERVICE_PINCODE)});
+    return true;
+  })()`);
+  await sleep(300);
+
   // make the offer
   if (await clickContaining('Make an offer')) ok('opened the offer sheet');
   else no('could not open the offer sheet');
@@ -387,10 +405,51 @@ try {
   if (!new RegExp(`\\b${FLOOR}\\b`).test(provPanel)) ok(`the floor (₹${FLOOR}) is not printed on the booking page`);
   else no(`the floor ₹${FLOOR} leaked onto the booking page`);
 
+  /* ---- the customer's address is WITHHELD until this offer is accepted (20260823120000) ----
+     A booking under negotiation is not yet a job, so the provider gets the pincode and nothing
+     more. Asserted against the page PAYLOAD, not just the visible text: an address rendered and
+     then hidden by CSS would still have been handed to the browser. */
+  const preReveal = await evaluate(`(() => ({
+    text: document.body.innerText,
+    payload: document.documentElement.innerHTML,
+  }))()`);
+  if (!preReveal.text.includes('Carter Road') && !preReveal.payload.includes('Carter Road')) {
+    ok('provider, offer still open: the service address is nowhere in the page');
+  } else {
+    no('🔴 the provider can read the customer address BEFORE accepting');
+  }
+  if (new RegExp(`${SERVICE_PINCODE}`).test(preReveal.text)) ok(`...but the pincode (${SERVICE_PINCODE}) IS shown, so they can judge the trip`);
+  else no('the provider is shown no locality at all before accepting — they cannot judge the job');
+
+  // A marker that does NOT survive a reload, so the next check proves the reveal was LIVE.
+  await evaluate(`(window.__revealMarker = 'alive', true)`);
+
   // accept, and confirm the price locks in the UI
   if (await clickContaining(`Accept ₹${OFFER}`)) ok('provider clicked Accept');
   else no('could not click Accept');
   await sleep(3000);
+
+  /* ---- ...and it appears the moment they accept, WITHOUT a reload ----
+     REGRESSION (found in the browser 2026-08-10, fixed same day). handleTransition updates the
+     status OPTIMISTICALLY, so the effect that re-reads the address fired while transition_booking
+     was still in flight: the RPC correctly answered "still requested → withheld", the status never
+     changed a second time, and the provider sat looking at "unlocks once you accept" on an
+     ALREADY ACCEPTED booking until they reloaded. The DB was right throughout — only the page
+     asked too early. Hence the explicit refresh after the server confirms, and hence this check. */
+  const postReveal = await evaluate(`(() => ({
+    text: document.body.innerText,
+    live: window.__revealMarker === 'alive',
+    mapsLinks: [...document.querySelectorAll('a[href*="google.com/maps"]')].length,
+  }))()`);
+  if (!postReveal.live) {
+    sk('the page reloaded during accept — cannot prove the reveal was live');
+  } else if (postReveal.text.includes('Carter Road')) {
+    ok('accepting reveals the full address IN PLACE — no reload needed');
+  } else {
+    no('🔴 after accepting, the provider still cannot see the address without reloading');
+  }
+  if (postReveal.mapsLinks > 0) ok(`...with a working "Open in Google Maps" link (${postReveal.mapsLinks} map link(s))`);
+  else no('no Google Maps link appeared after the reveal — the provider cannot navigate');
   const { data: settled } = await service.from('bookings')
     .select('status, price_agreed').eq('id', bookingId).maybeSingle();
   if (settled.status === 'accepted' && Number(settled.price_agreed) === OFFER)
@@ -434,5 +493,5 @@ try {
   try { chrome?.kill(); } catch {}
 }
 
-console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
+console.log(`\nRESULT: ${pass} passed, ${fail} failed, ${skip} skipped`);
 process.exit(fail === 0 ? 0 : 1);

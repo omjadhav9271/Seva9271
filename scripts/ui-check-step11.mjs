@@ -28,6 +28,12 @@ import { createClient } from '@supabase/supabase-js';
 const APP = 'http://localhost:3000';
 // Mumbai centre — the same anchor the app uses as its city fallback.
 const ORIGIN = { lat: 19.0760, lng: 72.8777 };
+/* The FIRST rung of the widening ladder in lib/matching.ts. Every "what should the page show"
+   figure below is computed at this radius, because the page stops widening as soon as a rung
+   returns three providers — and Mumbai centre is dense, so it never leaves the first one. If a
+   check here starts failing by showing MORE than expected, suspect that the data thinned out and
+   the page widened, not that a filter broke. */
+const NEAR_KM = 15;
 
 const env = Object.fromEntries(
   readFileSync('.env.local', 'utf8').split(/\r?\n/)
@@ -159,7 +165,7 @@ try {
   // Ground truth straight from the DB: what the ranking SHOULD be, and the real coordinates that
   // must never appear in the browser.
   const { data: expected, error: rpcErr } = await service.rpc('search_providers', {
-    p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null, p_radius_km: 25, p_limit: 30,
+    p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null, p_radius_km: NEAR_KM, p_limit: 30,
   });
   if (rpcErr) { console.log('Cannot run: search_providers failed — ' + rpcErr.message); process.exit(1); }
   if (!expected?.length) { console.log('Cannot run: no geocoded approved providers to rank.'); process.exit(0); }
@@ -214,7 +220,17 @@ try {
 
   // ================= 1) /providers — the catalog fallback is the starting state =================
   console.log('[/providers: before sharing a location]');
-  await setGeolocation({ granted: true, ...ORIGIN });
+  /* Permission DENIED here, and that is the whole point of the section.
+     This used to grant geolocation and then assert the un-located state, which was harmless while
+     the page only read a position when "Use my location" was clicked. It is no longer: the search
+     control now PREFILLS from the device when permission has already been given (that is the
+     feature — a returning customer should not have to ask twice), so a granted browser ranks on
+     load and this section was asserting against a page that had correctly moved on.
+     It passed standalone and failed inside verify-all, which is the signature of a race, not of a
+     wrong expectation — the check was racing the prefill's two awaits and usually winning on an
+     idle machine. Denying the permission makes the precondition explicit instead of inherited, so
+     the un-located state is now reached deterministically rather than by being quick. */
+  await setGeolocation({ granted: false });
   await send('Page.navigate', { url: `${APP}/providers` });
   await waitFor(`document.body.innerText.includes('Showing')`, { label: 'the providers list', timeout: 60000 });
   {
@@ -229,6 +245,28 @@ try {
 
     if (!/km away/i.test(body)) ok('no distances shown before a location is known (nothing invented)');
     else no('distances appeared without a location being shared');
+  }
+
+  /* ===== 1b) an ALREADY-PERMITTED browser prefills, without being asked twice =====
+     The other half of the section above, and the reason it had to change. A customer who has
+     already granted location should land on ranked results; making them click "Use my location"
+     every visit is asking a question they have answered. Crucially this must NOT prompt — it only
+     reads a position when the permission is already granted. */
+  console.log('\n[/providers: an already-permitted browser prefills on load]');
+  {
+    await setGeolocation({ granted: true, ...ORIGIN });
+    await send('Page.navigate', { url: `${APP}/providers` });
+    await waitFor(`document.body.innerText.includes('Showing')`, { label: 'the providers list', timeout: 60000 });
+    try {
+      await waitFor(`document.body.innerText.includes('km away') || document.body.innerText.includes('m away')`,
+        { label: 'distances without any click', timeout: 20000 });
+      ok('a browser that already granted location ranks on load — nothing to click');
+      const shownLabel = await evaluate(`(document.body.innerText.match(/Searching near\\s*\\n?\\s*([^\\n]+)/) || [])[1] || null`);
+      if (shownLabel) ok(`...and says where it is searching from ("${shownLabel}"), editably`);
+      else no('the prefilled location is not shown back to the customer');
+    } catch {
+      no('an already-permitted browser did NOT prefill — the customer must ask twice');
+    }
   }
 
   // ================= 2) "Use my location" ranks by the RPC =================
@@ -369,8 +407,16 @@ try {
     } else {
       await setGeolocation({ granted: true, ...ORIGIN });
       await send('Page.navigate', { url: `${APP}/providers` });
-      await waitFor(`document.querySelectorAll('select option').length > 1`, { label: 'city options', timeout: 60000 });
-      const options = await evaluate(`[...document.querySelectorAll('select option')]
+      /* Scope BOTH the wait and the read to the city dropdown by its aria-label. These used to say
+         `document.querySelectorAll('select')`, which was fine when the page had exactly one — the
+         sort control added a second, and the loose version then (a) waited on the SORT select's
+         options, which render immediately, so it stopped waiting before the city anchors had
+         arrived from the DB, and (b) read "reviews / price_low / price_high" back as if they were
+         cities that could not rank. Both failures pointed at the app; both were this selector. */
+      const CITY_SELECT = `select[aria-label="Search from a city"]`;
+      await waitFor(`(document.querySelector('${CITY_SELECT}') || { options: [] }).options.length > 1`,
+        { label: 'city options', timeout: 60000 });
+      const options = await evaluate(`[...document.querySelector('${CITY_SELECT}').options]
         .slice(1).map(o => o.value)`);
       const anchorCities = cityAnchors.map((c) => c.city);
       const unrankable = options.filter((o) => !anchorCities.includes(o));
@@ -379,9 +425,11 @@ try {
 
       // And prove it end to end on the biggest one, rather than trusting the list comparison.
       const target = anchorCities[0];
-      const picked = await evaluate(`(() => { const s = document.querySelector('select');
+      const picked = await evaluate(`(() => { const s = document.querySelector('${CITY_SELECT}');
+        if (!s || ![...s.options].some(o => o.value === ${JSON.stringify(target)})) return false;
         const set = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype,'value').set;
         set.call(s, ${JSON.stringify(target)}); s.dispatchEvent(new Event('change',{bubbles:true})); return true; })()`);
+      if (!picked) no(`the city dropdown never offered "${target}" to pick`);
       if (picked) {
         try {
           await waitFor(`document.body.innerText.includes(${JSON.stringify('near ' + target)})`,
@@ -450,7 +498,7 @@ try {
       const chip = chips.find((t) => c.name.toLowerCase().startsWith(t.toLowerCase()));
       if (!chip) continue;
       const { data } = await service.rpc('search_providers', {
-        p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: c.id, p_radius_km: 25, p_limit: 500,
+        p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: c.id, p_radius_km: NEAR_KM, p_limit: 500,
       });
       if ((data?.length ?? 0) > (best?.count ?? 0)) best = { ...c, chip, count: data.length };
     }
@@ -491,10 +539,10 @@ try {
     const cat = (cats ?? []).find((c) => c.name.toLowerCase().includes(term));
     const { data: expectedRows } = await service.rpc('search_providers', {
       p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null,
-      p_radius_km: 25, p_limit: 500, p_query: term,
+      p_radius_km: NEAR_KM, p_limit: 500, p_query: term,
     });
     const { data: top30 } = await service.rpc('search_providers', {
-      p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null, p_radius_km: 25, p_limit: 30,
+      p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null, p_radius_km: NEAR_KM, p_limit: 30,
     });
     const inTop30 = (top30 ?? []).filter((p) => (p.category_name ?? '').toLowerCase().includes(term)
       || (p.business_name ?? '').toLowerCase().includes(term)).length;
@@ -544,7 +592,7 @@ try {
   {
     const term = 'electric';
     const { data: everything } = await service.rpc('search_providers', {
-      p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null, p_radius_km: 25, p_limit: 500, p_query: null,
+      p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null, p_radius_km: NEAR_KM, p_limit: 500, p_query: null,
     });
     const hits = (r) => (r.business_name ?? '').toLowerCase().includes(term)
       || (r.category_name ?? '').toLowerCase().includes(term);
@@ -653,7 +701,7 @@ try {
   console.log('\n[/services: rating and availability filter the query]');
   {
     const { data: everything } = await service.rpc('search_providers', {
-      p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null, p_radius_km: 25, p_limit: 500,
+      p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null, p_radius_km: NEAR_KM, p_limit: 500,
       p_query: null, p_min_rating: null, p_available_only: false,
     });
     const inRange = everything ?? [];
@@ -665,8 +713,11 @@ try {
         naive: inRange.slice(0, 60).filter((p) => Number(p.rating) >= 4).length,
       },
       {
-        label: 'Available Now',
-        click: `document.querySelector('button[role="switch"][aria-label="Available Now"]')`,
+        // Now a plain checkbox in the results toolbar rather than a switch in the sidebar — the
+        // control moved to where the results are, but the property under test is unchanged: it
+        // must filter the QUERY, not the page.
+        label: 'Available now',
+        click: `document.querySelector('input[type="checkbox"][aria-label="Available now"]')`,
         expected: Math.min(inRange.filter((p) => p.is_available).length, 60),
         naive: inRange.slice(0, 60).filter((p) => p.is_available).length,
       },
@@ -689,6 +740,144 @@ try {
       else no(`/services: "${c.label}" showed ${shown}, expected ${c.expected} — filtering the returned page, not the query`);
       if (c.expected > c.naive) ok(`…more than filtering the 60 rows it had would have found (${c.naive})`);
       else sk(`every "${c.label}" match already sat in the top 60, so this data cannot prove the difference`);
+    }
+  }
+
+  /* ===== 10c) the sort toggle re-orders the RESULT SET, not the page =====
+     The same family as every filter before it. A client-side "Top rated" over a match-ranked cut
+     shows the best rated OF THE 60 THAT CAME BACK, which looks like a working control while the
+     genuinely best-rated provider in range sits unreachable at rank 61. So the assertion is not
+     "the order changed" but "the first card is the best-rated provider IN RANGE". */
+  console.log('\n[/services: the sort runs in the query]');
+  {
+    const { data: byRating } = await service.rpc('search_providers', {
+      p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null, p_radius_km: NEAR_KM, p_limit: 60,
+      p_query: null, p_min_rating: null, p_available_only: false, p_sort: 'rating',
+    });
+    const { data: byMatch } = await service.rpc('search_providers', {
+      p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null, p_radius_km: NEAR_KM, p_limit: 60,
+      p_query: null, p_min_rating: null, p_available_only: false, p_sort: 'match',
+    });
+
+    if (!byRating?.length || !byMatch?.length) {
+      sk('nothing in range to sort');
+    } else if (byRating[0].id === byMatch[0].id) {
+      sk('the best match is also the best rated here — this data cannot tell the two sorts apart');
+    } else {
+      await setGeolocation({ granted: true, ...ORIGIN });
+      await send('Page.navigate', { url: `${APP}/services` });
+      await waitFor(`document.querySelector('h1') !== null`, { label: 'the /services heading', timeout: 60000 });
+      const located = await clickUntil('Use my location', `document.body.innerText.includes('km away') ||
+        document.body.innerText.includes('m away')`);
+      if (!located) {
+        no('could not rank /services for the sort check');
+      } else {
+        const first = (await cardNames())[0];
+        if (first === byMatch[0].business_name) ok(`"Best match" is the default — first card is ${first}`);
+        else no(`default sort showed ${first}, expected the best match ${byMatch[0].business_name}`);
+
+        const clicked = await clickContaining('Top rated');
+        if (!clicked) { no('could not find the "Top rated" sort control'); }
+        else {
+          await sleep(2500);   // debounce (350ms) + round-trip
+          const top = (await cardNames())[0];
+          if (top === byRating[0].business_name) {
+            ok(`"Top rated" leads with the best-rated provider in range (${top}, ${byRating[0].rating}★)`);
+          } else {
+            no(`"Top rated" led with ${top}; the best-rated in range is ${byRating[0].business_name} (${byRating[0].rating}★)`);
+          }
+          // The naive version would have re-sorted the 60 match-ranked rows it already had.
+          const naiveBest = Math.max(...byMatch.slice(0, 60).map((p) => Number(p.rating)));
+          if (Number(byRating[0].rating) > naiveBest) {
+            ok(`…higher than re-sorting the rows it had would have reached (${naiveBest}★)`);
+          } else {
+            sk('the best-rated provider already sat in the match-ranked page, so this cannot prove the difference');
+          }
+        }
+
+        const nearest = await clickContaining('Nearest');
+        if (nearest) {
+          await sleep(2500);
+          const dists = await evaluate(`[...document.querySelectorAll('a[href^="/providers/"]')]
+            .map(a => (a.innerText.match(/([\\d.]+) km away/) || a.innerText.match(/~(\\d+) m away/) || [])[0] || '')
+            .filter(Boolean)`);
+          const km = (dists ?? []).map((s) => s.includes('km') ? parseFloat(s) : parseFloat(s.replace('~', '')) / 1000);
+          if (km.length > 1 && km.every((d, i) => i === 0 || km[i - 1] <= d + 0.05)) {
+            ok(`"Nearest" orders the page near→far (${km[0]} … ${km[km.length - 1]} km)`);
+          } else {
+            no('"Nearest" did not produce an ascending distance order: ' + km.join(', '));
+          }
+        } else {
+          no('could not find the "Nearest" sort control');
+        }
+      }
+    }
+  }
+
+  /* ===== 10d) NO BLANK SCREEN: the search widens, and stops honestly =====
+     A fixed 25 km radius returned an empty page whenever the nearest provider was 26 km away —
+     which reads as a broken product rather than as thin supply. The page must now widen to find
+     the nearest people, and where nobody is reachable it must SAY so rather than render nothing. */
+  console.log('\n[no blank screen: widening, then an honest empty state]');
+  {
+    // A sparse origin: few or nothing near, people further out.
+    const SPARSE = [
+      { name: 'Karjat', lat: 18.9107, lng: 73.3233 },
+      { name: 'Alibaug', lat: 18.6414, lng: 72.8722 },
+      { name: 'Lonavala', lat: 18.7546, lng: 73.4062 },
+    ];
+    let chosen = null;
+    for (const c of SPARSE) {
+      const near = await service.rpc('search_providers', {
+        p_lat: c.lat, p_lng: c.lng, p_category_id: null, p_radius_km: NEAR_KM, p_limit: 60,
+        p_query: null, p_min_rating: null, p_available_only: false, p_sort: 'match',
+      });
+      const wide = await service.rpc('search_providers', {
+        p_lat: c.lat, p_lng: c.lng, p_category_id: null, p_radius_km: 150, p_limit: 60,
+        p_query: null, p_min_rating: null, p_available_only: false, p_sort: 'match',
+      });
+      if ((near.data ?? []).length < 3 && (wide.data ?? []).length >= 3) { chosen = c; break; }
+    }
+
+    if (!chosen) {
+      sk('no sparse-then-populated origin in the current data — widening cannot be shown in the browser');
+    } else {
+      await setGeolocation({ granted: true, lat: chosen.lat, lng: chosen.lng });
+      await send('Page.navigate', { url: `${APP}/services` });
+      await waitFor(`document.querySelector('h1') !== null`, { label: 'the /services heading', timeout: 60000 });
+      const located = await clickUntil('Use my location', `document.body.innerText.includes('km away') ||
+        document.body.innerText.includes('Nobody within')`);
+      if (!located) {
+        no(`could not rank /services from ${chosen.name}`);
+      } else {
+        await sleep(1500);
+        const cards = await evaluate(`document.querySelectorAll('a[href^="/providers/"]').length`);
+        const body = await text();
+        if (cards > 0) ok(`${chosen.name}: ${cards} providers shown where a fixed ${NEAR_KM} km radius would have shown NONE`);
+        else no(`${chosen.name}: the page is still empty — it did not widen`);
+        if (body.includes('Nobody within')) ok('…and the page SAYS it had to look further out');
+        else no('the page widened silently — the customer is not told why the nearest is far away');
+      }
+    }
+
+    // The other end: somewhere genuinely uncovered. Never blank, never an absurd match.
+    const REMOTE = { lat: 23.6, lng: 78.9 };   // rural Madhya Pradesh
+    await setGeolocation({ granted: true, ...REMOTE });
+    await send('Page.navigate', { url: `${APP}/services` });
+    await waitFor(`document.querySelector('h1') !== null`, { label: 'the /services heading', timeout: 60000 });
+    await clickUntil('Use my location', `document.body.innerText.includes('No providers serve your area yet') ||
+      document.body.innerText.includes('km away')`, { attempts: 3 });
+    await sleep(1500);
+    {
+      const cards = await evaluate(`document.querySelectorAll('a[href^="/providers/"]').length`);
+      const body = await text();
+      if (body.includes('No providers serve your area yet')) {
+        ok('an uncovered location gets the honest empty state, not a blank column');
+      } else {
+        no('an uncovered location produced neither results nor an explanation: ' + body.slice(0, 160).replace(/\n/g, ' '));
+      }
+      if (cards === 0) ok('…and offers nobody — no 400 km "match" dressed up as local');
+      else no(`${cards} providers were offered from an uncovered location`);
     }
   }
 

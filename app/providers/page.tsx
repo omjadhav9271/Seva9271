@@ -2,13 +2,16 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { Search, Star, MapPin, Clock, CheckCircle, Users, Navigation, Loader2 } from 'lucide-react';
+import { Search, Star, MapPin, Clock, CheckCircle, Users, Compass } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import type { ProviderSearchResult } from '@/lib/supabase';
 import {
-  DEFAULT_RADIUS_KM, fetchCityAnchors, formatDistance, requestBrowserLocation, searchProviders,
-  type CityAnchor, type SearchOrigin,
+  MAX_RADIUS_KM, RADIUS_STEPS_KM, catalogComparator, effectiveSort, fetchCityAnchors,
+  formatDistance, searchProvidersWidening,
+  type CityAnchor, type SearchOrigin, type SortMode,
 } from '@/lib/matching';
+import SearchLocation from '@/components/search-location';
+import SearchControls from '@/components/search-controls';
 import { styleFor } from '@/lib/categories';
 
 /* Step 11: the list is now RANKED, not sorted by star average. Two sources feed the same card:
@@ -60,11 +63,13 @@ export default function ProvidersPage() {
   const [catalog, setCatalog] = useState<ProviderRow[]>([]);
   const [ranked, setRanked] = useState<ProviderSearchResult[] | null>(null);
   const [loading, setLoading] = useState(true);
-  const [locating, setLocating] = useState(false);
   const [origin, setOrigin] = useState<SearchOrigin | null>(null);
   const [locationNote, setLocationNote] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [cityFilter, setCityFilter] = useState('');
+  const [sortBy, setSortBy] = useState<SortMode>('match');
+  const [availableOnly, setAvailableOnly] = useState(false);
+  // Which radius produced the rows on screen — shown when it isn't the near one.
+  const [radiusKm, setRadiusKm] = useState<number | null>(null);
   // The cities we can actually rank from. Built from the data, so the dropdown can never offer a
   // city that then silently degrades to the unranked list.
   const [anchors, setAnchors] = useState<CityAnchor[]>([]);
@@ -96,61 +101,47 @@ export default function ProvidersPage() {
     return () => { mounted = false; };
   }, []);
 
-  /* The typed text goes INTO the query. It used to filter the 30 rows the RPC had already ranked,
-     which meant "electrician" searched whatever happened to come back rather than the electricians
-     in range — a nearer, better-rated one sitting at rank 31 was invisible while the box looked
-     like it worked. Same defect as the category filter, one page over. */
-  const runSearch = useCallback(async (next: SearchOrigin, query = '') => {
+  /* The typed text, the sort and the availability filter all go INTO the query. The text used to
+     filter the 30 rows the RPC had already ranked, which meant "electrician" searched whatever
+     happened to come back rather than the electricians in range — a nearer, better-rated one at
+     rank 31 was invisible while the box looked like it worked.
+
+     Widening, not a fixed radius: 15 km, then 50, then 150, stopping as soon as three come back.
+     A hard 25 km cut showed a blank page the moment the nearest provider was 26 km away, which
+     reads as a broken product rather than as thin supply. Filters ride along unchanged — widening
+     finds more people, it must never quietly relax what the customer asked for. */
+  const runSearch = useCallback(async (next: SearchOrigin) => {
     setOrigin(next);
-    const res = await searchProviders({ origin: next, radiusKm: DEFAULT_RADIUS_KM, query });
+    const res = await searchProvidersWidening({
+      origin: next, query: search, sort: sortBy, availableOnly,
+    });
     if ('error' in res) {
       console.error('search_providers failed:', res.error);
       setRanked(null);
+      setRadiusKm(null);
       setLocationNote('Could not rank by distance just now — showing all providers instead.');
       return;
     }
     setRanked(res.data);
+    setRadiusKm(res.radiusKm);
     setLocationNote(null);
-  }, []);
+  }, [search, sortBy, availableOnly]);
 
-  // Re-query as they type, but not on every keystroke.
+  /* ONE debounced re-query for everything that belongs in the query — the typed text, the sort and
+     the availability filter. runSearch takes no filter arguments on purpose (the same shape
+     /services adopted): it reads current state, so a new control cannot be half-wired by forgetting
+     to thread it through one call site. */
   useEffect(() => {
     if (!origin || !ranked) return;
-    const t = setTimeout(() => { runSearch(origin, search); }, 350);
+    const t = setTimeout(() => { runSearch(origin); }, 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search]);
+  }, [search, sortBy, availableOnly]);
 
-  const useMyLocation = async () => {
-    setLocating(true);
-    setLocationNote(null);
-    const pos = await requestBrowserLocation();
-    setLocating(false);
-    if ('error' in pos) {
-      // Declined or unavailable — stay on the catalog and say so plainly.
-      setRanked(null);
-      setOrigin(null);
-      setLocationNote(pos.error);
-      return;
-    }
-    await runSearch({ ...pos, label: 'your location' }, search);
-  };
-
-  // Every city in the dropdown comes from city_anchors(), so picking one always ranks. The old
-  // version looked the city up in a hardcoded map and quietly showed the unranked catalog when it
-  // missed — which is precisely how Kalyan, Bengaluru and Mumbai Suburban ended up with no
-  // ordering and no distances.
-  const onCityChange = async (city: string) => {
-    setCityFilter(city);
-    if (!city) {
-      if (origin?.label !== 'your location') { setOrigin(null); setRanked(null); }
-      return;
-    }
-    const anchor = anchors.find((a) => a.city === city);
-    if (!anchor) { setLocationNote(`We don't have enough providers in ${city} to search from yet.`); return; }
-    setLocationNote(null);
-    await runSearch({ lat: anchor.lat, lng: anchor.lng, label: city }, search);
-  };
+  const handleOrigin = useCallback((next: SearchOrigin | null) => {
+    if (!next) { setOrigin(null); setRanked(null); setRadiusKm(null); return; }
+    void runSearch(next);
+  }, [runSearch]);
 
   const cards: Card[] = ranked
     ? ranked.map((p) => ({
@@ -191,11 +182,17 @@ export default function ProvidersPage() {
     // for catalog mode, where there is no query to push down.
     const matchesSearch = ranked ? true
       : !search || name.toLowerCase().includes(search.toLowerCase()) || p.categoryName.toLowerCase().includes(search.toLowerCase());
-    // In ranked mode the radius already scopes the result set — re-filtering by city name would
-    // hide a provider 3 km away who happens to sit in the next municipality.
-    const matchesCity = ranked ? true : !cityFilter || (p.city ?? '').toLowerCase() === cityFilter.toLowerCase();
-    return matchesSearch && matchesCity;
+    // Availability is a query parameter in ranked mode, for the same reason as the text: applied
+    // here it could only sample the rows that came back.
+    const matchesAvailable = ranked ? true : (!availableOnly || p.is_available);
+    return matchesSearch && matchesAvailable;
   });
+
+  /* Ranked mode arrives pre-ordered by the query (p_sort) and must not be re-sorted — that would
+     re-shuffle a cut. Catalog mode is the COMPLETE approved list, so ordering it here orders the
+     whole set. See lib/matching.ts. */
+  const shownSort = effectiveSort(sortBy, Boolean(ranked));
+  const visible = ranked ? filtered : [...filtered].sort(catalogComparator(shownSort));
 
 
   return (
@@ -209,8 +206,8 @@ export default function ProvidersPage() {
           </div>
           <p className="text-gray-400 mb-6">Browse independent professionals on Seva — every one ID-verified before approval</p>
 
-          <div className="flex flex-col sm:flex-row gap-3 max-w-3xl">
-            <div className="flex-1 flex items-center gap-3 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3">
+          <div className="max-w-3xl space-y-3">
+            <div className="flex items-center gap-3 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3">
               <Search className="w-5 h-5 text-gray-500" />
               <input
                 type="text"
@@ -220,24 +217,7 @@ export default function ProvidersPage() {
                 className="flex-1 bg-transparent text-white placeholder-gray-500 text-sm focus:outline-none"
               />
             </div>
-            <button
-              type="button"
-              onClick={useMyLocation}
-              disabled={locating}
-              className="flex items-center justify-center gap-2 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3 text-sm text-white hover:border-[#FF9933] transition-colors disabled:opacity-60"
-            >
-              {locating
-                ? <><Loader2 className="w-4 h-4 animate-spin" />Finding you…</>
-                : <><Navigation className="w-4 h-4 text-[#FF9933]" />Use my location</>}
-            </button>
-            <select
-              value={cityFilter}
-              onChange={(e) => onCityChange(e.target.value)}
-              className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-[#FF9933] min-w-[150px]"
-            >
-              <option value="">All Cities</option>
-              {anchors.map((a) => <option key={a.city} value={a.city}>{a.city} ({a.provider_count})</option>)}
-            </select>
+            <SearchLocation anchors={anchors} origin={origin} onOrigin={handleOrigin} />
           </div>
 
           {locationNote && (
@@ -245,6 +225,16 @@ export default function ProvidersPage() {
               <MapPin className="w-3.5 h-3.5 text-gray-500" />{locationNote}
             </p>
           )}
+
+          <div className="mt-5">
+            <SearchControls
+              sort={shownSort}
+              onSort={setSortBy}
+              availableOnly={availableOnly}
+              onAvailableOnly={setAvailableOnly}
+              ranked={Boolean(ranked)}
+            />
+          </div>
         </div>
       </div>
 
@@ -253,26 +243,45 @@ export default function ProvidersPage() {
           <div className="text-center py-20 text-gray-400">Loading providers…</div>
         ) : (
           <>
-            <p className="text-gray-400 text-sm mb-6">
-              Showing <span className="text-white font-semibold">{filtered.length}</span> providers
+            <p className="text-gray-400 text-sm mb-2">
+              Showing <span className="text-white font-semibold">{visible.length}</span> providers
               {origin && ranked
-                ? <> near <span className="text-white font-semibold">{origin.label}</span>, best match first</>
+                ? <> near <span className="text-white font-semibold">{origin.label}</span></>
                 : <> — sorted by rating. <span className="text-gray-500">Share your location to rank by distance.</span></>}
             </p>
 
-            {filtered.length === 0 ? (
+            {/* Say it when we had to look further out, rather than leaving the customer to infer
+                it from the distance labels. */}
+            {ranked && visible.length > 0 && radiusKm !== null && radiusKm > RADIUS_STEPS_KM[0] && (
+              <p className="text-xs text-[#FF9933] mb-4 flex items-center gap-1.5">
+                <Compass className="w-3.5 h-3.5" />
+                Nobody within {RADIUS_STEPS_KM[0]} km — showing the nearest providers within {radiusKm} km.
+              </p>
+            )}
+
+            <div className="mb-6" />
+            {visible.length === 0 ? (
               <div className="text-center py-20">
-                <Users className="w-12 h-12 text-gray-600 mx-auto mb-4" />
-                <p className="text-gray-400 text-lg mb-2">No providers found</p>
-                <p className="text-gray-600 text-sm">
-                  {origin && ranked
-                    ? `No approved providers within ${DEFAULT_RADIUS_KM} km of ${origin.label} yet. Try another city.`
-                    : 'Try adjusting your search or city filter.'}
-                </p>
+                {ranked ? (
+                  <>
+                    <Compass className="w-12 h-12 text-gray-600 mx-auto mb-4" />
+                    <p className="text-gray-300 text-lg mb-2">No providers serve your area yet — we&apos;re expanding.</p>
+                    <p className="text-gray-500 text-sm">
+                      We looked up to {MAX_RADIUS_KM} km from {origin?.label ?? 'your location'}
+                      {(search || availableOnly) ? ' with your filters applied. Clearing a filter may help.' : '. Try another location in the meantime.'}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <Users className="w-12 h-12 text-gray-600 mx-auto mb-4" />
+                    <p className="text-gray-400 text-lg mb-2">No providers found</p>
+                    <p className="text-gray-600 text-sm">Try adjusting your search.</p>
+                  </>
+                )}
               </div>
             ) : (
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
-                {filtered.map((p) => {
+                {visible.map((p) => {
                   const gradient = styleFor(p.categorySlug).gradient;
                   const distance = formatDistance(p.distanceKm);
                   return (

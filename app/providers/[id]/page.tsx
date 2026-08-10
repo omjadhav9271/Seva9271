@@ -4,13 +4,14 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import {
   Star, MapPin, Clock, CheckCircle, ArrowLeft, Heart, Share2, Briefcase, Handshake,
-  Calendar, Shield, ShieldCheck, Award
+  Calendar, Shield, ShieldCheck, Award, Home, Crosshair, Loader2
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { useRouter } from 'next/navigation';
 import { supabase, type ReputationSnapshot } from '@/lib/supabase';
 import { makeOffer } from '@/lib/bargaining';
-import { COMING_SOON_PAYMENTS } from '@/lib/bookings';
+import { COMING_SOON_PAYMENTS, setServiceLocation } from '@/lib/bookings';
+import { isPincode, requestBrowserLocation } from '@/lib/matching';
 import TrustTierBadge from '@/components/trust-tier-badge';
 import { toast } from 'sonner';
 
@@ -145,6 +146,14 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
   const [serviceType, setServiceType] = useState('one-time');
   const [isFavorited, setIsFavorited] = useState(false);
   const [bookingStep, setBookingStep] = useState<'form' | 'confirm'>('form');
+  /* WHERE the job is — asked here, per booking, and never remembered as a profile "home address".
+     A customer books for their own flat this week and a parent's home next week; one saved address
+     would be wrong for most bookings and would send the provider to the wrong door. The provider
+     sees only the pincode until they accept (20260823120000). */
+  const [serviceAddress, setServiceAddress] = useState('');
+  const [servicePincode, setServicePincode] = useState('');
+  const [servicePin, setServicePin] = useState<{ lat: number; lng: number } | null>(null);
+  const [pinning, setPinning] = useState(false);
   const [offerOpen, setOfferOpen] = useState(false);
   const [offerAmount, setOfferAmount] = useState('');
   const [offering, setOffering] = useState(false);
@@ -210,20 +219,52 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
     if (!user || !provider) { router.push('/auth/signin'); return; }
     const amount = Number(offerAmount);
     if (!amount || amount <= 0) { toast.error('Enter an amount'); return; }
+    const bad = validateLocation();
+    if (bad) { toast.error(bad); return; }
     setOffering(true);
     const res = await makeOffer({
       providerId: provider.id, amount,
       serviceType, scheduledDate: bookingDate || null, scheduledTime: bookingTime || null,
       durationHours: DURATION_HOURS,
+      address: serviceAddress.trim(),
+    });
+    if ('error' in res) { setOffering(false); toast.error(res.error); return; }
+    /* start_negotiation owns the INSERT and takes only p_address, so the pincode and the optional
+       pin are written straight after through the definer RPC. Adding parameters to
+       start_negotiation would have created the overload PostgREST cannot resolve. */
+    const located = await setServiceLocation({
+      bookingId: res.data.booking_id,
+      pincode: servicePincode.trim(),
+      lat: servicePin?.lat ?? null,
+      lng: servicePin?.lng ?? null,
     });
     setOffering(false);
-    if ('error' in res) { toast.error(res.error); return; }
+    if (located.error) console.error('set_booking_service_location failed:', located.error);
     // The RPC may have settled it already: at/above the instant-accept price, or below the
     // provider's hidden floor. We never say which — only what happened.
     if (res.data.status === 'accepted') toast.success('Accepted! Pay to confirm your booking.');
     else if (res.data.status === 'declined') toast.info('That offer was not accepted. You can book at the listed price any time.');
     else toast.success('Offer sent — they have 24 hours to respond.');
     router.push('/bookings/' + res.data.booking_id);
+  };
+
+  /* One gate for both paths — booking outright and making an offer both end in someone travelling
+     to an address, so both need one. Returns an error sentence or null. */
+  const validateLocation = (): string | null => {
+    if (serviceAddress.trim().length < 8) return 'Enter the full service address — flat, building and street.';
+    if (!isPincode(servicePincode)) return 'Enter the 6-digit pincode for that address.';
+    return null;
+  };
+
+  // The OPTIONAL map pin. Deliberately opt-in and deliberately labelled: the customer's current
+  // position is only the service address when they happen to be standing at it.
+  const dropPin = async () => {
+    setPinning(true);
+    const pos = await requestBrowserLocation();
+    setPinning(false);
+    if ('error' in pos) { toast.error(pos.error); return; }
+    setServicePin({ lat: pos.lat, lng: pos.lng });
+    toast.success('Map pin added — your provider gets it once they accept.');
   };
 
   const handleBook = () => {
@@ -235,6 +276,8 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
       toast.error('Please select date and time');
       return;
     }
+    const bad = validateLocation();
+    if (bad) { toast.error(bad); return; }
     setBookingStep('confirm');
   };
 
@@ -253,6 +296,12 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
       total_amount: totalAmount,
       // The only customer-facing method. A DB trigger refuses 'wallet' on insert regardless.
       payment_method: 'upi',
+      // Where the job is. These four columns carry no SELECT grant — the provider reads them
+      // through booking_service_location(), and only once they have accepted.
+      address: serviceAddress.trim(),
+      service_pincode: servicePincode.trim(),
+      service_lat: servicePin?.lat ?? null,
+      service_lng: servicePin?.lng ?? null,
       // status/payment_status use their DB defaults ('pending')
     });
     setSubmitting(false);
@@ -582,6 +631,67 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                       </div>
                     </div>
 
+                    {/* WHERE. Asked once per booking, because the answer changes per booking — your
+                        flat, a parent's home, the office. Deliberately NOT saved to the profile as
+                        a "home address": one stored address is wrong for most bookings and sends
+                        the provider to the wrong door.
+
+                        The note under it is not reassurance for its own sake — it is the actual
+                        rule, enforced in the database: until the provider accepts, they can read
+                        the pincode and nothing else (20260823120000). */}
+                    <div>
+                      <label className="text-xs font-medium text-gray-400 uppercase tracking-wide block mb-2">
+                        Service address
+                      </label>
+                      <div className="space-y-2">
+                        <div className="flex items-start gap-2 bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-3 py-2.5">
+                          <Home className="w-4 h-4 text-gray-500 mt-0.5 flex-shrink-0" />
+                          <textarea
+                            rows={2}
+                            value={serviceAddress}
+                            onChange={(e) => setServiceAddress(e.target.value)}
+                            aria-label="Service address"
+                            placeholder="Flat / house no., building, street, area"
+                            className="flex-1 bg-transparent text-white placeholder-gray-600 text-sm focus:outline-none resize-none"
+                          />
+                        </div>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            maxLength={6}
+                            value={servicePincode}
+                            onChange={(e) => setServicePincode(e.target.value.replace(/\D/g, ''))}
+                            aria-label="Service pincode"
+                            placeholder="Pincode"
+                            className="w-32 bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-3 py-2.5 text-white placeholder-gray-600 text-sm focus:outline-none focus:border-[#FF9933]/50"
+                          />
+                          <button
+                            type="button"
+                            onClick={dropPin}
+                            disabled={pinning}
+                            title="Only if you are at the service address right now"
+                            className={`flex-1 flex items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-xs font-medium border transition-colors disabled:opacity-60 ${
+                              servicePin
+                                ? 'border-[#138808]/40 bg-[#138808]/10 text-[#22c55e]'
+                                : 'border-[#2a2a2a] bg-[#1e1e1e] text-gray-300 hover:border-[#FF9933]/50'
+                            }`}
+                          >
+                            {pinning
+                              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Locating…</>
+                              : servicePin
+                                ? <><CheckCircle className="w-3.5 h-3.5" />Map pin added</>
+                                : <><Crosshair className="w-3.5 h-3.5" />Add map pin (optional)</>}
+                          </button>
+                        </div>
+                        <p className="text-[11px] text-gray-500 leading-relaxed">
+                          Your provider sees only the pincode until they accept. The full address is
+                          shared with them after that, so they can find you. Add the map pin only if
+                          you are at the service address now.
+                        </p>
+                      </div>
+                    </div>
+
                     {/* Payment (item 18 + item 22) — the full list is shown, but only UPI can be
                         chosen. The other two are `disabled` and say WHY, rather than being hidden
                         (a customer wondering "can I pay cash?" gets an answer) or being dead
@@ -727,6 +837,17 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                     <div className="flex justify-between text-sm">
                       <span className="text-gray-400">Type</span>
                       <span className="text-white font-medium capitalize">{serviceType}</span>
+                    </div>
+                    {/* Read it back before they commit — this is the address someone will travel
+                        to, and a typo here is a wasted trip for both sides. */}
+                    <div className="flex justify-between gap-4 text-sm">
+                      <span className="text-gray-400 flex-shrink-0">Address</span>
+                      <span className="text-white font-medium text-right">
+                        {serviceAddress}
+                        <span className="block text-xs text-gray-400 mt-0.5">
+                          {servicePincode}{servicePin && ' · map pin added'}
+                        </span>
+                      </span>
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-gray-400">Payment</span>

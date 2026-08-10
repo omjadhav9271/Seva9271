@@ -17,7 +17,25 @@ export type GeocodeHit = { label: string; lat: number; lng: number };
 /** Where the customer is searching from, plus how we got it (shown back to them honestly). */
 export type SearchOrigin = LatLng & { label: string };
 
-export const DEFAULT_RADIUS_KM = 25;
+/* How the search widens rather than returning nothing.
+
+   A fixed 25 km radius produced a BLANK SCREEN whenever the nearest provider was 26 km away —
+   which reads as "this product is broken", not as "nobody serves you yet", and is the opposite of
+   what a marketplace should do while its supply is thin. But an unbounded search is worse: an
+   electrician 600 km away is not a result, it is a joke at the customer's expense.
+
+   So: try near, widen twice, then stop and say so. Three tries, hardcoded — not a configurable
+   ladder, because the numbers only need to be right, not adjustable. */
+export const RADIUS_STEPS_KM = [15, 50, 150] as const;
+/** Below this, widen. Chosen so a customer always gets a real choice, not a single lonely card. */
+export const MIN_RESULTS = 3;
+/** Beyond the last step there is nothing honest left to show — the UI says so in words. */
+export const MAX_RADIUS_KM = RADIUS_STEPS_KM[RADIUS_STEPS_KM.length - 1];
+
+/** The sort modes, every one applied IN THE QUERY (see 20260822120000 — sorting a ranked cut is a
+ *  sample, exactly like filtering one). 'match' is the server's blended ranking; the first three
+ *  are the primary controls and the rest are the long tail the page has always offered. */
+export type SortMode = 'match' | 'distance' | 'rating' | 'reviews' | 'price_low' | 'price_high';
 
 /* ── The customer's search location ──────────────────────────────────────────── */
 
@@ -47,6 +65,50 @@ export async function fetchCityAnchors(): Promise<CityAnchor[]> {
     return Object.entries(CITY_ANCHORS).map(([city, p]) => ({ city, ...p, provider_count: 0 }));
   }
   return (data ?? []) as CityAnchor[];
+}
+
+/* ── Pincode → a point we can rank from ──────────────────────────────────────
+ *
+ * This is deliberately NOT geocoding. Ranking needs a COARSE origin — the difference between two
+ * points 3 km apart barely moves an 8 km decay curve, and the widening search absorbs the rest.
+ * So a pincode resolves to the same city anchor the dropdown already offers: a grid-snapped point
+ * built from at least three providers, which we already trust and already show.
+ *
+ * Running the address through a geocoder would buy precision we do not need for ranking, at the
+ * cost of an external dependency on the customer's critical path — and the one we have already
+ * fails on exactly the Indian addresses that matter (see the decisions log: it cannot resolve
+ * "Prem Auto" or "Don Bosco School"). The PRECISE address is captured at booking time and handed
+ * to Google Maps, which geocodes far better than we would.
+ *
+ * Longest prefix wins, so Thane (400601-400615) and Navi Mumbai (400701-400710) are not swallowed
+ * by Mumbai's 400. Every target is resolved against the LIVE anchor list, so this table can never
+ * point at a city we cannot actually rank from — an unknown pincode falls through to the picker
+ * rather than pretending. */
+const PIN_PREFIX_CITY: [string, string][] = [
+  ['4006', 'Thane'],
+  ['4007', 'Navi Mumbai'],
+  ['400', 'Mumbai'],
+  ['401', 'Mumbai Suburban'],   // Vasai / Virar / Palghar — the suburban anchor is the nearest
+  ['410', 'Navi Mumbai'],       // Panvel / Kharghar
+  ['411', 'Pune'],
+  ['412', 'Pune'],
+  ['421', 'Kalyan'],            // Kalyan / Dombivli / Ambernath
+  ['560', 'Bengaluru'],
+  ['561', 'Bengaluru'],
+  ['562', 'Bengaluru'],
+];
+
+export const isPincode = (s: string): boolean => /^[1-9][0-9]{5}$/.test(s.trim());
+
+/** The anchor a pincode should search from, or null if we don't cover it (say so; don't guess). */
+export function anchorForPincode(pin: string, anchors: CityAnchor[]): CityAnchor | null {
+  const digits = pin.trim();
+  if (!isPincode(digits)) return null;
+  const match = [...PIN_PREFIX_CITY]
+    .sort((a, b) => b[0].length - a[0].length)
+    .find(([prefix]) => digits.startsWith(prefix));
+  if (!match) return null;
+  return anchors.find((a) => a.city.toLowerCase() === match[1].toLowerCase()) ?? null;
 }
 
 /**
@@ -97,19 +159,97 @@ export async function searchProviders(opts: {
   minRating?: number | null;
   /** Restrict to providers currently marked available. Server-side, for the same reason. */
   availableOnly?: boolean;
+  /** Which order to take the cut in. Also server-side, and for the identical reason: sorting the
+   *  rows that came back re-orders a sample of the results, not the results. */
+  sort?: SortMode;
 }): Promise<{ data: ProviderSearchResult[] } | { error: string }> {
   const { data, error } = await supabase.rpc('search_providers', {
     p_lat: opts.origin.lat,
     p_lng: opts.origin.lng,
     p_category_id: opts.categoryId ?? null,
-    p_radius_km: opts.radiusKm ?? DEFAULT_RADIUS_KM,
+    p_radius_km: opts.radiusKm ?? RADIUS_STEPS_KM[0],
     p_limit: opts.limit ?? 30,
     p_query: opts.query?.trim() || null,
     p_min_rating: opts.minRating && opts.minRating > 0 ? opts.minRating : null,
     p_available_only: opts.availableOnly ?? false,
+    p_sort: opts.sort ?? 'match',
   });
   if (error) return { error: error.message };
   return { data: (data ?? []) as ProviderSearchResult[] };
+}
+
+export type WideningResult = {
+  data: ProviderSearchResult[];
+  /** The radius that produced these rows — the UI says so when it isn't the near one. */
+  radiusKm: number;
+  /** True when we had to look past the near radius to find anybody. */
+  widened: boolean;
+};
+
+/**
+ * The same search, widened until it finds people — or until widening further would be dishonest.
+ *
+ * Stops at the FIRST radius returning at least MIN_RESULTS, so the common case (a customer in a
+ * covered locality) costs exactly one round trip and is unchanged. A sparse area costs at most
+ * three. Past the last step we return the empty set and let the page say plainly that we don't
+ * cover them yet — never a blank screen, and never a provider 400 km away dressed up as a match.
+ *
+ * Filters are passed through untouched: widening finds MORE providers, it must never quietly relax
+ * what the customer asked for. If they ticked "available now" and nobody available is within
+ * 150 km, the honest answer is none — not a busy provider 8 km away.
+ */
+export async function searchProvidersWidening(
+  opts: Parameters<typeof searchProviders>[0],
+): Promise<WideningResult | { error: string }> {
+  let last: ProviderSearchResult[] = [];
+  let lastRadius: number = RADIUS_STEPS_KM[0];
+
+  for (const radiusKm of RADIUS_STEPS_KM) {
+    const res = await searchProviders({ ...opts, radiusKm });
+    if ('error' in res) return res;
+    last = res.data;
+    lastRadius = radiusKm;
+    if (res.data.length >= MIN_RESULTS) break;
+  }
+
+  return { data: last, radiusKm: lastRadius, widened: lastRadius > RADIUS_STEPS_KM[0] };
+}
+
+/**
+ * Sorting for CATALOG MODE ONLY — the unranked list a customer sees before sharing a location.
+ *
+ * Client-side sorting is safe here and nowhere else, and the distinction is the whole lesson of
+ * 20260822120000: catalog mode holds the COMPLETE list of approved providers, so ordering it
+ * orders the entire set. Ranked mode holds a CUT — the top N by whatever the query ordered on —
+ * and re-sorting a cut silently answers a different question. If you ever add a limit to the
+ * catalog query, this function becomes the bug it was written to avoid.
+ *
+ * 'match' and 'distance' are absent on purpose: neither exists without a location.
+ */
+export function catalogComparator<T extends { rating: number; total_reviews: number; hourly_rate: number }>(
+  mode: SortMode,
+): (a: T, b: T) => number {
+  // Mirrors the SQL: hourly_rate 0 means "custom pricing", not free, so those providers sort LAST
+  // in both directions rather than heading the cheapest page.
+  const price = (v: number) => (v > 0 ? v : Number.POSITIVE_INFINITY);
+  switch (mode) {
+    case 'reviews':    return (a, b) => b.total_reviews - a.total_reviews;
+    case 'price_low':  return (a, b) => price(a.hourly_rate) - price(b.hourly_rate);
+    case 'price_high': return (a, b) => (
+      price(a.hourly_rate) === Infinity || price(b.hourly_rate) === Infinity
+        ? price(a.hourly_rate) - price(b.hourly_rate)   // unpriced last, not first
+        : b.hourly_rate - a.hourly_rate
+    );
+    default:           return (a, b) => b.rating - a.rating;
+  }
+}
+
+/** What the sort control should show, and order by, given whether we know where the customer is.
+ *  'match' and 'distance' need a location, so without one they degrade to 'rating' — displayed
+ *  that way too, so the highlighted control is always the one actually in effect. */
+export function effectiveSort(sort: SortMode, ranked: boolean): SortMode {
+  if (ranked) return sort;
+  return sort === 'match' || sort === 'distance' ? 'rating' : sort;
 }
 
 /**

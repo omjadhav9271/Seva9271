@@ -11,6 +11,7 @@ import { supabase, type Dispute, type DisputeOutcome, type Message, type Dispute
 import { useAdminGuard, REASON_LABELS, OUTCOME_LABELS, adminDisputeRefund, fetchDisputeContacts, type DisputeContacts } from '@/lib/admin';
 import { shortId, inr } from '@/lib/disputes';
 import { listEvidence, evidenceSignedUrl } from '@/lib/dispute-evidence';
+import { fetchServiceLocation } from '@/lib/bookings';
 import DisputeSettlement from '@/components/dispute-settlement';
 import { toast } from 'sonner';
 
@@ -120,14 +121,23 @@ export default function AdminDisputeDetailPage({ params }: { params: { id: strin
 
     const bookingId = disputeRow.booking_id;
     const [{ data: b }, { data: ev }, { data: msg }, { data: tx }] = await Promise.all([
+      // `address` is deliberately absent: the service address lost its column grant in
+      // 20260823120000 and selecting it here would fail the whole query with 42501. Admins are
+      // still entitled to it for case handling — it comes from the definer RPC below.
       supabase.from('bookings')
-        .select('id, customer_id, provider_id, status, payment_status, payment_method, price_agreed, price_charged, total_amount, scheduled_date, scheduled_time, address, notes, created_at, service_categories(name), service_providers(business_name, rating, reputation_score, service_categories(name))')
+        .select('id, customer_id, provider_id, status, payment_status, payment_method, price_agreed, price_charged, total_amount, scheduled_date, scheduled_time, notes, created_at, service_categories(name), service_providers(business_name, rating, reputation_score, service_categories(name))')
         .eq('id', bookingId).maybeSingle(),
       supabase.from('booking_events').select('*').eq('booking_id', bookingId).order('created_at', { ascending: true }),
       supabase.from('messages').select('*').eq('booking_id', bookingId).order('created_at', { ascending: true }),
       supabase.from('payment_transactions').select('*').eq('booking_id', bookingId).order('created_at', { ascending: true }),
     ]);
     const bookingRow = (b as unknown as BookingBundle | null) ?? null;
+    if (bookingRow) {
+      // booking_service_location() returns the full address to an admin at any status — the reveal
+      // rule it enforces is about the PROVIDER, not about case handling.
+      const loc = await fetchServiceLocation(bookingId);
+      bookingRow.address = [loc?.address, loc?.pincode].filter(Boolean).join(', ') || null;
+    }
     setBooking(bookingRow);
     setEvents((ev ?? []) as EventRow[]);
     setMessages((msg ?? []) as Message[]);

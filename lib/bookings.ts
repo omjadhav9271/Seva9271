@@ -34,7 +34,6 @@ export type BookingRow = {
   payment_method: string;
   payment_status: string;
   service_type: string;
-  address: string | null;
   notes: string | null;   // the customer's brief — "what was booked" on the dispute card
   service_providers: {
     business_name: string | null;
@@ -44,9 +43,86 @@ export type BookingRow = {
   service_categories: { name: string; slug: string } | null;
 };
 
-// One select string for both pages — they were byte-identical copies before.
+/* One select string for both pages — they were byte-identical copies before.
+
+   🔴 `address` IS DELIBERATELY ABSENT. The service address, its pincode and its optional map pin
+   lost their column grants in 20260823120000 and are readable only through
+   booking_service_location(), which decides per caller and per booking status who sees what — the
+   provider gets the precise address only once they have accepted the job. Adding `address` back
+   here does not leak it (the grant is gone, so PostgREST fails the whole select with 42501) but it
+   DOES break every page using this string. Read it with fetchServiceLocation instead. */
 export const BOOKING_SELECT =
-  'id, customer_id, provider_id, scheduled_date, scheduled_time, duration_hours, hourly_rate, created_at, total_amount, price_agreed, price_charged, status, payment_method, payment_status, service_type, address, notes, service_providers(business_name, city, service_categories(name, slug)), service_categories(name, slug)';
+  'id, customer_id, provider_id, scheduled_date, scheduled_time, duration_hours, hourly_rate, created_at, total_amount, price_agreed, price_charged, status, payment_method, payment_status, service_type, notes, service_providers(business_name, city, service_categories(name, slug)), service_categories(name, slug)';
+
+/* ── The service address: per booking, revealed by status ─────────────────────
+   Captured when the booking is made, because a customer books for different places — their flat,
+   a parent's home, their office. A single "home address" on the profile would be wrong for most
+   bookings and would show the provider somewhere the job isn't. */
+
+export type ServiceLocation = {
+  booking_id: string;
+  viewer_role: 'customer' | 'provider' | 'admin';
+  /** False for a provider whose booking is not yet accepted: address/lat/lng come back NULL and
+   *  only the pincode is populated. The UI renders the difference honestly. */
+  revealed: boolean;
+  address: string | null;
+  pincode: string | null;
+  lat: number | null;
+  lng: number | null;
+};
+
+/** Reads the address through the definer RPC — the only path that exists. Null = nothing to show
+ *  (not a party, or no booking), which is a legitimate state, not an error to surface. */
+export async function fetchServiceLocation(bookingId: string): Promise<ServiceLocation | null> {
+  const { data, error } = await supabase.rpc('booking_service_location', { p_booking_id: bookingId });
+  if (error) {
+    console.error('booking_service_location failed:', error.message);
+    return null;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  return (row as ServiceLocation) ?? null;
+}
+
+/** Sets the address on a booking the caller owns. Used by the OFFER path, which cannot write these
+ *  columns itself (start_negotiation owns that INSERT), and by any later correction. */
+export async function setServiceLocation(input: {
+  bookingId: string;
+  address?: string | null;
+  pincode?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+}): Promise<{ error?: string }> {
+  const { error } = await supabase.rpc('set_booking_service_location', {
+    p_booking_id: input.bookingId,
+    p_address: input.address ?? null,
+    p_pincode: input.pincode ?? null,
+    p_lat: input.lat ?? null,
+    p_lng: input.lng ?? null,
+  });
+  return error ? { error: error.message } : {};
+}
+
+/**
+ * A Google Maps directions link. WE DO NOT GEOCODE — the typed address goes to Google, which is
+ * far better at Indian addresses than anything we would wire up (our own geocoder cannot resolve
+ * "Prem Auto" or "Don Bosco School"; see the decisions log). Navigation itself is delegated
+ * entirely: no in-app map, no route, no ETA — that is Step 15.
+ *
+ * Address first because it is what the customer actually typed and what a human reads out at the
+ * gate; the optional GPS pin is the fallback for when Google cannot place the text.
+ */
+export function mapsDirectionsUrl(loc: { address?: string | null; pincode?: string | null; lat?: number | null; lng?: number | null }): string | null {
+  const text = [loc.address?.trim(), loc.pincode?.trim()].filter(Boolean).join(', ');
+  if (text) return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(text)}`;
+  if (loc.lat != null && loc.lng != null) return `https://www.google.com/maps/dir/?api=1&destination=${loc.lat},${loc.lng}`;
+  return null;
+}
+
+/** The backup pin, offered alongside the address link when the customer supplied coordinates. */
+export function mapsPinUrl(loc: { lat?: number | null; lng?: number | null }): string | null {
+  if (loc.lat == null || loc.lng == null) return null;
+  return `https://www.google.com/maps/dir/?api=1&destination=${loc.lat},${loc.lng}`;
+}
 
 /* Item 18 + item 22 — the payment methods shown at checkout but NOT selectable.
    Displayed rather than hidden so the list looks complete and a customer wondering "can I pay

@@ -1,18 +1,18 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
+import { useState, useEffect, useCallback, useMemo, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import {
-  Search, MapPin, Star, Filter, ChevronDown, SlidersHorizontal,
-  CheckCircle, Clock, X, Navigation, Loader2
-} from 'lucide-react';
+import { Search, MapPin, Star, SlidersHorizontal, CheckCircle, Clock, Compass } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import type { ProviderSearchResult } from '@/lib/supabase';
 import {
-  DEFAULT_RADIUS_KM, fetchCityAnchors, formatDistance, requestBrowserLocation, searchProviders,
-  type CityAnchor, type SearchOrigin,
+  MAX_RADIUS_KM, RADIUS_STEPS_KM, catalogComparator, effectiveSort, fetchCityAnchors,
+  formatDistance, searchProvidersWidening,
+  type CityAnchor, type SearchOrigin, type SortMode,
 } from '@/lib/matching';
+import SearchLocation from '@/components/search-location';
+import SearchControls from '@/components/search-controls';
 import { chipLabel, fetchCategories, styleFor, type CategoryRow } from '@/lib/categories';
 
 type ProviderCard = {
@@ -41,25 +41,25 @@ function initials(name: string | null): string {
 
 function ServicesContent() {
   const searchParams = useSearchParams();
-  const router = useRouter();
   const [searchQuery, setSearchQuery] = useState(searchParams.get('q') || '');
   const [selectedCategory, setSelectedCategory] = useState(searchParams.get('category') || '');
-  const [sortBy, setSortBy] = useState('rating');
-  const [showFilters, setShowFilters] = useState(false);
+  /* 'match' from the start, and never reassigned behind the customer's back. The old page flipped
+     this to 'match' on the first successful rank, which meant the sort silently changed under
+     anyone who had already chosen one. Catalog mode simply DISPLAYS 'rating' (see below) — it is
+     the order the catalog query uses — without writing that into state. */
+  const [sortBy, setSortBy] = useState<SortMode>('match');
   const [minRating, setMinRating] = useState(0);
   const [availableOnly, setAvailableOnly] = useState(false);
   const [catalog, setCatalog] = useState<ProviderCard[]>([]);
   const [ranked, setRanked] = useState<ProviderCard[] | null>(null);
   const [loading, setLoading] = useState(true);
-  const [locating, setLocating] = useState(false);
   const [origin, setOrigin] = useState<SearchOrigin | null>(null);
   const [locationNote, setLocationNote] = useState<string | null>(null);
-  const [cityChoice, setCityChoice] = useState('');
+  /* Which radius actually produced the rows on screen. Null until we have ranked. Rendered
+     whenever it isn't the near one, because a customer looking at a provider 40 km away deserves
+     to be told that is what happened rather than left to work it out from the distance labels. */
+  const [radiusKm, setRadiusKm] = useState<number | null>(null);
   const [anchors, setAnchors] = useState<CityAnchor[]>([]);
-  /* Whether we have ranked at least once, so the sort defaults to "Best match" on the first rank
-     without overriding the customer's choice on every subsequent re-query. A ref, not state: it
-     must not itself trigger a render (see the re-query loop this page already had). */
-  const hasRanked = useRef(false);
   /* The category chips come from the DB, not a hardcoded array: service_categories is
      admin-managed, so a mirrored list goes stale on the next insert. It already had — 11 of 25
      categories (Laundry, Maid, Painter, Tailor, Security, Water Tanker…) could not be filtered
@@ -139,21 +139,27 @@ function ServicesContent() {
      and the text query were moved server-side. */
   const runSearch = useCallback(async (next: SearchOrigin) => {
     setOrigin(next);
-    const res = await searchProviders({
+    /* Widening, not a fixed radius. A 25 km cut-off returned an EMPTY PAGE the moment the nearest
+       provider was 26 km away — which looks like a broken product rather than thin supply, and is
+       the opposite of what this page is for. searchProvidersWidening tries 15 km, then 50, then
+       150, stopping as soon as it has three; past 150 it returns nothing and we say so in words. */
+    const res = await searchProvidersWidening({
       origin: next,
       categoryId: selectedCategory ? categoryIds[selectedCategory] ?? null : null,
-      radiusKm: DEFAULT_RADIUS_KM,
       limit: 60,
       query: searchQuery,
       minRating,
       availableOnly,
+      sort: sortBy,
     });
     if ('error' in res) {
       console.error('search_providers failed:', res.error);
       setRanked(null);
+      setRadiusKm(null);
       setLocationNote('Could not rank by distance just now — showing all providers instead.');
       return;
     }
+    setRadiusKm(res.radiusKm);
     setRanked(res.data.map((p: ProviderSearchResult) => ({
       id: p.id,
       business_name: p.business_name,
@@ -172,11 +178,7 @@ function ServicesContent() {
       distanceKm: p.distance_km,
     })));
     setLocationNote(null);
-    /* Default to the server's blended ranking the first time we rank, then leave the sort alone.
-       Re-asserting 'match' on every re-query would silently undo the customer's choice each time
-       they nudged a filter — and now that every filter re-queries, that is every interaction. */
-    if (!hasRanked.current) { setSortBy('match'); hasRanked.current = true; }
-  }, [categoryIds, selectedCategory, searchQuery, minRating, availableOnly]);
+  }, [categoryIds, selectedCategory, searchQuery, minRating, availableOnly, sortBy]);
 
   /* ONE re-query path for every filter. Each of these belongs in the query rather than applied to
      what came back, so each must re-run the search; debounced together so a burst of adjustments
@@ -188,40 +190,20 @@ function ServicesContent() {
     const t = setTimeout(() => { runSearch(origin); }, 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCategory, categoryIds, searchQuery, minRating, availableOnly]);
+  }, [selectedCategory, categoryIds, searchQuery, minRating, availableOnly, sortBy]);
 
-  const useMyLocation = async () => {
-    setLocating(true);
-    setLocationNote(null);
-    const pos = await requestBrowserLocation();
-    setLocating(false);
-    if ('error' in pos) {
-      // Declined or unavailable: fall back to the full list and say so plainly — never a dead end.
-      setRanked(null);
-      setOrigin(null);
-      hasRanked.current = false;
-      if (sortBy === 'match') setSortBy('rating');
-      setLocationNote(pos.error);
-      return;
-    }
-    setCityChoice('');
-    await runSearch({ ...pos, label: 'your location' });
-  };
-
-  const onCityChoice = async (city: string) => {
-    setCityChoice(city);
-    if (!city) {
+  /* One entry point for "where am I searching from", whichever of the three inputs produced it —
+     device location, a typed pincode, or the city list. SearchLocation owns collecting it; this
+     page owns what to do with it. */
+  const handleOrigin = useCallback((next: SearchOrigin | null) => {
+    if (!next) {
       setOrigin(null);
       setRanked(null);
-      hasRanked.current = false;
-      if (sortBy === 'match') setSortBy('rating');
+      setRadiusKm(null);
       return;
     }
-    const anchor = anchors.find((a) => a.city === city);
-    if (!anchor) { setLocationNote(`We don't have enough providers in ${city} to search from yet.`); return; }
-    setLocationNote(null);
-    await runSearch({ lat: anchor.lat, lng: anchor.lng, label: city });
-  };
+    void runSearch(next);
+  }, [runSearch]);
 
   /* The homepage hero sends the city it was given as ?city=. Honouring it here is what makes that
      control real: the customer arrives already ranked from their city, rather than on the flat
@@ -232,7 +214,9 @@ function ServicesContent() {
   useEffect(() => {
     if (cityParamApplied || !cityParam || anchors.length === 0) return;
     setCityParamApplied(true);
-    onCityChoice(cityParam);
+    const anchor = anchors.find((a) => a.city === cityParam);
+    if (!anchor) { setLocationNote(`We don't have enough providers in ${cityParam} to search from yet.`); return; }
+    handleOrigin({ lat: anchor.lat, lng: anchor.lng, label: cityParam });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [anchors, cityParam, cityParamApplied]);
 
@@ -256,17 +240,14 @@ function ServicesContent() {
     return matchesSearch && matchesCategory && matchesRating && matchesAvailable;
   });
 
-  const sorted = [...filtered].sort((a, b) => {
-    // 'match' = the server's blended ranking. Return 0 and let the stable sort preserve the exact
-    // order search_providers gave us — re-sorting it here would quietly discard the ranking.
-    if (sortBy === 'match') return 0;
-    if (sortBy === 'distance') return (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity);
-    if (sortBy === 'rating') return b.rating - a.rating;
-    if (sortBy === 'price_low') return a.hourly_rate - b.hourly_rate;
-    if (sortBy === 'price_high') return b.hourly_rate - a.hourly_rate;
-    if (sortBy === 'reviews') return b.total_reviews - a.total_reviews;
-    return 0;
-  });
+  /* In RANKED mode the ORDER BY ran in the query (p_sort), so these rows already arrived in the
+     order the customer asked for — re-sorting them here would be the same mistake as re-filtering
+     them: a client-side "Top rated" over a match-ranked cut shows the best rated OF THE 60
+     NEAREST-AND-MOST-REPUTABLE, which is not what the control says.
+     In CATALOG mode there is no cut — that query returns every approved provider — so ordering it
+     here orders the whole set, which is honest. Two modes, two mechanisms, one reason. */
+  const shownSort = effectiveSort(sortBy, Boolean(ranked));
+  const sorted = ranked ? filtered : [...filtered].sort(catalogComparator(shownSort));
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] pt-20">
@@ -276,11 +257,11 @@ function ServicesContent() {
           <h1 className="text-3xl font-black text-white mb-2">Browse Services</h1>
           <p className="text-gray-400 mb-6">Find verified professionals near you</p>
 
-          {/* Search Bar. The "Location" box here used to be an input wired to nothing — a dead
-              control, which the honest-signposting principle forbids. It is now the real Step-11
-              location choice: device location, or a city to search from if they'd rather not. */}
-          <div className="flex flex-col sm:flex-row gap-3 max-w-3xl">
-            <div className="flex-1 flex items-center gap-3 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3">
+          {/* What to find, and where from. The location half is a shared control (device location,
+              a typed pincode, or a city) so this page and /providers cannot drift apart — they
+              already carried two copies of the city picker once. */}
+          <div className="max-w-3xl space-y-3">
+            <div className="flex items-center gap-3 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3">
               <Search className="w-5 h-5 text-gray-500 flex-shrink-0" />
               <input
                 type="text"
@@ -290,24 +271,15 @@ function ServicesContent() {
                 className="flex-1 bg-transparent text-white placeholder-gray-500 text-sm focus:outline-none"
               />
             </div>
-            <button
-              type="button"
-              onClick={useMyLocation}
-              disabled={locating}
-              className="flex items-center justify-center gap-2 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3 text-sm text-white hover:border-[#FF9933] transition-colors disabled:opacity-60"
-            >
-              {locating
-                ? <><Loader2 className="w-4 h-4 animate-spin" />Finding you…</>
-                : <><Navigation className="w-4 h-4 text-[#FF9933]" />Use my location</>}
-            </button>
-            <select
-              value={cityChoice}
-              onChange={(e) => onCityChoice(e.target.value)}
-              className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-[#FF9933] min-w-[150px]"
-            >
-              <option value="">Or pick a city</option>
-              {anchors.map((a) => <option key={a.city} value={a.city}>{a.city} ({a.provider_count})</option>)}
-            </select>
+            {/* Arriving with ?city= IS a location choice — don't let the passive GPS prefill
+                overrule it. The homepage hero's whole point is that the city it was given survives
+                the trip to this page. */}
+            <SearchLocation
+              anchors={anchors}
+              origin={origin}
+              onOrigin={handleOrigin}
+              autoLocate={!cityParam}
+            />
           </div>
 
           {locationNote && (
@@ -362,50 +334,18 @@ function ServicesContent() {
                   Filters
                 </h3>
                 <button
-                  onClick={() => { setMinRating(0); setAvailableOnly(false); setSortBy(ranked ? 'match' : 'rating'); }}
+                  onClick={() => { setMinRating(0); setAvailableOnly(false); setSortBy('match'); }}
                   className="text-xs text-[#FF9933] hover:text-[#e8872e]"
                 >
                   Reset
                 </button>
               </div>
 
-              {/* Sort */}
-              <div className="mb-5">
-                <label className="text-sm font-medium text-gray-300 block mb-3">Sort By</label>
-                <div className="space-y-2">
-                  {[
-                    // Only offered once we know where they are — it's the server's blended
-                    // proximity + reputation + availability ranking, not a client-side sort.
-                    ...(ranked ? [
-                      { value: 'match', label: 'Best match' },
-                      // "Best match" trades a little distance for reputation, which is right by
-                      // default but not always what someone wants — if you need a plumber NOW,
-                      // nearest is the question you are asking. Only offered when we know where
-                      // the customer is; there is nothing to sort by otherwise.
-                      { value: 'distance', label: 'Nearest first' },
-                    ] : []),
-                    { value: 'rating', label: 'Highest Rated' },
-                    { value: 'reviews', label: 'Most Reviewed' },
-                    { value: 'price_low', label: 'Price: Low to High' },
-                    { value: 'price_high', label: 'Price: High to Low' },
-                  ].map((opt) => (
-                    <label key={opt.value} className="flex items-center gap-2 cursor-pointer group">
-                      <div
-                        onClick={() => setSortBy(opt.value)}
-                        className={`w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
-                          sortBy === opt.value ? 'border-[#FF9933] bg-[#FF9933]' : 'border-[#2a2a2a] group-hover:border-[#FF9933]/50'
-                        }`}
-                      >
-                        {sortBy === opt.value && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
-                      </div>
-                      <span className="text-sm text-gray-300">{opt.label}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              {/* Min Rating */}
-              <div className="mb-5">
+              {/* Min Rating. A star floor is a control a normal person already understands ("4+"),
+                  which is why it stays while a trust-score threshold is deliberately not offered:
+                  ranking already weighs reputation, and asking the customer to set a minimum on a
+                  manipulation-resistant composite hands them our job. */}
+              <div>
                 <label className="text-sm font-medium text-gray-300 block mb-3">Minimum Rating</label>
                 <div className="flex gap-2">
                   {[0, 3, 4, 4.5].map((r) => (
@@ -422,45 +362,63 @@ function ServicesContent() {
                     </button>
                   ))}
                 </div>
-              </div>
-
-              {/* Available Only */}
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-gray-300">Available Now</span>
-                <button
-                  onClick={() => setAvailableOnly(!availableOnly)}
-                  // A switch with no text needs a name and a state, or it is unreachable to a
-                  // screen reader (and unaddressable to anything driving the page).
-                  role="switch"
-                  aria-checked={availableOnly}
-                  aria-label="Available Now"
-                  className={`relative w-10 h-5.5 rounded-full transition-colors ${availableOnly ? 'bg-[#FF9933]' : 'bg-[#2a2a2a]'}`}
-                  style={{ height: '22px' }}
-                >
-                  <span
-                    className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${availableOnly ? 'translate-x-5' : 'translate-x-0.5'}`}
-                  />
-                </button>
+                <p className="text-[11px] text-gray-600 mt-2 leading-relaxed">
+                  A floor on the star average — providers with no reviews yet are excluded by any
+                  rating filter.
+                </p>
               </div>
             </div>
           </aside>
 
           {/* Results */}
           <div className="flex-1">
-            <div className="flex items-center justify-between mb-6">
+            <div className="flex flex-col gap-4 mb-6">
+              <SearchControls
+                sort={shownSort}
+                onSort={setSortBy}
+                availableOnly={availableOnly}
+                onAvailableOnly={setAvailableOnly}
+                ranked={Boolean(ranked)}
+              />
               <p className="text-gray-400 text-sm">
                 <span className="text-white font-semibold">{sorted.length}</span> providers found
                 {origin && ranked
                   ? <> near <span className="text-white font-semibold">{origin.label}</span></>
                   : <> <span className="text-gray-500">— share your location to rank by distance.</span></>}
               </p>
+
+              {/* Say it when we had to look further out. A customer scanning "12.4 km away" should
+                  not have to infer that nobody nearer exists. */}
+              {ranked && sorted.length > 0 && radiusKm !== null && radiusKm > RADIUS_STEPS_KM[0] && (
+                <p className="text-xs text-[#FF9933] flex items-center gap-1.5">
+                  <Compass className="w-3.5 h-3.5" />
+                  Nobody within {RADIUS_STEPS_KM[0]} km — showing the nearest providers within {radiusKm} km.
+                </p>
+              )}
             </div>
 
             {sorted.length === 0 ? (
-              <div className="text-center py-20">
-                <p className="text-gray-400 text-lg mb-2">No providers found</p>
-                <p className="text-gray-600 text-sm">Try adjusting your filters or search query</p>
-              </div>
+              /* The honest empty state. Ranked-and-empty means we looked as far as it is
+                 reasonable to travel for a home service and found nobody — say that, rather than
+                 leaving a blank column that reads as a broken page. */
+              ranked ? (
+                <div className="text-center py-20">
+                  <Compass className="w-12 h-12 text-gray-600 mx-auto mb-4" />
+                  <p className="text-gray-300 text-lg mb-2">No providers serve your area yet — we&apos;re expanding.</p>
+                  <p className="text-gray-500 text-sm">
+                    We looked up to {MAX_RADIUS_KM} km from {origin?.label ?? 'your location'}
+                    {(selectedCategory || searchQuery || minRating > 0 || availableOnly) && <> with your filters applied</>}.
+                    {(selectedCategory || searchQuery || minRating > 0 || availableOnly)
+                      ? ' Clearing a filter may help.'
+                      : ' Try another location in the meantime.'}
+                  </p>
+                </div>
+              ) : (
+                <div className="text-center py-20">
+                  <p className="text-gray-400 text-lg mb-2">No providers found</p>
+                  <p className="text-gray-600 text-sm">Try adjusting your filters or search query</p>
+                </div>
+              )
             ) : (
               <div className="grid sm:grid-cols-2 gap-5">
                 {sorted.map((provider) => (

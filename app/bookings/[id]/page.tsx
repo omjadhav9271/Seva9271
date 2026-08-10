@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, Calendar, Clock, MapPin, AlertCircle, AlertTriangle, CheckCircle, XCircle, CreditCard, Shield, Wallet } from 'lucide-react';
+import { ArrowLeft, Calendar, Clock, MapPin, AlertCircle, AlertTriangle, CheckCircle, XCircle, CreditCard, Shield, Wallet, Navigation, Lock } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { supabase, type Dispute, type DisputeReason } from '@/lib/supabase';
 import BookingChat from '@/components/booking-chat';
@@ -17,6 +17,7 @@ import {
   type BookingRow, type BookingStatus, type PaymentStatus, type Role,
   BOOKING_SELECT, statusConfig, paymentStatusConfig, actionsFor, runTransition,
   createPaymentOrder, ownsProviderSide, formatTime, paymentMethodLabel,
+  fetchServiceLocation, mapsDirectionsUrl, mapsPinUrl, type ServiceLocation,
 } from '@/lib/bookings';
 import { toast } from 'sonner';
 
@@ -69,6 +70,10 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
   // The customer's display name (public_profiles). The provider side had no way to name the
   // person they were dealing with — "Raised by the customer" is unanswerable.
   const [customerName, setCustomerName] = useState<string | null>(null);
+  /* The service address, read through the definer RPC that owns the reveal rule — the columns
+     themselves carry no SELECT grant, so this is the only way to it. `revealed` is decided in the
+     DB, never here: the UI renders what it is told rather than deciding what to hide. */
+  const [location, setLocation] = useState<ServiceLocation | null>(null);
   // Bumped whenever the booking is refetched, so the timeline re-reads booking_events alongside
   // it (that table isn't in the realtime publication, so it can't hear about new rows itself).
   const [timelineKey, setTimelineKey] = useState(0);
@@ -145,6 +150,24 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
     if (!user) return;
     void fetchDispute();
   }, [user, fetchDispute]);
+
+  /* Re-read the address whenever the STATUS changes, because the status is what unlocks it: the
+     moment the provider accepts, the same call starts returning the full address instead of the
+     pincode. Keyed on the status string (stable) rather than the booking object, which is replaced
+     on every refetch and would re-query in a loop.
+     🔴 The status dependency alone is NOT enough — see refreshLocation's call site in
+     handleTransition. */
+  const refreshLocation = useCallback(async () => {
+    if (!user || !booking) { setLocation(null); return; }
+    setLocation(await fetchServiceLocation(booking.id));
+  }, [user, booking?.id]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!user || !booking) { setLocation(null); return; }
+    let active = true;
+    fetchServiceLocation(booking.id).then((loc) => { if (active) setLocation(loc); });
+    return () => { active = false; };
+  }, [user, booking?.id, booking?.status]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // Re-read the booking (status + payment_status) from the DB. Called after Checkout closes:
   // the webhook — not the Checkout callback — is what flips payment_status to 'held', so we
@@ -289,6 +312,18 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
     // itself, so only the non-settling path needs to do it explicitly.
     if (next === 'confirmed') void refetchBooking();
     else setTimelineKey((k) => k + 1);
+
+    /* Re-read the address AFTER the server has confirmed the move, not just when the local status
+       string changes. Found in the browser: accepting a booking left the provider looking at
+       "Pincode 400050 — unlocks once you accept" until they reloaded.
+       Why the status-keyed effect cannot cover this: handleTransition updates `status`
+       OPTIMISTICALLY, so that effect fires while transition_booking is still in flight. The RPC
+       then reads a booking that is still 'requested' and correctly answers revealed=false — and
+       because the status never changes a second time, nothing ever asks again. The DB was right
+       throughout; the page had simply asked one moment too early.
+       (The realtime path is unaffected: when the OTHER party moves the booking, the status really
+       does change on arrival, so the effect re-fires with the truth.) */
+    void refreshLocation();
   };
 
   // Raise a dispute — the ONLY way a booking enters 'disputed' (Step 8). The RPC validates
@@ -372,7 +407,13 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
   const rateLabel = Number(booking.hourly_rate) > 0
     ? `listed at ₹${Number(booking.hourly_rate).toLocaleString('en-IN')}/hr`
     : null;
-  const address = booking.address ?? booking.service_providers?.city ?? '';
+  /* What goes in the header chip: the revealed address, else the pincode, else the provider's
+     city. Never a blank chip and never a half-truth — the full block below says which it is. */
+  const addressChip = location?.revealed
+    ? [location.address, location.pincode].filter(Boolean).join(', ')
+    : location?.pincode ?? booking.service_providers?.city ?? '';
+  const directionsUrl = location?.revealed ? mapsDirectionsUrl(location) : null;
+  const pinUrl = location?.revealed ? mapsPinUrl(location) : null;
   const actions = role ? actionsFor(role, booking.status) : [];
   // Settled = money has cleared (tightened from Step 1's 'completed'). Reviews open for BOTH
   // parties on a settled booking; the review section itself gates on whether you've reviewed yet.
@@ -451,10 +492,81 @@ export default function BookingDetailPage({ params }: { params: { id: string } }
             {booking.scheduled_time && (
               <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{formatTime(booking.scheduled_time)}</span>
             )}
-            {address && (
-              <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{address}</span>
+            {addressChip && (
+              <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{addressChip}</span>
             )}
           </div>
+
+          {/* WHERE THE JOB IS — and, for the provider, whether they may see it yet.
+
+              The gate is the database's, not this component's: booking_service_location() returns
+              a NULL address to a provider whose booking is still requested or negotiating, so
+              there is nothing here to accidentally render. This block only explains the state.
+
+              Navigation is DELEGATED. The button hands the address to Google Maps, which geocodes
+              Indian addresses far better than we could, and that is the whole feature — no in-app
+              map, no route line, no ETA, no live position. That is Step 15. */}
+          {location && (
+            <div className="mb-4 rounded-xl border border-[#2a2a2a] bg-[#111] p-4">
+              <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">
+                {isCustomer ? 'Where we\'re coming' : 'Where the job is'}
+              </p>
+
+              {location.revealed ? (
+                <>
+                  <p className="text-sm text-gray-100 leading-relaxed whitespace-pre-line">
+                    {location.address || 'No address was given for this booking.'}
+                  </p>
+                  {location.pincode && <p className="text-sm text-gray-400 mt-0.5">Pincode {location.pincode}</p>}
+
+                  {directionsUrl && (
+                    <div className="flex flex-wrap items-center gap-3 mt-3">
+                      <a
+                        href={directionsUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-[#FF9933] text-white hover:bg-[#e8872e] transition-colors"
+                      >
+                        <Navigation className="w-4 h-4" />
+                        Open in Google Maps
+                      </a>
+                      {/* The backup pin, offered separately rather than instead of the address:
+                          the text is what the customer typed and what a human reads out at the
+                          gate, but a pin wins when Google cannot place the words. */}
+                      {pinUrl && (
+                        <a
+                          href={pinUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-gray-400 hover:text-white transition-colors underline underline-offset-2"
+                        >
+                          Or open the map pin they dropped
+                        </a>
+                      )}
+                    </div>
+                  )}
+
+                  {!isCustomer && (
+                    <p className="text-[11px] text-gray-600 mt-3">
+                      Shared with you because you accepted this booking. Please use it only for this job.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-gray-300 flex items-center gap-2">
+                    <Lock className="w-3.5 h-3.5 text-gray-500" />
+                    {location.pincode
+                      ? <>Pincode <span className="font-semibold text-white">{location.pincode}</span></>
+                      : <>Area not given</>}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-1.5">
+                    The customer&apos;s full address unlocks once you accept this booking.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
 
           {/* The facts of the job, each one labeled. Display only — every value here is read
               straight off the booking row; nothing is computed and nothing is decided. */}

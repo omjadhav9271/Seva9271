@@ -159,7 +159,12 @@ export default function BookingsPage() {
               const categoryName = booking.service_categories?.name ?? booking.service_providers?.service_categories?.name ?? 'Service';
               const slug = booking.service_categories?.slug ?? booking.service_providers?.service_categories?.slug ?? '';
               const gradient = categoryGradient[slug] ?? 'from-slate-500 to-slate-600';
-              const address = booking.address ?? booking.service_providers?.city ?? '';
+              /* The LIST shows a city, never the service address. The address is per-booking and
+                 gated by status (20260823120000), so putting it here would mean one RPC call per
+                 row to render a line nobody scans a list for — and a list is the wrong place to
+                 spray someone's home address across the screen anyway. It lives on the detail
+                 page, where the reveal rule is explained alongside it. */
+              const address = booking.service_providers?.city ?? '';
               const isProviderView = view === 'provider';
               const title = isProviderView ? categoryName : providerName;
               const subtitle = isProviderView ? 'Incoming request' : categoryName;
