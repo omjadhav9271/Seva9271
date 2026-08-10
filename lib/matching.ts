@@ -92,6 +92,11 @@ export async function searchProviders(opts: {
   /** Free text matched server-side against business name, category and city. Passing it here
    *  rather than filtering the returned rows is the point: filtering a ranked cut is a sample. */
   query?: string | null;
+  /** Star-average floor. 0 / null means no floor. Same reasoning as `query`: it belongs in the
+   *  query, because filtering the rows that came back can only ever return a sample of them. */
+  minRating?: number | null;
+  /** Restrict to providers currently marked available. Server-side, for the same reason. */
+  availableOnly?: boolean;
 }): Promise<{ data: ProviderSearchResult[] } | { error: string }> {
   const { data, error } = await supabase.rpc('search_providers', {
     p_lat: opts.origin.lat,
@@ -100,6 +105,8 @@ export async function searchProviders(opts: {
     p_radius_km: opts.radiusKm ?? DEFAULT_RADIUS_KM,
     p_limit: opts.limit ?? 30,
     p_query: opts.query?.trim() || null,
+    p_min_rating: opts.minRating && opts.minRating > 0 ? opts.minRating : null,
+    p_available_only: opts.availableOnly ?? false,
   });
   if (error) return { error: error.message };
   return { data: (data ?? []) as ProviderSearchResult[] };

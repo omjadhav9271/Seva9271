@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo, Suspense } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -56,6 +56,10 @@ function ServicesContent() {
   const [locationNote, setLocationNote] = useState<string | null>(null);
   const [cityChoice, setCityChoice] = useState('');
   const [anchors, setAnchors] = useState<CityAnchor[]>([]);
+  /* Whether we have ranked at least once, so the sort defaults to "Best match" on the first rank
+     without overriding the customer's choice on every subsequent re-query. A ref, not state: it
+     must not itself trigger a render (see the re-query loop this page already had). */
+  const hasRanked = useRef(false);
   /* The category chips come from the DB, not a hardcoded array: service_categories is
      admin-managed, so a mirrored list goes stale on the next insert. It already had — 11 of 25
      categories (Laundry, Maid, Painter, Tailor, Security, Water Tanker…) could not be filtered
@@ -121,20 +125,28 @@ function ServicesContent() {
   /* Step 11 — the ranked path. search_providers blends proximity, the Step-7 reputation_score and
      availability server-side; we keep its order and simply render it.
 
-     The category AND the typed text both go INTO the query. Either one applied client-side to an
-     unfiltered top-60 quietly hides most of the results: searching electricians near Kalyan
-     returned 2 of the 7 within range, and the 5 it dropped included nearer ones. Measured again
-     from Mumbai centre on 2026-08-10, the text box was worse — "electric" showed **2 of the 11**
-     in range, because only 2 of the matches happened to sit in the 60 rows the browser was
-     filtering. A filter applied after a ranked cut is not a filter, it is a sample. */
-  const runSearch = useCallback(async (next: SearchOrigin, categorySlug = '', query = '') => {
+     EVERY filter goes INTO the query — category, text, rating floor, availability. Any one of them
+     applied client-side to an unfiltered top-60 quietly hides most of the results: searching
+     electricians near Kalyan returned 2 of the 7 within range, and the 5 it dropped included
+     nearer ones. Measured again from Mumbai centre on 2026-08-10, the text box was worse —
+     "electric" showed **2 of the 11** in range, because only 2 of the matches happened to sit in
+     the 60 rows the browser was filtering. A filter applied after a ranked cut is not a filter, it
+     is a sample.
+
+     runSearch takes no filter arguments on purpose: it reads the current filter state directly, so
+     a new filter cannot be half-wired by forgetting to thread it through one of the call sites.
+     That is exactly how the rating and availability filters stayed client-side while the category
+     and the text query were moved server-side. */
+  const runSearch = useCallback(async (next: SearchOrigin) => {
     setOrigin(next);
     const res = await searchProviders({
       origin: next,
-      categoryId: categorySlug ? categoryIds[categorySlug] ?? null : null,
+      categoryId: selectedCategory ? categoryIds[selectedCategory] ?? null : null,
       radiusKm: DEFAULT_RADIUS_KM,
       limit: 60,
-      query,
+      query: searchQuery,
+      minRating,
+      availableOnly,
     });
     if ('error' in res) {
       console.error('search_providers failed:', res.error);
@@ -160,26 +172,23 @@ function ServicesContent() {
       distanceKm: p.distance_km,
     })));
     setLocationNote(null);
-    setSortBy('match');
-  }, [categoryIds]);
+    /* Default to the server's blended ranking the first time we rank, then leave the sort alone.
+       Re-asserting 'match' on every re-query would silently undo the customer's choice each time
+       they nudged a filter — and now that every filter re-queries, that is every interaction. */
+    if (!hasRanked.current) { setSortBy('match'); hasRanked.current = true; }
+  }, [categoryIds, selectedCategory, searchQuery, minRating, availableOnly]);
 
-  // Changing the category while a location is known must re-query the server, not re-filter what
-  // we already have — otherwise the category is applied to a ranked sample of the wrong set.
+  /* ONE re-query path for every filter. Each of these belongs in the query rather than applied to
+     what came back, so each must re-run the search; debounced together so a burst of adjustments
+     (or typing) collapses into one round trip.
+     categoryIds is a dependency on purpose: if the slug→id map is still loading when a category is
+     picked, the first query goes out unfiltered — this re-runs it properly once the ids arrive. */
   useEffect(() => {
     if (!origin || !ranked) return;
-    runSearch(origin, selectedCategory, searchQuery);
-    // categoryIds is a dependency on purpose: if the slug→id map is still loading when a category
-    // is picked, the first query goes out unfiltered — this re-runs it properly once ids arrive.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCategory, categoryIds]);
-
-  // Re-query as they type, but not on every keystroke.
-  useEffect(() => {
-    if (!origin || !ranked) return;
-    const t = setTimeout(() => { runSearch(origin, selectedCategory, searchQuery); }, 350);
+    const t = setTimeout(() => { runSearch(origin); }, 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchQuery]);
+  }, [selectedCategory, categoryIds, searchQuery, minRating, availableOnly]);
 
   const useMyLocation = async () => {
     setLocating(true);
@@ -190,12 +199,13 @@ function ServicesContent() {
       // Declined or unavailable: fall back to the full list and say so plainly — never a dead end.
       setRanked(null);
       setOrigin(null);
+      hasRanked.current = false;
       if (sortBy === 'match') setSortBy('rating');
       setLocationNote(pos.error);
       return;
     }
     setCityChoice('');
-    await runSearch({ ...pos, label: 'your location' }, selectedCategory, searchQuery);
+    await runSearch({ ...pos, label: 'your location' });
   };
 
   const onCityChoice = async (city: string) => {
@@ -203,13 +213,14 @@ function ServicesContent() {
     if (!city) {
       setOrigin(null);
       setRanked(null);
+      hasRanked.current = false;
       if (sortBy === 'match') setSortBy('rating');
       return;
     }
     const anchor = anchors.find((a) => a.city === city);
     if (!anchor) { setLocationNote(`We don't have enough providers in ${city} to search from yet.`); return; }
     setLocationNote(null);
-    await runSearch({ lat: anchor.lat, lng: anchor.lng, label: city }, selectedCategory, searchQuery);
+    await runSearch({ lat: anchor.lat, lng: anchor.lng, label: city });
   };
 
   /* The homepage hero sends the city it was given as ?city=. Honouring it here is what makes that
@@ -234,9 +245,14 @@ function ServicesContent() {
     const matchesSearch = ranked ? true : !searchQuery ||
       (p.business_name ?? '').toLowerCase().includes(searchQuery.toLowerCase()) ||
       p.category.toLowerCase().includes(searchQuery.toLowerCase());
+    /* Kept in both modes: in ranked mode the server has already filtered by category, so this is a
+       no-op on correct data — but it still covers the window before the slug→id map has loaded,
+       when the query necessarily goes out unfiltered. */
     const matchesCategory = !selectedCategory || p.slug === selectedCategory;
-    const matchesRating = p.rating >= minRating;
-    const matchesAvailable = !availableOnly || p.is_available;
+    // Rating floor and availability are query parameters now, for the same reason as the text
+    // search: applied here they could only sample the 60 rows that came back.
+    const matchesRating = ranked ? true : p.rating >= minRating;
+    const matchesAvailable = ranked ? true : (!availableOnly || p.is_available);
     return matchesSearch && matchesCategory && matchesRating && matchesAvailable;
   });
 
@@ -413,6 +429,11 @@ function ServicesContent() {
                 <span className="text-sm font-medium text-gray-300">Available Now</span>
                 <button
                   onClick={() => setAvailableOnly(!availableOnly)}
+                  // A switch with no text needs a name and a state, or it is unreachable to a
+                  // screen reader (and unaddressable to anything driving the page).
+                  role="switch"
+                  aria-checked={availableOnly}
+                  aria-label="Available Now"
                   className={`relative w-10 h-5.5 rounded-full transition-colors ${availableOnly ? 'bg-[#FF9933]' : 'bg-[#2a2a2a]'}`}
                   style={{ height: '22px' }}
                 >

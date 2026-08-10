@@ -646,6 +646,52 @@ try {
     }
   }
 
+  /* ===== 10b) REGRESSION: the rating floor and availability toggle filter the QUERY =====
+     The last two of the family. Both were applied in the browser to the 60 rows already ranked, so
+     "Available only" showed the available providers among the top 60 — not the available providers
+     in range — and a 4.8-rated provider ranked 61st was unreachable whatever you set. */
+  console.log('\n[/services: rating and availability filter the query]');
+  {
+    const { data: everything } = await service.rpc('search_providers', {
+      p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null, p_radius_km: 25, p_limit: 500,
+      p_query: null, p_min_rating: null, p_available_only: false,
+    });
+    const inRange = everything ?? [];
+    const cases = [
+      {
+        label: '4+ rating',
+        click: `[...document.querySelectorAll('button')].find(b => b.textContent.trim() === '4+')`,
+        expected: Math.min(inRange.filter((p) => Number(p.rating) >= 4).length, 60),
+        naive: inRange.slice(0, 60).filter((p) => Number(p.rating) >= 4).length,
+      },
+      {
+        label: 'Available Now',
+        click: `document.querySelector('button[role="switch"][aria-label="Available Now"]')`,
+        expected: Math.min(inRange.filter((p) => p.is_available).length, 60),
+        naive: inRange.slice(0, 60).filter((p) => p.is_available).length,
+      },
+    ];
+
+    for (const c of cases) {
+      if (!c.expected) { sk(`nothing in range matches "${c.label}"`); continue; }
+      await setGeolocation({ granted: true, ...ORIGIN });
+      await send('Page.navigate', { url: `${APP}/services` });
+      await waitFor(`document.querySelector('h1') !== null`, { label: 'the /services heading', timeout: 60000 });
+      const located = await clickUntil('Use my location', `document.body.innerText.includes('km away') ||
+        document.body.innerText.includes('m away')`);
+      if (!located) { no(`could not rank /services for the "${c.label}" case`); continue; }
+
+      const clicked = await evaluate(`(() => { const el = ${c.click}; if (!el) return false; el.click(); return true; })()`);
+      if (!clicked) { no(`could not find the "${c.label}" control`); continue; }
+      await sleep(2500);   // debounce (350ms) + round-trip
+      const shown = await evaluate(`document.querySelectorAll('a[href^="/providers/"]').length`);
+      if (shown === c.expected) ok(`/services: "${c.label}" returns all ${c.expected} in range`);
+      else no(`/services: "${c.label}" showed ${shown}, expected ${c.expected} — filtering the returned page, not the query`);
+      if (c.expected > c.naive) ok(`…more than filtering the 60 rows it had would have found (${c.naive})`);
+      else sk(`every "${c.label}" match already sat in the top 60, so this data cannot prove the difference`);
+    }
+  }
+
   /* ===== 11) REGRESSION: a settled page must stop querying =====
      /services re-queried in a render loop — 162 calls in 12 idle seconds (13.5/s) — because its
      slug→id map was rebuilt every render and used as an effect dependency, so each result set
