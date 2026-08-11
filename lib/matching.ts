@@ -125,31 +125,90 @@ export async function fetchPincodeAnchors(): Promise<PincodeAnchor[]> {
  * device can't get a fix" are not the same problem, and neither is a dead end: the caller falls
  * back to the city list.
  */
-export function requestBrowserLocation(timeoutMs = 10_000): Promise<LatLng | { error: string }> {
+export type BrowserFix = LatLng & {
+  /** Metres of uncertainty, straight from the device. See accuracyVerdict — this is the only
+   *  honest way to know whether GPS beat a pincode on THIS device, and it used to be discarded. */
+  accuracyM: number | null;
+};
+
+/* 20s, not 10. Geolocation is now the PRIMARY way a customer sets their location, so the cost of
+   giving up early changed: a first-time visitor sees Chrome's permission bubble and takes a few
+   seconds to read it, and the spec is ambiguous about whether that wait counts against the
+   timeout (implementations differ). Measured on this project: a real prompt sat unanswered for
+   ~55s. Once permission exists a cached fix returns in ~0ms, so the longer ceiling costs nothing
+   in the common case and only buys patience in the rare one — with a spinner showing throughout. */
+const LOCATION_TIMEOUT_MS = 20_000;
+
+export function requestBrowserLocation(timeoutMs = LOCATION_TIMEOUT_MS): Promise<BrowserFix | { error: string }> {
   return new Promise((resolve) => {
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      resolve({ error: "This browser can't share your location. Pick your city instead." });
+      resolve({ error: "This browser can't share your location. Enter your pincode instead." });
       return;
     }
     // Geolocation requires a secure context; on plain http it silently never calls back.
     if (typeof window !== 'undefined' && !window.isSecureContext) {
-      resolve({ error: 'Location needs a secure (https) connection. Pick your city instead.' });
+      resolve({ error: 'Location needs a secure (https) connection. Enter your pincode instead.' });
       return;
     }
     navigator.geolocation.getCurrentPosition(
-      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      (pos) => resolve({
+        lat: pos.coords.latitude, lng: pos.coords.longitude,
+        accuracyM: Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : null,
+      }),
       (err) => {
+        /* Each failure gets its own sentence, and each points at the PINCODE — the fallback that
+           still exists. These used to say "Pick your city instead", a control that was removed
+           with the city dropdown; the call site was patching the wording with a string replace,
+           which is the kind of fix that survives exactly until someone adds a fourth branch. */
         const message =
           err.code === err.PERMISSION_DENIED
-            ? 'No problem — pick your city and we\'ll search from there.'
+            ? 'No problem — enter your pincode and we\'ll search from there.'
             : err.code === err.POSITION_UNAVAILABLE
-              ? "Your device couldn't get a location fix. Pick your city instead."
-              : 'That took too long. Pick your city instead.';
+              ? "Your device couldn't get a location fix. Enter your pincode instead."
+              : 'That took too long. Enter your pincode instead.';
         resolve({ error: message });
       },
       { enableHighAccuracy: false, timeout: timeoutMs, maximumAge: 300_000 },
     );
   });
+}
+
+/**
+ * Is this fix actually better than a pincode?
+ *
+ * 🔴 The question that makes "GPS first" honest rather than a slogan. A pincode is a locality —
+ * roughly 2-5 km across — so it is a FLOOR, not a ceiling. A device fix beats it comfortably at
+ * 100 m and loses to it badly at 20 km, and both come back from the same API call. Desktop
+ * browsers geolocate by WiFi/IP: measured on this project at 124 m on a home connection, but a
+ * VPN or a corporate gateway can put the same call tens of kilometres out.
+ *
+ * Discarding `coords.accuracy` meant ranking from a 30 km guess exactly as confidently as from a
+ * 100 m fix. So the UI prefers GPS by default, and says so when the device has let it down —
+ * which is what earns the preference rather than merely asserting it.
+ */
+export type AccuracyVerdict = { tone: 'good' | 'fair' | 'poor'; label: string; nudge: string | null };
+
+export function accuracyVerdict(accuracyM: number | null): AccuracyVerdict {
+  if (accuracyM === null) return { tone: 'fair', label: 'using your location', nudge: null };
+  if (accuracyM <= 1000) {
+    return {
+      tone: 'good',
+      label: accuracyM < 1000 ? `accurate to ±${Math.round(accuracyM)} m` : 'accurate to ±1 km',
+      nudge: null,
+    };
+  }
+  if (accuracyM <= 5000) {
+    return {
+      tone: 'fair',
+      label: `approximate — ±${(accuracyM / 1000).toFixed(1)} km`,
+      nudge: 'A pincode would be more precise.',
+    };
+  }
+  return {
+    tone: 'poor',
+    label: `rough — ±${Math.round(accuracyM / 1000)} km`,
+    nudge: 'Your device could only place you roughly. Enter your pincode for better matches.',
+  };
 }
 
 /* ── Searching ───────────────────────────────────────────────────────────────── */
@@ -325,5 +384,27 @@ export async function setServiceBase(input: {
     p_address: input.address ?? null,
     p_city: input.city ?? null,
   });
+  return error ? { error: error.message } : {};
+}
+
+/**
+ * The provider's own pincode, written straight to their row.
+ *
+ * A plain UPDATE rather than a parameter on set_provider_service_base, and that is deliberate:
+ * adding an argument to that RPC would create an OVERLOAD PostgREST cannot resolve against the
+ * existing 4-argument call (the trap documented in 20260818120000 and hit twice since). The
+ * column carries its own UPDATE grant from 20260826120000 and the `update_own_provider` policy
+ * scopes it to the caller's own row, so nothing is widened by doing it this way.
+ *
+ * 🔴 Why it matters beyond the provider's own profile: resolve_pincode() builds locality anchors
+ * from the pincodes providers state about THEMSELVES. Without real providers supplying one, the
+ * customer-side pincode search only ever works on seeded data — the bootstrapping weakness named
+ * in the 20260826120000 header. Every real provider who fills this in makes their locality
+ * searchable for every customer.
+ */
+export async function setProviderPincode(userId: string, pincode: string): Promise<{ error?: string }> {
+  if (!isPincode(pincode)) return { error: 'Enter a valid 6-digit pincode.' };
+  const { error } = await supabase
+    .from('service_providers').update({ pincode: pincode.trim() }).eq('user_id', userId);
   return error ? { error: error.message } : {};
 }

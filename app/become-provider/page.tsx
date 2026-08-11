@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import {
   CheckCircle, Clock, AlertTriangle, ShieldCheck, Upload, X, FileText, Loader2, Ban,
-  Download, Briefcase, Plus, BadgeCheck, Handshake, Camera, IdCard, MapPin, Search,
+  Download, Briefcase, Plus, BadgeCheck, Handshake, Camera, IdCard, MapPin, Search, Navigation,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { supabase } from '@/lib/supabase';
@@ -15,7 +15,10 @@ import {
   KYC_ACCEPT, ID_OPTIONS_FOR, idTypeLabel, type MyApplication,
 } from '@/lib/provider-application';
 import { fetchMyPricing, saveMyPricing } from '@/lib/bargaining';
-import { geocodeAddress, setServiceBase, type GeocodeHit } from '@/lib/matching';
+import {
+  accuracyVerdict, geocodeAddress, isPincode, requestBrowserLocation, setProviderPincode,
+  setServiceBase, type GeocodeHit,
+} from '@/lib/matching';
 import TrustTierBadge from '@/components/trust-tier-badge';
 import LiveSelfieCapture from '@/components/live-selfie-capture';
 import type {
@@ -278,6 +281,7 @@ export default function BecomeProviderPage() {
               the worst version of this — approved, bookable, and findable by nobody. Saves through
               its own RPC, so moving your base never sends you back through the application gate. */}
           <ServiceBaseSection value={basePoint} onChange={setBasePoint} onPersist={persistServiceBase}
+            userId={user?.id ?? null}
             defaultQuery={[application.address, application.city].filter(Boolean).join(', ')} />
           {/* Step 10: only an approved provider can be booked, so only they can be haggled with —
               start_negotiation refuses anyone else. */}
@@ -351,6 +355,7 @@ export default function BecomeProviderPage() {
           {submitted ? 'Edit my details' : 'Edit my details and resubmit'}
         </button>
         <ServiceBaseSection value={basePoint} onChange={setBasePoint} onPersist={persistServiceBase}
+          userId={user?.id ?? null}
           defaultQuery={[application.address, application.city].filter(Boolean).join(', ')} />
         <DocumentSection checklist={checklist} uploading={uploading} idTypes={idTypes}
           onIdType={(code, v) => setIdTypes((prev) => ({ ...prev, [code]: v }))}
@@ -546,22 +551,40 @@ function Field({ label, required, children }: { label: string; required?: boolea
   );
 }
 
-/* Step 11 — the provider's STATIC service base.
-   Type an address, we geocode it, they confirm the match. Deliberately NOT the device's live
-   position: a provider is often not at their base when filling this in, and the base is what
-   ranking needs (live position belongs to Step-15 tracking). `onPersist` is supplied on the status
-   screens, where the row exists and the base can be saved on the spot; in the application form it
-   is omitted and the point is written straight after the row is created. */
-function ServiceBaseSection({ value, onChange, onPersist, defaultQuery }: {
+/* Step 11 — the provider's STATIC service base, now captured by GPS FIRST.
+
+   ── WHY GPS LEADS HERE, AND WHY THAT IS NOT A REVERSAL ──────────────────────────────────────
+   The rule in the decisions log is "one STATIC location per provider, never the device's live
+   position" — and it still holds. What changed is the CAPTURE METHOD, not the model: a one-time
+   reading, taken while the provider stands at their shop, that they then confirm and that never
+   updates itself. Continuous device position is still Step-15 tracking and still absent.
+
+   The reason to lead with it is a documented blocker, not a preference. The geocoder cannot
+   resolve small Indian landmarks — "Prem Auto", "Don Bosco School", "Rita Memorial School" all
+   returned NO MATCH during the Kalyan scale test — which are exactly the addresses Indian
+   providers actually give. A provider typing one of those got nothing and could not set a base at
+   all, so they never appeared in search. One tap on GPS resolves it with no geocoder in the path,
+   and it is more accurate than any address lookup would have been.
+
+   The typed address stays, in full, for the provider who is NOT at their base while signing up —
+   which is the case the original decision was written to protect, and it is still real.
+
+   `onPersist` is supplied on the status screens, where the row exists and the base can be saved on
+   the spot; in the application form it is omitted and the point is written after the row exists. */
+function ServiceBaseSection({ value, onChange, onPersist, defaultQuery, userId }: {
   value: BasePoint | null;
   onChange: (point: BasePoint | null) => void;
   onPersist?: (point: BasePoint) => Promise<{ error?: string }>;
   defaultQuery?: string;
+  userId?: string | null;
 }) {
   const [query, setQuery] = useState(defaultQuery ?? '');
   const [hits, setHits] = useState<GeocodeHit[]>([]);
   const [searching, setSearching] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [locating, setLocating] = useState(false);
+  const [pincode, setPincode] = useState('');
+  const [pinSaved, setPinSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const find = async () => {
@@ -578,8 +601,7 @@ function ServiceBaseSection({ value, onChange, onPersist, defaultQuery }: {
     setHits(res.results);
   };
 
-  const choose = async (hit: GeocodeHit) => {
-    const point: BasePoint = { lat: hit.lat, lng: hit.lng, label: hit.label };
+  const commit = async (point: BasePoint) => {
     setHits([]); setError(null);
     if (onPersist) {
       setSaving(true);
@@ -588,6 +610,32 @@ function ServiceBaseSection({ value, onChange, onPersist, defaultQuery }: {
       if (res.error) { setError(res.error); return; }
     }
     onChange(point);
+  };
+
+  const choose = (hit: GeocodeHit) => commit({ lat: hit.lat, lng: hit.lng, label: hit.label });
+
+  /* One reading, taken now, confirmed by them. No geocoder in the path — which is the point: it
+     works for the shop-and-landmark addresses the geocoder cannot resolve. */
+  const useMyLocation = async () => {
+    setLocating(true); setError(null); setHits([]);
+    const pos = await requestBrowserLocation();
+    setLocating(false);
+    if ('error' in pos) { setError(pos.error.replace(/Enter your pincode instead\.?/i, 'Type your address below instead.')); return; }
+    const v = accuracyVerdict(pos.accuracyM);
+    if (v.tone === 'poor') {
+      // Ranking is built on this point for as long as they trade. A 30 km fix is not a base.
+      setError(`Your device could only place you to ±${Math.round((pos.accuracyM ?? 0) / 1000)} km — too rough for a service base. Move somewhere with a better signal, or type your address below.`);
+      return;
+    }
+    await commit({ lat: pos.lat, lng: pos.lng, label: `Your current location (${v.label})` });
+  };
+
+  const savePincode = async () => {
+    if (!userId || !isPincode(pincode)) { setError('Enter a valid 6-digit pincode.'); return; }
+    setError(null);
+    const res = await setProviderPincode(userId, pincode);
+    if (res.error) { setError(res.error); return; }
+    setPinSaved(true);
   };
 
   return (
@@ -601,13 +649,32 @@ function ServiceBaseSection({ value, onChange, onPersist, defaultQuery }: {
         never your address or the point on a map.
       </p>
 
+      {/* PRIMARY: one tap while standing at the shop. More accurate than any address lookup, and
+          it works for the landmark addresses the geocoder simply cannot resolve. */}
+      <button
+        type="button"
+        onClick={useMyLocation}
+        disabled={locating || saving}
+        className="w-full flex items-center justify-center gap-2.5 rounded-xl px-4 py-3.5 text-sm font-semibold
+                   bg-[#FF9933] text-white hover:bg-[#e8872e] transition-colors disabled:opacity-60
+                   shadow-lg shadow-[#FF9933]/20"
+      >
+        {locating
+          ? <><Loader2 className="w-4 h-4 animate-spin" />Getting your location…</>
+          : <><Navigation className="w-4 h-4" />Use my current location</>}
+      </button>
+      <p className="text-[11px] text-gray-500 mt-2 mb-4 leading-relaxed">
+        Do this while you&apos;re <span className="text-gray-300">at your shop or work base</span>. It&apos;s a
+        one-time reading — we never follow your position afterwards.
+      </p>
+
       <div className="flex flex-col sm:flex-row gap-2">
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); find(); } }}
           className={inputClass}
-          placeholder="Shop No 4, Andheri East, Mumbai"
+          placeholder="Or type your address — Shop No 4, Andheri East, Mumbai"
         />
         <button type="button" onClick={find} disabled={searching || saving}
           className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-[#2a2a2a] text-sm text-gray-300 hover:text-white hover:border-[#FF9933]/50 transition-all disabled:opacity-60 whitespace-nowrap">
@@ -648,7 +715,37 @@ function ServiceBaseSection({ value, onChange, onPersist, defaultQuery }: {
             <p className="text-xs text-gray-400 break-words">{value.label}</p>
           </div>
         </div>
-      ) : (
+      ) : null}
+
+      {/* The pincode is not decoration. resolve_pincode() builds locality anchors from the
+          pincodes providers state about themselves, so a customer typing "400064" can only be
+          matched against providers who supplied one. Every provider who fills this in makes their
+          own locality searchable — without it the feature works on seeded data and nothing else. */}
+      {userId && (
+        <div className="mt-4">
+          <label className="text-xs font-medium text-gray-400 block mb-1.5">Your pincode</label>
+          <div className="flex gap-2">
+            <input
+              value={pincode}
+              inputMode="numeric"
+              maxLength={6}
+              onChange={(e) => { setPincode(e.target.value.replace(/\D/g, '')); setPinSaved(false); }}
+              className={inputClass}
+              placeholder="400050"
+              aria-label="Provider pincode"
+            />
+            <button type="button" onClick={savePincode} disabled={pincode.length !== 6 || pinSaved}
+              className="px-4 py-2.5 rounded-xl border border-[#2a2a2a] text-sm text-gray-300 hover:text-white hover:border-[#FF9933]/50 transition-all disabled:opacity-40 whitespace-nowrap">
+              {pinSaved ? 'Saved' : 'Save'}
+            </button>
+          </div>
+          <p className="text-[11px] text-gray-500 mt-1.5">
+            Customers often search by pincode — this is how they find you by locality.
+          </p>
+        </div>
+      )}
+
+      {!value && (
         /* Honest, not alarming: this is a thing they haven't done yet, not an error. */
         <div className="mt-4 flex items-start gap-2 bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-3 py-2.5">
           <AlertTriangle className="w-4 h-4 text-gray-500 flex-shrink-0 mt-0.5" />

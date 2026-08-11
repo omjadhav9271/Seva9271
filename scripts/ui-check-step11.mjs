@@ -24,6 +24,7 @@ import { readFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createClient } from '@supabase/supabase-js';
+import { account } from './lib/creds.mjs';
 
 const APP = 'http://localhost:3000';
 // Mumbai centre — the same anchor the app uses as its city fallback.
@@ -47,6 +48,8 @@ const env = Object.fromEntries(
 );
 const service = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY,
   { auth: { persistSession: false, autoRefreshToken: false } });
+// Needed since the site went behind AuthGate — see the signIn call in the run block below.
+const customer = account('CUSTOMER');
 
 let pass = 0, fail = 0, skip = 0;
 const ok = (m) => { console.log('  ✓ PASS  ' + m); pass++; };
@@ -100,14 +103,44 @@ const cardNames = () => evaluate(`[...document.querySelectorAll('a[href^="/provi
   .map(a => a.querySelector('h3') && a.querySelector('h3').textContent.trim())
   .filter(Boolean)`);
 
-async function setGeolocation({ granted, lat, lng }) {
+/* Sign in through the real form. Same shape as ui-check-admin's helper, including the retry:
+   a freshly navigated Next page has its inputs in the DOM before React attaches handlers, so an
+   early fill submits an EMPTY form and fails silently rather than erroring. */
+async function signIn({ email, password }) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await evaluate('localStorage.clear()').catch(() => {});
+    await send('Page.navigate', { url: `${APP}/auth/signin` });
+    await waitFor("!!document.querySelector('input[type=password]')", { label: 'the sign-in form' });
+    await sleep(2500); // let React hydrate and attach its handlers
+    await evaluate(`(() => {
+      const set = (el, v) => {
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(el, v);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      set(document.querySelector('input[type=email]'), ${JSON.stringify(email)});
+      set(document.querySelector('input[type=password]'), ${JSON.stringify(password)});
+      return true;
+    })()`);
+    await evaluate("(() => { const f = document.querySelector('form'); if (f) { f.requestSubmit(); return true; } return false; })()");
+    try {
+      await waitFor("!!localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith('sb-')) || '')",
+        { label: 'a stored Supabase session', timeout: 12000 });
+      return true;
+    } catch { /* hydration lost the race — try again */ }
+  }
+  throw new Error('could not sign in through the UI after 3 attempts');
+}
+
+async function setGeolocation({ granted, lat, lng, accuracy = 40 }) {
   await send('Browser.setPermission', {
     origin: APP,
     permission: { name: 'geolocation' },
     setting: granted ? 'granted' : 'denied',
   });
   if (granted) {
-    await send('Emulation.setGeolocationOverride', { latitude: lat, longitude: lng, accuracy: 40 });
+    // accuracy is a real input, not decoration: the UI grades the fix on it and tells the customer
+    // when their device did badly enough that a pincode would beat it.
+    await send('Emulation.setGeolocationOverride', { latitude: lat, longitude: lng, accuracy });
   } else {
     // Belt and braces: with the permission denied the override is never consulted, but clearing it
     // means a bug that somehow bypasses the prompt still can't read a real position.
@@ -169,6 +202,10 @@ async function clickUntil(label, condition, { attempts = 4, each = 8000 } = {}) 
 let chrome = null;
 try {
   if (!CHROME) { console.log('Cannot run: Chrome not found.'); process.exit(0); }
+  if (!customer.email || !customer.password) {
+    console.log('Cannot run: CUSTOMER_EMAIL / CUSTOMER_PASSWORD missing — the site is behind auth.');
+    process.exit(0);
+  }
   try {
     const r = await fetch(APP, { signal: AbortSignal.timeout(45000) });
     if (!r.ok && r.status >= 500) throw new Error('bad status');
@@ -230,6 +267,15 @@ try {
   console.log('expected top-ranked provider: ' + expected[0].business_name +
     ` (${expected[0].distance_km} km, reputation ${expected[0].reputation_score})\n`);
 
+  /* Sign in FIRST. This check used to browse /providers and /services as an anonymous visitor,
+     which stopped being possible when the whole site went behind AuthGate — every navigation
+     below would land on /auth/signin and every wait would time out, which reads like the search
+     feature is dead when it is only unreachable. Nothing it asserts changes: search_providers is
+     the same RPC either way, and the coordinate-leak sweep gets STRICTER signed in, because an
+     authenticated session is the one that carries more grants. */
+  await signIn(customer);
+  console.log('signed in as ' + customer.email + '\n');
+
   // ================= 1) /providers — the catalog fallback is the starting state =================
   console.log('[/providers: before sharing a location]');
   /* Permission DENIED here, and that is the whole point of the section.
@@ -279,6 +325,63 @@ try {
     } catch {
       no('an already-permitted browser did NOT prefill — the customer must ask twice');
     }
+  }
+
+  /* ===== 1c) GPS IS THE PRIMARY WAY TO SET A LOCATION, AND THE FIX IS GRADED =====
+     Two claims, both checkable.
+
+     LAYOUT: the device-location control must come before the pincode field, because the previous
+     arrangement (wide pincode box on the left, modest button beside it) said the opposite of what
+     the product intends — a device fix is typically 100-200 m where a pincode is a 2-5 km
+     locality, so GPS finds genuinely nearer people.
+
+     HONESTY: `coords.accuracy` decides whether GPS actually beat a pincode ON THIS DEVICE, and it
+     used to be discarded — a 30 km IP guess was ranked from exactly as confidently as a 100 m fix.
+     A good fix now reports its precision; a poor one admits it and points at the pincode. That
+     admission is what earns the GPS-first default rather than merely asserting it. */
+  console.log('\n[GPS is the primary control, and a bad fix says so]');
+  {
+    await setGeolocation({ granted: true, ...ORIGIN, accuracy: 40 });
+    await send('Page.navigate', { url: `${APP}/providers` });
+    await waitFor(`document.querySelector('input[aria-label="Search location"]') !== null`,
+      { label: 'the location controls', timeout: 60000 });
+
+    const order = await evaluate(`(() => {
+      const btn = [...document.querySelectorAll('button')].find(b => b.textContent.includes('Use my location'));
+      const pin = document.querySelector('input[aria-label="Search location"]');
+      if (!btn || !pin) return null;
+      // 4 === Node.DOCUMENT_POSITION_FOLLOWING: the pincode comes AFTER the button
+      return { gpsFirst: !!(btn.compareDocumentPosition(pin) & 4), btnWidth: btn.getBoundingClientRect().width,
+               pinWidth: pin.getBoundingClientRect().width };
+    })()`);
+    if (!order) no('could not find both location controls');
+    else if (order.gpsFirst) ok(`"Use my location" precedes the pincode field (${Math.round(order.btnWidth)}px vs ${Math.round(order.pinWidth)}px)`);
+    else no('the pincode field still comes before the device-location control');
+
+    // A GOOD fix reports its precision.
+    const located = await clickUntil('Use my location', `/km away|m away/.test(document.body.innerText)`);
+    if (!located) { no('could not take a location fix'); }
+    else {
+      const body = await text();
+      if (/accurate to ±\d+\s*m/i.test(body)) ok(`a 40 m fix reports its precision: "${(body.match(/accurate to ±[^\n·]*/i) || [''])[0].trim()}"`);
+      else no('a good fix does not tell the customer how precise it was: ' + body.slice(0, 120).replace(/\n/g, ' | '));
+      if (!/pincode would be more precise|place you roughly/i.test(body)) ok('…and does not nag about the pincode when GPS is the better tool');
+      else no('a 40 m fix still nudged towards the pincode');
+    }
+
+    // A POOR fix must SAY so — this is the case that used to be silently ranked from.
+    await setGeolocation({ granted: true, ...ORIGIN, accuracy: 30000 });
+    await send('Page.navigate', { url: `${APP}/providers` });
+    await waitFor(`document.querySelector('input[aria-label="Search location"]') !== null`,
+      { label: 'the location controls', timeout: 60000 });
+    const gotPoor = await clickUntil('Use my location', `/km away|m away/.test(document.body.innerText)`);
+    if (!gotPoor) { no('could not take a low-accuracy fix'); }
+    else {
+      const body = await text();
+      if (/place you roughly|rough — ±\d+\s*km/i.test(body)) ok('a 30 km fix admits it is rough and points at the pincode');
+      else no('a 30 km fix was ranked from as if it were exact — the customer is told nothing');
+    }
+    await setGeolocation({ granted: true, ...ORIGIN, accuracy: 40 });   // restore for later sections
   }
 
   // ================= 2) "Use my location" ranks by the RPC =================
