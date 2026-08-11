@@ -69,20 +69,29 @@ function FooterItem({ item }: { item: FooterLink }) {
 }
 
 export default function Footer() {
-  const { profile } = useAuth();
+  const { user, profile } = useAuth();
   const isAdmin = profile?.role === 'admin';
+  /* Signed out, every real link in this footer is gated — the five service links, How It Works,
+     and Become a Provider — so each one would land the visitor back on the sign-in page they came
+     from. Same rule as the navbar: drop them rather than signpost dishonestly.
+
+     What survives is everything that is still TRUE without an account: who we are, where we are,
+     how to contact us, and the "Soon" entries — which are already plain text with a chip, not
+     links, so they promise nothing they can't deliver. */
+  const signedOut = !user;
   // Insert it where it has always been (third), so the ordering doesn't shuffle for everyone else.
-  const companyLinks = isAdmin
-    ? company
-    : [...company.slice(0, 2), becomeProvider, ...company.slice(2)];
+  const companyLinks = (isAdmin ? company : [...company.slice(0, 2), becomeProvider, ...company.slice(2)])
+    .filter((c) => !signedOut || !c.href);
 
   return (
     <footer style={{ backgroundColor: '#0d1b4b' }}>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-10">
+        {/* Three columns signed out, four signed in — dropping Popular Services without this
+            would leave a hole in the grid rather than a tighter footer. */}
+        <div className={`grid grid-cols-1 md:grid-cols-2 gap-10 ${signedOut ? 'lg:grid-cols-3' : 'lg:grid-cols-4'}`}>
           {/* Brand */}
           <div>
-            <Link href="/" className="flex items-center gap-2 mb-4">
+            <Link href={user ? '/' : '/auth/signin'} className="flex items-center gap-2 mb-4">
               <span className="text-2xl">🙏</span>
               <span className="text-2xl font-bold text-white">Seva</span>
               <span className="text-2xl">🙏</span>
@@ -96,19 +105,22 @@ export default function Footer() {
             </div>
           </div>
 
-          {/* Popular Services */}
-          <div>
-            <h3 className="text-white font-semibold mb-5">Popular Services</h3>
-            <ul className="space-y-3">
-              {popularServices.map((s) => (
-                <li key={s.href}>
-                  <Link href={s.href} className="text-sm text-blue-200/70 hover:text-white transition-colors">
-                    {s.label}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </div>
+          {/* Popular Services — every entry deep-links into /services, so the whole column goes
+              when there is no session to reach it with. */}
+          {!signedOut && (
+            <div>
+              <h3 className="text-white font-semibold mb-5">Popular Services</h3>
+              <ul className="space-y-3">
+                {popularServices.map((s) => (
+                  <li key={s.href}>
+                    <Link href={s.href} className="text-sm text-blue-200/70 hover:text-white transition-colors">
+                      {s.label}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           {/* Company */}
           <div>

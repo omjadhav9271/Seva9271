@@ -23,8 +23,12 @@ const DB_SCRIPTS = [
   'verify-step9', 'verify-step9-5', 'verify-step10', 'verify-step11', 'verify-search-location',
   'verify-scale', 'verify-data-fidelity', 'verify-admin',
 ];
-const UI_SCRIPTS = ['ui-check-step8', 'ui-check-step9', 'ui-check-step10', 'ui-check-step11', 'ui-check-dispute-clarity',
-  'ui-check-live-counter-offer', 'ui-check-admin'];
+/* ui-check-auth-gate runs FIRST: every other UI script now has to get past the gate to see
+   anything, so when the gate breaks they all fail at once, at their own first navigation, looking
+   like six unrelated feature regressions. Running it first turns that into one honest failure at
+   the top of the report. */
+const UI_SCRIPTS = ['ui-check-auth-gate', 'ui-check-step8', 'ui-check-step9', 'ui-check-step10',
+  'ui-check-step11', 'ui-check-dispute-clarity', 'ui-check-live-counter-offer', 'ui-check-admin'];
 const withUi = !process.argv.includes('--no-ui');
 
 // Credentials come from .env.local (gitignored) or the environment — never a literal in this

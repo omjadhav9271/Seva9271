@@ -1,10 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Eye, EyeOff, Mail, Lock, User, ArrowRight, CheckCircle } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { safeNext, readNext } from '@/lib/next-param';
 import { toast } from 'sonner';
 
 export default function SignUpPage() {
@@ -16,6 +17,9 @@ export default function SignUpPage() {
   const [role, setRole] = useState<'customer' | 'provider'>('customer');
   const { signUp } = useAuth();
   const router = useRouter();
+  // The destination AuthGate stashed, forwarded here by the sign-in page. See lib/next-param.ts.
+  const [next, setNext] = useState<string | null>(null);
+  useEffect(() => { setNext(readNext()); }, []);
 
   const passwordStrength = password.length === 0 ? 0 : password.length < 6 ? 1 : password.length < 8 ? 2 : 3;
   const strengthLabels = ['', 'Weak', 'Fair', 'Strong'];
@@ -38,7 +42,7 @@ export default function SignUpPage() {
       toast.error(error);
     } else {
       toast.success('Account created! Welcome to Seva.');
-      router.push('/');
+      router.push(safeNext(next));
     }
   };
 
@@ -59,13 +63,14 @@ export default function SignUpPage() {
       </div>
 
       <div className="w-full max-w-md relative">
-        {/* Logo */}
+        {/* Logo — plain text, not a link: `/` is gated, so it would bounce a signed-out visitor
+            straight back here. Same reasoning as the sign-in page. */}
         <div className="text-center mb-8">
-          <Link href="/" className="inline-flex items-center gap-2">
+          <div className="inline-flex items-center gap-2">
             <span className="text-3xl">🙏</span>
             <span className="text-3xl font-black text-[#138808]">Seva</span>
             <span className="text-3xl">🙏</span>
-          </Link>
+          </div>
           <h1 className="text-2xl font-black text-white mt-4">Create your account</h1>
           <p className="text-gray-400 text-sm mt-1">Join India's #1 service marketplace</p>
         </div>
@@ -198,17 +203,29 @@ export default function SignUpPage() {
 
           <p className="text-center text-sm text-gray-400 mt-5">
             Already have an account?{' '}
-            <Link href="/auth/signin" className="text-[#FF9933] hover:text-[#e8872e] font-semibold transition-colors">
+            <Link
+              href={next ? `/auth/signin?next=${encodeURIComponent(next)}` : '/auth/signin'}
+              className="text-[#FF9933] hover:text-[#e8872e] font-semibold transition-colors"
+            >
               Sign in
             </Link>
           </p>
         </div>
 
+        {/* ⚠️ `/terms` and `/privacy` DO NOT EXIST — no route, no document. As links they 404'd;
+            behind AuthGate they bounced back to sign-in, so this asked people to agree to
+            documents they could not open by a route that silently went nowhere. They are plain
+            text until the documents exist (item 22's rule, and the footer has always labelled
+            these two "Soon").
+
+            The wording is untouched on purpose: this is a legal consent line, not copy to
+            improvise on. The real fix is publishing the documents — flagged in the decisions log
+            as a launch blocker, not a styling nit. */}
         <p className="text-center text-xs text-gray-600 mt-4">
           By creating an account, you agree to our{' '}
-          <Link href="/terms" className="text-gray-500 hover:text-gray-300">Terms</Link>{' '}
+          <span className="text-gray-500" title="Not published yet">Terms</span>{' '}
           and{' '}
-          <Link href="/privacy" className="text-gray-500 hover:text-gray-300">Privacy Policy</Link>
+          <span className="text-gray-500" title="Not published yet">Privacy Policy</span>
         </p>
       </div>
     </div>

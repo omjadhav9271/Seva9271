@@ -1,10 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Eye, EyeOff, Mail, Lock, ArrowRight } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { safeNext, readNext } from '@/lib/next-param';
 import { toast } from 'sonner';
 
 export default function SignInPage() {
@@ -14,6 +15,11 @@ export default function SignInPage() {
   const [loading, setLoading] = useState(false);
   const { signIn } = useAuth();
   const router = useRouter();
+  /* Where AuthGate was taking them before it stopped them here. Read in an effect rather than
+     with useSearchParams, which would opt this page out of static rendering for one query
+     parameter that only two lines need. */
+  const [next, setNext] = useState<string | null>(null);
+  useEffect(() => { setNext(readNext()); }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -28,7 +34,7 @@ export default function SignInPage() {
       toast.error(error);
     } else {
       toast.success('Welcome back!');
-      router.push('/');
+      router.push(safeNext(next));
     }
   };
 
@@ -46,11 +52,13 @@ export default function SignInPage() {
       <div className="w-full max-w-md relative">
         {/* Logo */}
         <div className="text-center mb-8">
-          <Link href="/" className="inline-flex items-center gap-2">
+          {/* Not a link any more. It pointed at `/`, which is now behind AuthGate, so for the only
+              visitor who sees this page it was a control that bounced straight back here. */}
+          <div className="inline-flex items-center gap-2">
             <span className="text-3xl">🙏</span>
             <span className="text-3xl font-black text-[#138808]">Seva</span>
             <span className="text-3xl">🙏</span>
-          </Link>
+          </div>
           <h1 className="text-2xl font-black text-white mt-4">Welcome back</h1>
           <p className="text-gray-400 text-sm mt-1">Sign in to your Seva account</p>
         </div>
@@ -77,9 +85,23 @@ export default function SignInPage() {
             <div>
               <div className="flex items-center justify-between mb-2">
                 <label className="block text-sm font-medium text-gray-300">Password</label>
-                <Link href="/auth/forgot-password" className="text-xs text-[#FF9933] hover:text-[#e8872e] transition-colors">
+                {/* `/auth/forgot-password` has never existed. As a link it used to 404; behind
+                    AuthGate it now bounces silently back to this page, which is worse — the
+                    customer cannot tell whether they misclicked or the site is broken. Same
+                    treatment the footer's unbuilt destinations already get (decisions log, item
+                    22): say plainly that it isn't built rather than route them nowhere.
+                    ⚠️ This is a REAL GAP, not a decision — password reset is table stakes and
+                    Supabase already provides resetPasswordForEmail. Tracked in the decisions log
+                    so this honest label doesn't become the way it gets forgotten. */}
+                <span
+                  className="text-xs text-gray-500 inline-flex items-center gap-1.5 cursor-default"
+                  title="Password reset isn't built yet"
+                >
                   Forgot password?
-                </Link>
+                  <span className="text-[9px] font-semibold uppercase tracking-wide px-1 py-0.5 rounded bg-white/10 text-gray-400">
+                    Soon
+                  </span>
+                </span>
               </div>
               <div className="relative">
                 <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500" style={{ width: '18px', height: '18px' }} />
@@ -142,7 +164,12 @@ export default function SignInPage() {
 
           <p className="text-center text-sm text-gray-400">
             Don't have an account?{' '}
-            <Link href="/auth/signup" className="text-[#FF9933] hover:text-[#e8872e] font-semibold transition-colors">
+            {/* Carry the destination across, or someone who arrives from a shared provider link
+                and chooses to sign up instead loses it at the last step. */}
+            <Link
+              href={next ? `/auth/signup?next=${encodeURIComponent(next)}` : '/auth/signup'}
+              className="text-[#FF9933] hover:text-[#e8872e] font-semibold transition-colors"
+            >
               Sign up free
             </Link>
           </p>

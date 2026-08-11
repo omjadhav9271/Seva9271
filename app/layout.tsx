@@ -2,6 +2,7 @@ import './globals.css';
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import { AuthProvider } from '@/lib/auth-context';
+import AuthGate from '@/components/auth-gate';
 import Navbar from '@/components/navbar';
 import Footer from '@/components/footer';
 import { Toaster } from 'sonner';
@@ -29,7 +30,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className={`${inter.className} bg-[#0d0d0d] text-white min-h-screen`}>
         <AuthProvider>
           <Navbar />
-          <main>{children}</main>
+          {/* Every page renders through here, so every page needs a session — see auth-gate.tsx
+              for the public list. Navbar and Footer sit OUTSIDE it on purpose: they are the
+              chrome the sign-in page itself is drawn in, and they already branch on `user`. */}
+          <AuthGate>
+            <main>{children}</main>
+          </AuthGate>
           <Footer />
           <Toaster
             position="top-right"

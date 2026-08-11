@@ -120,6 +120,18 @@ async function goto(route, marker, label, settle = null) {
   await evaluate(`window.location.assign(${JSON.stringify(route)})`);
   await sleep(600);
   await waitFor(`document.body && document.body.innerText.length > 200`, { label: `${label} to render` });
+  /* Wait for <main>, not just for body text — since the site went behind AuthGate the layout is
+     <AuthGate><main>{children}</main></AuthGate>, so `main` exists only once the session has been
+     restored. Without this, `document.body.innerText.length > 200` is satisfied by the navbar and
+     footer ALONE, and every assertion below could run against a page still showing "Loading…".
+
+     That is not hypothetical: it is what made this file report `"Become a Provider" vanished for a
+     CUSTOMER`. The navbar now derives its links from `user`, so mid-restore it correctly has none
+     — the check was sampling the page before auth settled and reading a real, transient state as a
+     regression. The ASSERTIONS are unchanged; only this precondition is, and it is strictly
+     stronger than what it replaces. */
+  await waitFor(`(() => { const m = document.querySelector('main'); return !!m && m.innerText.length > 50; })()`,
+    { label: `${label} to get past the auth gate` });
   const body = await text();
   if (/This page could not be found|404/.test(body) && !body.includes(marker)) {
     throw new Error(`${label} rendered a 404`);

@@ -241,6 +241,32 @@ Two of its own bugs are worth recording, because both are the same family this l
 
 **Still open:** both pages still make one catalog request on first paint before the prefill resolves. That one is unavoidable without knowing the permission state before render, and it is a single request rather than one per interaction.
 
+### GPS is the primary location control — and the preference is EARNED (2026-08-11)
+
+Asked for directly: *"give first preference to GPS everywhere, keep pincode secondary — it will improve accuracy."* Adopted **for the customer's search origin**, with two deliberate limits and one addition.
+
+**✅ Layout now says what the product means.** The old arrangement — a wide pincode field on the left, a modest button beside it — read as *"type a pincode; there is also a location thing"*. GPS is now the full-width primary CTA with the benefit on the label ("finds people nearest you"); the pincode sits under it as the visibly secondary path. A device fix is typically 100–200 m where a pincode is a 2–5 km locality, so on the merits GPS genuinely does find nearer people.
+
+**❌ The pincode is NOT hidden behind a toggle.** Collapsing it would add a click for exactly the people who cannot use GPS — desktop users, anyone who has denied the permission, anyone on a locked-down device. Honest signposting says show the alternative and let the hierarchy persuade. Preference, not coercion.
+
+**✅ GPS now leads the PROVIDER'S service base too — and it retires a documented blocker.** This looks like a reversal of "never the device's live position" and is not: what changed is the *capture method*, not the model. It is a **one-time reading**, taken while the provider stands at their shop, which they confirm and which never updates itself. One static point per provider; continuous position is still Step-15 and still absent.
+
+The reason to lead with it is the known-open geocoder failure, not a preference: Nominatim returned **no match** for *Prem Auto*, *Don Bosco School*, *Rita Memorial School* and *Mangla Park* during the Kalyan scale test — precisely the shop-and-landmark addresses Indian providers give. Such a provider could not set a base at all, so they never appeared in search. **One tap on GPS resolves it with no geocoder in the path**, and more accurately than any address lookup would have managed. This is the map-pin picker's job, done without a map dependency. The typed address remains in full for the provider who is *not* at their base while signing up — the case the original decision was written to protect, and still real. A fix rougher than **5 km is refused outright** for a service base: ranking rests on that point for as long as they trade, so a 42 km guess is not a base.
+
+**Providers now also state their pincode**, written by a plain UPDATE on their own row rather than a new argument to `set_provider_service_base` (which would create the overload PostgREST cannot resolve — the trap from 20260818120000, hit twice since). This is the bootstrapping the `20260826120000` header flagged: `resolve_pincode()` builds locality anchors from pincodes providers state about themselves, so without real providers supplying one the customer-side pincode search only ever works on seeded data.
+
+**❌ Device position still stays out of the BOOKING's service address.** GPS and a typed address answer *different questions*: GPS is *"where is this device now"*, an address is *"where do I want service"*. Someone booking for a parent's flat is not at that flat, so it remains an *optional* pin labelled "only if you are at the service address now", alongside a required address.
+
+**⚠️ Known-open:** the provider-side GPS path is **browser-verified but not yet asserted**. `ui-check-step9` owns `/become-provider` and has a history of camera-related timeouts; adding to it was judged more likely to destabilise 48 passing assertions than to protect this one. Worth adding when that check is next touched.
+
+**🔴 The addition that makes it honest: `coords.accuracy` was being thrown away.** Grep confirmed zero uses. We ranked from a 30 km IP guess exactly as confidently as from a 100 m fix. Desktop browsers geolocate by WiFi/IP — measured on this project at **124 m** on a home connection, but a VPN or corporate gateway can put the same call tens of kilometres out. So the fix is now graded and the verdict shown: **≤1 km** reports its precision ("accurate to ±135 m"), **1–5 km** adds "a pincode would be more precise", **>5 km** admits "your device could only place you roughly" and points at the pincode. *Telling the customer when GPS let them down is what earns the GPS-first default; silently ranking from a bad fix is how you lose it.*
+
+**⏸️ Still no auto-prompt on page load.** In Chrome a DENIED geolocation permission is sticky per-origin, so a prompt fired before the visitor knows what the page is for is the one people reflexively dismiss — and that dismissal costs GPS for that site more or less permanently. You get one ask; spend it after they have seen what it is for. A browser that has already granted permission is still prefilled silently, which is the zero-friction best case.
+
+**Two fixes that came with it:** the geolocation timeout moved **10s → 20s** (GPS is primary now, the spec is ambiguous about whether the permission-prompt wait counts against it, and a real prompt was observed sitting unanswered for ~55s; a cached fix returns in ~0ms so the higher ceiling costs nothing in the common case), and the failure copy stopped saying *"Pick your city instead"* — a control deleted with the city dropdown, whose wording was being patched by a `String.replace` at the call site.
+
+**Verified against the real browser API, not an override** (2026-08-11): permission `prompt → granted`, a real fix at 12.6614/77.4505 accurate to **124 m**, source network/WiFi rather than device GPS, and a repeat fix in **0 ms** from the 5-minute cache. That real position sits ~40 km from the nearest provider, so it exercised the widening ladder by accident — *"Nobody within 15 km — showing the nearest providers within 50 km"*, 30 Bengaluru providers at 30–35 km. **Under the old fixed 25 km radius that real location would have rendered a blank page.** Asserted in `ui-check-step11`: the GPS control precedes the pincode field, a 40 m fix reports its precision and does not nag, and a 30 km fix admits it is rough.
+
 ---
 
 ## Known-open — tracked, low priority (⚠️ not regressions, do NOT re-flag as new bugs)
@@ -373,6 +399,120 @@ Recorded because the reasoning still matters and will resurface:
 - The answer is the **reason line on each entry**, which the earlier version lacked. "Cash — Coming soon" alone invites the customer to ask for it off-platform; "Cash — can't be held in escrow, so we can't protect or refund it yet" tells them why the platform is safer, at the exact moment they are deciding.
 - The assertion changed with it and is now **stronger**, not weaker: `ui-check-step10` no longer checks "there is nothing to click" but that **every control in the Payment section is disabled**, that Cash and Seva Wallet are each present-and-disabled, and that both carry a "Coming soon" label. The property that protects the customer is *non-selectability*, not absence.
 - **Defence in depth is unchanged:** a `disabled` attribute is a UI affordance, never a control. The DB still refuses both on INSERT — the COD guard (`20260721120000`) and the wallet guard (`20260817120000`).
+
+---
+
+## Site-wide auth gate — the whole app sits behind sign-in (✅ done)
+
+`localhost:3000` (and every other route) now opens on the sign-in page unless there is a session.
+One `<AuthGate>` in `app/layout.tsx` wraps `<main>`; `components/auth-gate.tsx` holds the public
+list, which is **`/auth/signin` and `/auth/signup` only**. Everything else — including
+`/how-it-works` and the provider catalog — requires a session.
+
+- **The list is an allowlist, deliberately.** A new page is gated the moment it exists, rather
+  than gated whenever someone remembers to add a guard. This supersedes the per-page redirect that
+  `/profile`, `/wallet` and `/bookings` each carried a copy of — **those copies are still in the
+  code and were deliberately left there.** They are now unreachable (the gate redirects first), but
+  they are correct, they are the `loading`-aware version commit `a715c60` fixed, and removing six
+  working guards to tidy up buys nothing while risking the exact hard-refresh bug that commit
+  closed. Redundant, not wrong.
+- **`/api/**` is untouched and must stay that way.** Route handlers do not render through a
+  layout, so the gate never sees them — correct, because `/api/payments/webhook` is called by
+  **Razorpay, not a browser**, and authenticates by verifying the HMAC signature. Gating it would
+  silently stop escrow reconciliation (invariant 5). The other routes authenticate the Bearer
+  token via `lib/api-auth`.
+- **`?next=` survives the detour.** A shared provider link opened by a signed-out person returns
+  them to that link after sign-in instead of dumping them on the homepage. `lib/next-param.ts`
+  allows only same-site absolute paths — `//evil.com`, `/\evil.com` and absolute URLs are dropped,
+  because `next` is attacker-supplied and an unchecked redirect after a real sign-in on the real
+  domain is an open redirect wearing the trust of the flow the victim just completed.
+
+### ❌ Rejected: middleware + cookie-backed sessions
+
+The stricter-looking option — add `@supabase/ssr`, swap `lib/supabase.ts` to a cookie-storing
+browser client, redirect at the edge in `middleware.ts` — was considered and **rejected**. Do not
+"upgrade" to it without a reason that isn't on this list:
+
+- It buys **no data protection here.** Every page except `/how-it-works` is `'use client'` and
+  fetches under RLS, so **no page server-renders user data**; the real boundary is, as always, in
+  the database.
+
+  Be precise about what the client gate does and does not do, because it is easy to overclaim: it
+  controls what the browser **shows**, not what the server **sends**. Page copy is retrievable
+  either way — a client page's markup sits in its JS chunk, which anyone can download. Verified
+  by fetching both kinds unauthenticated: `/` returns only `Loading…`, while `/how-it-works` —
+  the one server component — has its full text in the HTML, because `children` is server-rendered
+  and passed as a prop into the client gate. Neither carries user data. If the goal ever becomes
+  "the marketing copy itself must not leave the server without a session", **that** is a reason to
+  revisit middleware; nothing above is.
+- It would move the whole app's session storage from localStorage to cookies to gate routing —
+  invalidating every existing session, and putting a new dependency under the auth foundation.
+- The existing API auth (`Authorization: Bearer`, no SSR cookie session) is a deliberate choice
+  this would sit awkwardly beside.
+
+What it *would* buy: the redirect lands before any HTML/JS is sent, so no brief "Loading…" on a
+cold deep link. That is the entire upside.
+
+### ✅ The chrome no longer signposts gated pages
+
+Navbar and Footer render outside the gate (they are the frame the sign-in page is drawn in), so
+they used to offer a signed-out visitor `/services`, `/providers`, `/how-it-works`,
+`/become-provider` and the five footer service links — every one of which now bounces back to the
+sign-in page they are already on. **Dead controls, which honest signposting forbids.** Signed out:
+
+- **Navbar** shows no nav links at all (`links = !user ? [] : …`), and the logo points at
+  `/auth/signin` rather than `/`. Keyed on `user`, not `!loading && !user`, so the links are never
+  shown optimistically and then withdrawn.
+- **Footer** drops the Popular Services column entirely and filters every `href`-bearing entry out
+  of Company, leaving a 3-column grid. What stays is what is still true without an account: the
+  brand blurb, location, contact details, and the "Soon" entries — already plain text with a chip,
+  so they promise nothing.
+- **Both auth pages' own logos** are plain text instead of links to `/`.
+
+Verified by enumerating **every anchor** on the signed-out pages and asserting each resolves to a
+public route — a sweep, rather than a list of the links someone remembered — plus the other
+direction, that all of it returns signed in (and that an admin still gets the admin-shaped nav).
+
+`scripts/ui-check-auth-gate.mjs` holds all of it, **32/32**, and runs first in `verify-all`'s UI
+block: once everything is gated, a broken gate fails every other UI check at its own first
+navigation, which reads as six unrelated feature regressions instead of one cause.
+
+Two things that check learned the hard way, both of which had it reporting green against nothing:
+
+- **The sweep must prove it saw the whole page before "none gated" means anything.** The mobile
+  menu's links are not in the DOM while it is closed, and the button that opens it is subject to
+  the same hydration race as any form fill — clicked too early it does nothing. The same page swept
+  **7 anchors on one run and 3 on the next**, silently exempting a second copy of the navigation.
+  It now retries the click until the nav's anchor count actually grows, and a short sweep is a hard
+  FAIL rather than a confident "none gated".
+- **"The gated page never rendered" has to be sampled DURING the redirect, not after it.** Read
+  once the URL has settled, `main` is the sign-in page — so the check was reporting a leak on all
+  ten gated routes when the gate was working perfectly.
+
+### ⚠️ REAL GAP, newly surfaced: there is no password reset
+
+The "Forgot password?" link pointed at `/auth/forgot-password`, **which has never existed**. It
+404'd before; behind the gate it now bounces silently back to the sign-in page, which is worse —
+the customer cannot tell whether they misclicked or the site is broken. It is now rendered as
+plain text with a "Soon" chip (item 22's rule for unbuilt destinations).
+
+**That label is a stopgap, not a decision.** Password reset is table stakes for an account you can
+be locked out of, and Supabase already provides `resetPasswordForEmail` — this is a missing page
+and a callback route, not a missing capability. Recorded here so the honest label doesn't become
+the reason it is forgotten, exactly as Privacy Policy and Terms of Service are flagged above.
+
+### 🔴 REAL GAP, newly surfaced: sign-up asks for consent to documents that do not exist
+
+The same enumeration found `/terms` and `/privacy` linked from the sign-up consent line — **neither
+route exists**, which is why the footer has always shown these two as "Soon". So the form said
+"By creating an account, you agree to our Terms and Privacy Policy" over links that 404'd, and
+that behind the gate silently bounced back to sign-in.
+
+They are now plain text, and **the wording is deliberately unchanged** — a consent line is not
+copy to improvise on. This does not resolve anything: asking users to agree to documents that have
+never been written is the pre-existing legal exposure already flagged under item 22, now visible
+at the exact moment consent is collected. **Publishing Terms and Privacy is a launch blocker**;
+the honest rendering is only the stopgap that stops the site misrouting people in the meantime.
 
 ---
 

@@ -63,7 +63,16 @@ export default function Navbar() {
   // server-controlled (not client-writable) and every admin page + its RLS re-checks it, so this
   // is presentation only — hiding a link has never been the boundary.
   const isAdmin = profile?.role === 'admin';
-  const links = isAdmin ? adminLinks : navLinks;
+  /* Signed out, there are NO nav links — every one of them points at a page that now sits behind
+     AuthGate, so offering them means offering four controls that bounce straight back to the
+     sign-in page the visitor is already on. A link that doesn't go where it says is worse than no
+     link: honest signposting, the same rule that removed the hero's dead ?location= box.
+
+     Keyed on `user` rather than `!loading && !user`, so the links appear only once we know there
+     IS someone — never optimistically, which would flash four dead links at a signed-out visitor
+     on every load. There is no cost to the signed-in case: a gated page renders nothing but
+     "Loading…" during that same window anyway. */
+  const links = !user ? [] : isAdmin ? adminLinks : navLinks;
 
   const walletRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
@@ -197,8 +206,9 @@ export default function Navbar() {
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
-          {/* Logo */}
-          <Link href="/" className="flex items-center gap-2 flex-shrink-0">
+          {/* Logo. Home is gated too, so signed out it points at the sign-in page instead of
+              bouncing off / on the way there. */}
+          <Link href={user ? '/' : '/auth/signin'} className="flex items-center gap-2 flex-shrink-0">
             <span className="text-2xl">🙏</span>
             <span className="text-xl font-bold text-[#138808]">Seva</span>
             <span className="text-2xl">🙏</span>
