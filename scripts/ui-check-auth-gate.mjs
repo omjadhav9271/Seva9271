@@ -34,15 +34,22 @@ import { spawn } from 'node:child_process';
 import { readFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { account } from './lib/creds.mjs';
+import { createClient } from '@supabase/supabase-js';
+import { account, readEnvLocal } from './lib/creds.mjs';
 
 const APP = process.env.APP_URL ?? 'http://localhost:3000';
 const customer = account('CUSTOMER');
 
+const envLocal = readEnvLocal();
+const envVar = (k) => process.env[k] ?? envLocal[k];
+const SUPABASE_URL = envVar('NEXT_PUBLIC_SUPABASE_URL');
+const ANON_KEY = envVar('NEXT_PUBLIC_SUPABASE_ANON_KEY');
+const SERVICE_KEY = envVar('SUPABASE_SERVICE_ROLE_KEY');
+
 // The public list, mirrored from components/auth-gate.tsx. Deliberately duplicated rather than
 // imported: this check exists to catch the gate changing, and a check that reads its expectation
 // out of the thing under test cannot fail.
-const PUBLIC = ['/auth/signin', '/auth/signup'];
+const PUBLIC = ['/auth/signin', '/auth/signup', '/auth/forgot-password', '/auth/reset-password'];
 const GATED = ['/', '/providers', '/services', '/how-it-works', '/become-provider',
   '/bookings', '/wallet', '/profile', '/notifications', '/admin'];
 
@@ -122,6 +129,32 @@ async function signIn({ email, password }, next = null) {
   throw new Error('could not sign in through the UI after 3 attempts');
 }
 
+/* Fill a form and submit it, retrying until the submission visibly took effect.
+   Same hydration race as signIn(): the inputs exist before React attaches handlers, so an early
+   fill submits an empty form and the page just sits there looking broken. `fields` is a list of
+   [cssSelector, value, index] — the index picks among matches, because the reset form has two
+   inputs that differ only by position; `settled` is the page expression proving the submit landed. */
+async function fillAndSubmit(fields, settled, { attempts = 3, label = 'the form' } = {}) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    await sleep(2000); // let React hydrate and attach its handlers
+    const filled = await evaluate(`(() => {
+      ${REACT_SET}
+      const specs = ${JSON.stringify(fields)};
+      for (const [sel, val, index] of specs) {
+        const el = document.querySelectorAll(sel)[index || 0];
+        if (!el) return false;
+        reactSet(el, val);
+      }
+      return true;
+    })()`);
+    if (filled) {
+      await evaluate("(() => { const f = document.querySelector('form'); if (f) { f.requestSubmit(); return true; } return false; })()");
+      if (await soft(waitFor(settled, { label, timeout: 15000 }))) return true;
+    }
+  }
+  return false;
+}
+
 async function signOut() {
   await evaluate('localStorage.clear()').catch(() => {});
   await send('Page.navigate', { url: `${APP}/auth/signin` });
@@ -139,7 +172,22 @@ async function signOut() {
    next. A sweep that can silently under-count is worse than no sweep, because "none gated" is then
    a statement about the links it happened to see. So: retry the click until the nav's anchor count
    actually grows, wait for the footer, and make a shortfall a hard failure rather than a pass. */
+/* Wait for the navbar to finish restoring the session.
+   Its entire right-hand region is behind `{!loading && …}` (components/navbar.tsx), so while the
+   session is being read back from localStorage the navbar renders exactly ONE anchor — the logo —
+   and no auth controls whatsoever. Enumerating then reports a page that offers nothing, which
+   passes an "offers nothing gated" test for entirely the wrong reason and fails a "still offers
+   Sign In" one. It is the same class of bug as sampling a gated page before the gate resolves, and
+   it showed up the moment the dev server got slow: identical code, 7 anchors on a warm run and 6
+   on a cold one. Settling is therefore a PRECONDITION with its own failure message, never a silent
+   part of some other assertion. */
+async function chromeSettled(label) {
+  return soft(waitFor(`document.querySelectorAll('nav a[href]').length >= 2`,
+    { label: `${label}: the navbar to leave its loading state`, timeout: 30000 }));
+}
+
 async function anchorSweep(label) {
+  if (!await chromeSettled(label)) throw new Error(`${label}: the navbar never left its loading state`);
   await waitFor("!!document.querySelector('footer a[href]')", { label: `${label}'s footer` });
   const navCount = () => evaluate(`document.querySelectorAll('nav a[href]').length`);
   const before = await navCount();
@@ -264,12 +312,14 @@ try {
   }
 
   // ═══════════════ (b) the chrome offers nothing it cannot deliver ═══════════════
-  console.log('\n[b) signed out — every anchor on both public pages]');
+  console.log('\n[b) signed out — every anchor on every public page]');
   for (const route of PUBLIC) {
     await send('Page.navigate', { url: APP + route });
     await waitFor(HAS_MAIN, { label: `${route} to render` });
     await sleep(600);
-    const anchors = await anchorSweep(route);
+    let anchors;
+    try { anchors = await anchorSweep(route); }
+    catch (err) { no(err.message); continue; }
     const bad = anchors.filter((a) => classify(a.href) === 'gated');
     const good = anchors.filter((a) => classify(a.href) === 'public');
     const regions = [...new Set(anchors.map((a) => a.where))].sort();
@@ -291,7 +341,8 @@ try {
     // rather than only that the sweep found something.
     await send('Page.navigate', { url: `${APP}/auth/signin` });
     await waitFor(HAS_MAIN, { label: 'the sign-in page' });
-    await sleep(600);
+    if (!await chromeSettled('/auth/signin')) no('the navbar never left its loading state on /auth/signin');
+    await sleep(400);
     const nav = await evaluate(`(() => { const n = document.querySelector('nav');
       return { links: [...n.querySelectorAll('a[href]')].map(a => a.getAttribute('href')),
                text: n.innerText.replace(/\\s+/g, ' ') }; })()`);
@@ -315,9 +366,13 @@ try {
       ok('…while still naming Privacy Policy and Terms of Service as "Soon"');
     } else no('Privacy Policy / Terms of Service vanished from the footer rather than being labelled');
 
-    const body = await evaluate(`document.querySelector('main').innerText`);
-    if (/Forgot password/i.test(body)) ok('"Forgot password?" is still shown (as text — the sweep proves it is not a link)');
-    else no('"Forgot password?" was deleted rather than labelled as unbuilt');
+    // "Forgot password?" spent a release as a dead "Soon" chip because the route did not exist.
+    // It is a real link again, and the sweep above has already proved the destination is public.
+    const forgot = await evaluate(`(() => {
+      const a = [...document.querySelectorAll('main a[href]')].find(x => /forgot password/i.test(x.innerText));
+      return a ? a.getAttribute('href') : null; })()`);
+    if (forgot === '/auth/forgot-password') ok('"Forgot password?" is a real link again → /auth/forgot-password');
+    else no(`"Forgot password?" does not link to the reset flow (href: ${forgot})`);
   }
 
   // ═══════════════ (c) ?next= comes back, and cannot be weaponised ═══════════════
@@ -364,6 +419,9 @@ try {
     if (/Trusted Service/i.test(h2)) ok(`…with its real hero: "${h2}"`);
     else no('the homepage rendered something other than its hero: ' + h2.slice(0, 60));
 
+    // Same precondition as signed out: the nav links derive from `user`, so mid-restore there are
+    // legitimately none and asserting early reads that as four missing links.
+    if (!await chromeSettled('/')) no('the navbar never left its loading state on / while signed in');
     const nav = await evaluate(`[...document.querySelectorAll('nav a[href]')].map(a => a.getAttribute('href'))`);
     for (const link of ['/services', '/providers', '/how-it-works', '/become-provider']) {
       if (nav.includes(link)) ok(`the navbar offers ${link} again`);
@@ -397,6 +455,124 @@ try {
     if (ct.includes('text/html')) no(`the webhook was served HTML (status ${r.status}) — it is behind the gate`);
     else if (r.status >= 400 && r.status < 500) ok(`the webhook reached its handler and rejected an unsigned POST (${r.status}: ${body.replace(/\s+/g, ' ')})`);
     else no(`the webhook answered ${r.status} ${ct} — expected a 4xx signature rejection: ${body}`);
+  }
+
+  // ═══════════════ (f) password reset, end to end ═══════════════
+  console.log('\n[f) password reset — the real link, a real new password]');
+  if (!SERVICE_KEY || !SUPABASE_URL || !ANON_KEY) {
+    no('cannot exercise the reset flow — NEXT_PUBLIC_SUPABASE_URL / ANON_KEY / SERVICE_ROLE_KEY missing');
+  } else {
+    const service = createClient(SUPABASE_URL, SERVICE_KEY,
+      { auth: { persistSession: false, autoRefreshToken: false } });
+    const stamp = Date.now();
+    /* A THROWAWAY user, created and deleted inside this check. The alternative — resetting a real
+       test account's password — would leave every other script signing in with a stale one the
+       moment this check failed halfway through. */
+    const email = `zz-ui-check-reset-${stamp}@example.com`;
+    const OLD = `Old-${stamp}-pw`;
+    const NEW = `New-${stamp}-pw`;
+    let userId = null;
+
+    try {
+      const { data: created, error: cErr } = await service.auth.admin.createUser({
+        email, password: OLD, email_confirm: true,
+      });
+      if (cErr) throw new Error('could not create the throwaway user: ' + cErr.message);
+      userId = created.user.id;
+
+      /* Somewhere else already signed in as this user — a phone, a second browser. The whole
+         reason the reset page signs out globally is to kill this session, so open one and check
+         it dies. An access token is a JWT and stays syntactically valid until it expires, so the
+         thing to test is whether it can still REFRESH. */
+      const other = createClient(SUPABASE_URL, ANON_KEY,
+        { auth: { persistSession: false, autoRefreshToken: false } });
+      const { error: otherErr } = await other.auth.signInWithPassword({ email, password: OLD });
+      if (otherErr) no('could not open a second session to test the global sign-out: ' + otherErr.message);
+
+      // ---- the request page, with an address that has NO account ----
+      /* Deliberate: it drives the entire client path and the confirmation screen while sending no
+         mail at all (Supabase does not mail an unknown address, and still reports success), so
+         this check cannot burn the project's email quota however often it runs. It also asserts
+         the property that matters — a stranger's address gets the SAME answer a real one does. */
+      await signOut();
+      await send('Page.navigate', { url: `${APP}/auth/forgot-password` });
+      await waitFor("!!document.querySelector('input[type=email]')", { label: 'the reset request form' });
+      const nobody = `zz-nobody-${stamp}@example.com`;
+      const requested = await fillAndSubmit(
+        [['input[type=email]', nobody]],
+        `/on its way/i.test(document.querySelector('main').innerText)`,
+        { label: 'the confirmation screen' });
+      if (!requested) no('the reset request form never reached its confirmation screen');
+      else {
+        const body = await evaluate(`document.querySelector('main').innerText`);
+        if (/no account|not found|does not exist|isn't registered/i.test(body)) {
+          no('the confirmation reveals whether the address has an account — that is an enumeration oracle');
+        } else ok('an address with NO account gets the same neutral confirmation a real one does');
+      }
+
+      // ---- the real recovery link ----
+      const { data: link, error: lErr } = await service.auth.admin.generateLink({
+        type: 'recovery', email, options: { redirectTo: `${APP}/auth/reset-password` },
+      });
+      if (lErr) throw new Error('generateLink failed: ' + lErr.message);
+
+      await signOut();
+      await send('Page.navigate', { url: link.properties.action_link });
+      const onResetPage = await soft(waitFor(`location.pathname === '/auth/reset-password'`,
+        { label: 'the reset page', timeout: 25000 }));
+      if (!onResetPage) {
+        /* Almost always one thing: `redirectTo` is not on the project's redirect allowlist, so
+           Supabase quietly substitutes the Site URL and the user lands somewhere with a live
+           recovery session and no form to use it. */
+        no(`the recovery link did not land on /auth/reset-password (landed on ${await evaluate('location.href')}) ` +
+           `— add ${APP}/** to Supabase → Auth → URL Configuration → Redirect URLs`);
+      } else {
+        ok('the emailed recovery link lands on /auth/reset-password');
+        const formUp = await soft(waitFor(
+          `document.querySelectorAll('input[autocomplete="new-password"]').length === 2`,
+          { label: 'the new-password form', timeout: 20000 }));
+        if (!formUp) {
+          const shown = await evaluate(`(() => { const m = document.querySelector('main'); return m ? m.innerText.replace(/\\s+/g, ' ').slice(0, 100) : ''; })()`);
+          no(`the reset page did not offer a password form for a VALID link — it showed: "${shown}"`);
+        } else {
+          ok('…and a valid link is recognised, offering the new-password form');
+          const saved = await fillAndSubmit(
+            [['input[autocomplete="new-password"]', NEW, 0],
+             ['input[autocomplete="new-password"]', NEW, 1]],
+            `location.pathname === '/auth/signin'`,
+            { label: 'the return to sign-in' });
+          if (!saved) no('setting a new password did not return to the sign-in page');
+          else ok('setting a new password returns to sign-in');
+
+          const stillSignedIn = await evaluate(SESSION);
+          if (!stillSignedIn) ok('…and the browser was signed out rather than dropped into the app');
+          else no('the browser kept its recovery session after the reset');
+        }
+      }
+
+      // ---- the assertions that actually prove the password changed ----
+      const probe = createClient(SUPABASE_URL, ANON_KEY,
+        { auth: { persistSession: false, autoRefreshToken: false } });
+      const { error: newErr } = await probe.auth.signInWithPassword({ email, password: NEW });
+      if (!newErr) ok('the NEW password signs in');
+      else no('the new password does not work: ' + newErr.message);
+
+      const { error: oldErr } = await probe.auth.signInWithPassword({ email, password: OLD });
+      if (oldErr) ok('the OLD password no longer signs in');
+      else no('the OLD password still works — the reset did not take');
+
+      const { error: refreshErr } = await other.auth.refreshSession();
+      if (refreshErr) ok('a session opened BEFORE the reset can no longer refresh — the sign-out was global');
+      else no('a session opened before the reset is still alive — other devices stayed signed in');
+    } catch (err) {
+      no('the reset flow could not be exercised: ' + err.message);
+    } finally {
+      if (userId) {
+        const { error } = await service.auth.admin.deleteUser(userId);
+        if (error) console.log(`  ! left the throwaway user ${email} behind: ${error.message}`);
+        else console.log(`  (cleaned up the throwaway user ${email})`);
+      }
+    }
   }
 
   console.log(`\n${'='.repeat(60)}\n  ${pass} passed, ${fail} failed`);

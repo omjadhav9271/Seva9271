@@ -12,6 +12,8 @@ type AuthContextType = {
   signIn: (email: string, password: string) => Promise<{ error: string | null }>;
   signUp: (email: string, password: string, fullName: string) => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
+  requestPasswordReset: (email: string) => Promise<{ error: string | null }>;
+  updatePassword: (password: string) => Promise<{ error: string | null }>;
   refreshProfile: () => Promise<void>;
 };
 
@@ -23,6 +25,8 @@ const AuthContext = createContext<AuthContextType>({
   signIn: async () => ({ error: null }),
   signUp: async () => ({ error: null }),
   signOut: async () => {},
+  requestPasswordReset: async () => ({ error: null }),
+  updatePassword: async () => ({ error: null }),
   refreshProfile: async () => {},
 });
 
@@ -104,12 +108,45 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signOut = async () => {
-    await supabase.auth.signOut();
+    // supabase-js defaults this to `scope: 'global'`, which revokes every refresh token for the
+    // user rather than just this tab's. That is the behaviour we want and rely on after a password
+    // reset, so it is stated here rather than left to a library default that could change.
+    await supabase.auth.signOut({ scope: 'global' });
     setProfile(null);
   };
 
+  /* Send the recovery email. `redirectTo` is where Supabase bounces the browser after it verifies
+     the token, and it must be on the project's redirect allowlist (Auth → URL Configuration) or
+     Supabase silently falls back to the Site URL — which would land the user on `/` with a live
+     recovery session and no way to set a password.
+
+     Deliberately returns the SAME result whether or not the address has an account: Supabase does
+     not send mail to an unknown address but still reports success, and the UI must not undo that
+     by saying "no such user". A reset form that distinguishes the two is an account-enumeration
+     oracle for anyone who wants to know who is on Seva. */
+  const requestPasswordReset = async (email: string) => {
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/auth/reset-password`,
+    });
+    return { error: error?.message ?? null };
+  };
+
+  /* Set a new password for whoever the CURRENT session belongs to — on the reset page that is the
+     recovery session Supabase established from the emailed link.
+
+     Note what this does NOT do: it does not revoke the user's other sessions. That is the caller's
+     job (see the reset page), and it matters, because the person most likely to be resetting a
+     password is someone who thinks another party has it. */
+  const updatePassword = async (password: string) => {
+    const { error } = await supabase.auth.updateUser({ password });
+    return { error: error?.message ?? null };
+  };
+
   return (
-    <AuthContext.Provider value={{ user, session, profile, loading, signIn, signUp, signOut, refreshProfile }}>
+    <AuthContext.Provider value={{
+      user, session, profile, loading,
+      signIn, signUp, signOut, requestPasswordReset, updatePassword, refreshProfile,
+    }}>
       {children}
     </AuthContext.Provider>
   );

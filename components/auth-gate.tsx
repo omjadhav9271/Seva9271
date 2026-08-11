@@ -16,8 +16,16 @@ import { useAuth } from '@/lib/auth-context';
    Note what is deliberately NOT covered: /api/**. Route handlers never render through a layout,
    so they are untouched by this file, which is exactly right — /api/payments/webhook is called by
    Razorpay, not a browser, and has no session to check. It authenticates by verifying the
-   Razorpay signature; the rest authenticate the Bearer token via lib/api-auth. */
-const PUBLIC_ROUTES = ['/auth/signin', '/auth/signup'];
+   Razorpay signature; the rest authenticate the Bearer token via lib/api-auth.
+
+   Password recovery is public for a reason that is easy to get wrong: BOTH halves have to be.
+   /auth/reset-password is where the emailed link lands, and at that moment there is usually no
+   session yet — the token is still sitting in the URL fragment waiting for supabase-js to exchange
+   it. Gating that route would redirect first, and since AuthGate's `?next=` carries only pathname
+   and search, the fragment — the token itself — would be thrown away. Worse, an EXPIRED link would
+   bounce to sign-in with no explanation, when the whole point of that page is to say "this link is
+   dead, here is a fresh one". */
+const PUBLIC_ROUTES = ['/auth/signin', '/auth/signup', '/auth/forgot-password', '/auth/reset-password'];
 
 const isPublic = (pathname: string) =>
   PUBLIC_ROUTES.some((route) => pathname === route || pathname.startsWith(route + '/'));

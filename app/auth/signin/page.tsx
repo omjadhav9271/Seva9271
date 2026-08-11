@@ -85,23 +85,12 @@ export default function SignInPage() {
             <div>
               <div className="flex items-center justify-between mb-2">
                 <label className="block text-sm font-medium text-gray-300">Password</label>
-                {/* `/auth/forgot-password` has never existed. As a link it used to 404; behind
-                    AuthGate it now bounces silently back to this page, which is worse — the
-                    customer cannot tell whether they misclicked or the site is broken. Same
-                    treatment the footer's unbuilt destinations already get (decisions log, item
-                    22): say plainly that it isn't built rather than route them nowhere.
-                    ⚠️ This is a REAL GAP, not a decision — password reset is table stakes and
-                    Supabase already provides resetPasswordForEmail. Tracked in the decisions log
-                    so this honest label doesn't become the way it gets forgotten. */}
-                <span
-                  className="text-xs text-gray-500 inline-flex items-center gap-1.5 cursor-default"
-                  title="Password reset isn't built yet"
-                >
+                {/* A real link again. This spent one release as a "Soon" chip because
+                    /auth/forgot-password did not exist — it 404'd, and once the site went behind
+                    AuthGate it bounced silently back to this page instead. Both pages exist now. */}
+                <Link href="/auth/forgot-password" className="text-xs text-[#FF9933] hover:text-[#e8872e] transition-colors">
                   Forgot password?
-                  <span className="text-[9px] font-semibold uppercase tracking-wide px-1 py-0.5 rounded bg-white/10 text-gray-400">
-                    Soon
-                  </span>
-                </span>
+                </Link>
               </div>
               <div className="relative">
                 <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500" style={{ width: '18px', height: '18px' }} />

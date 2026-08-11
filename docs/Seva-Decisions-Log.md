@@ -489,17 +489,61 @@ Two things that check learned the hard way, both of which had it reporting green
   once the URL has settled, `main` is the sign-in page — so the check was reporting a leak on all
   ten gated routes when the gate was working perfectly.
 
-### ⚠️ REAL GAP, newly surfaced: there is no password reset
+### ✅ CLOSED — password reset now exists (2026-08-11)
 
-The "Forgot password?" link pointed at `/auth/forgot-password`, **which has never existed**. It
-404'd before; behind the gate it now bounces silently back to the sign-in page, which is worse —
-the customer cannot tell whether they misclicked or the site is broken. It is now rendered as
-plain text with a "Soon" chip (item 22's rule for unbuilt destinations).
+The "Forgot password?" link pointed at `/auth/forgot-password`, **which had never existed**. It
+404'd, and behind the gate it bounced silently back to the sign-in page — worse, because the
+customer could not tell whether they had misclicked or the site was broken. It spent one release
+as plain text with a "Soon" chip (item 22's rule for unbuilt destinations). **It is a real link
+again**, and both pages behind it are built.
 
-**That label is a stopgap, not a decision.** Password reset is table stakes for an account you can
-be locked out of, and Supabase already provides `resetPasswordForEmail` — this is a missing page
-and a callback route, not a missing capability. Recorded here so the honest label doesn't become
-the reason it is forgotten, exactly as Privacy Policy and Terms of Service are flagged above.
+`/auth/forgot-password` asks for the address and sends the link; `/auth/reset-password` is where
+that link lands. Four decisions in there are load-bearing:
+
+- **The request page cannot be used to find out who is on Seva.** Supabase does its half already
+  (it mails nothing to an unknown address and still reports success); the UI has to not undo that,
+  so there is no "no account found" branch anywhere, and the confirmation names the address the
+  visitor typed rather than confirming it exists. Otherwise the form is a free enumeration oracle:
+  type an address, learn whether that person is a Seva user. The one error that IS shown is
+  Supabase's rate limit, because that is a fact about the request rather than about the account.
+- **Both halves are on the gate's public list, and the second one is the subtle part.**
+  `/auth/reset-password` is reached with **no session yet** — the token is still in the URL
+  fragment waiting for supabase-js to exchange it. Gating that route would redirect first, and
+  since `?next=` carries only pathname and search, **the fragment — the token itself — would be
+  thrown away**. An expired link would also bounce to sign-in unexplained, when saying "this link
+  is dead, here is a fresh one" is that page's entire job.
+- **Saving a new password signs the user out everywhere**, and the form says so before they click.
+  `updateUser` leaves every other session alive, and the person most likely to be resetting a
+  password is someone who believes another party has it — so leaving that party signed in would
+  defeat the exercise. It also means the new password is used once, immediately, which is the
+  cheapest possible confirmation that it is what they think it is.
+- **The client is on the implicit flow** (`lib/supabase.ts` calls `createClient` with no auth
+  options, and supabase-js defaults `flowType: 'implicit'`), so the happy path arrives as
+  `#access_token=…` and the client picks it up itself. The page therefore *waits* for the happy
+  path rather than parsing it, and spends its code on the two failure shapes instead: a dead link,
+  and `?token_hash=` in the query, which is what Supabase's newer templates emit and what survives
+  a later switch to PKCE. Reading the error out of the fragment is **best-effort by design** —
+  supabase-js strips it during its own init, before React renders — so a second branch catches the
+  same case from "auth settled and nobody is signed in" with a less specific message.
+
+**⚠️ Not defended against, deliberately:** someone already signed in can open `/auth/reset-password`
+and set a new password without knowing the old one. That is not introduced here —
+`updateUser({ password })` behaves that way from any live session on any page — and the mitigation
+is the project setting ("Secure password change", requiring recent re-authentication), not a
+client-side check. Noted so the absence of an old-password field does not read as an oversight.
+
+**Verified end to end in `ui-check-auth-gate` (now 44/44), against a real recovery link:** a
+throwaway user is created, `admin.generateLink({ type: 'recovery' })` produces the genuine link,
+the browser follows it, sets a password through the real form, and then the assertions that
+actually matter run outside the UI — the **new** password signs in, the **old** one does not, and
+a session opened *before* the reset can no longer refresh, which is what proves the sign-out was
+global rather than local. The user is deleted afterwards, so no test account's password is ever
+touched. The request page is exercised with an address that has **no account**, on purpose: it
+drives the whole path and the neutral confirmation while sending no mail, so the check cannot burn
+the project's email quota however often it runs.
+
+**Still open:** the email itself is Supabase's default template on Supabase's shared SMTP, which is
+rate-limited and not branded. Fine for now; a custom SMTP sender is a launch item, not a bug.
 
 ### 🔴 REAL GAP, newly surfaced: sign-up asks for consent to documents that do not exist
 
