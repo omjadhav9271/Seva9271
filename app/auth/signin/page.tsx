@@ -125,33 +125,21 @@ export default function SignInPage() {
             </button>
           </form>
 
-          {/* Divider */}
-          <div className="flex items-center gap-3 my-6">
-            <div className="flex-1 h-px bg-[#2a2a2a]" />
-            <span className="text-xs text-gray-600">OR</span>
-            <div className="flex-1 h-px bg-[#2a2a2a]" />
-          </div>
+          {/* GONE FROM HERE: a "Quick demo access" block offering Customer Demo and Provider Demo,
+              which filled the form with customer@seva.demo / provider@seva.demo and demo1234.
 
-          {/* Demo Accounts */}
-          <div className="space-y-2 mb-6">
-            <p className="text-xs text-gray-500 text-center mb-3">Quick demo access</p>
-            {[
-              { label: 'Customer Demo', email: 'customer@seva.demo', icon: '👤' },
-              { label: 'Provider Demo', email: 'provider@seva.demo', icon: '🔧' },
-            ].map((demo) => (
-              <button
-                key={demo.email}
-                onClick={() => { setEmail(demo.email); setPassword('demo1234'); }}
-                className="w-full flex items-center gap-3 px-4 py-3 bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl text-sm text-gray-300 hover:border-[#FF9933]/50 hover:text-white transition-all"
-              >
-                <span>{demo.icon}</span>
-                <span>{demo.label}</span>
-                <span className="ml-auto text-xs text-gray-500">{demo.email}</span>
-              </button>
-            ))}
-          </div>
+              NEITHER ACCOUNT EXISTS. Checked against auth.users: the only @seva.demo addresses in
+              the project are four seeded providers (ramesh.electrician, sunita.cleaning,
+              imran.plumber, lata.cook), and those two are not among them. So the buttons were not
+              merely decorative — they filled the form with credentials guaranteed to fail, and the
+              next click returned "Invalid login credentials". A control that manufactures an error
+              is the worst version of a dead control, because the visitor reasonably concludes the
+              SITE is broken rather than the button.
 
-          <p className="text-center text-sm text-gray-400">
+              The divider that separated them went with them: it was there to part the form from
+              this block, and with the block gone it parted the form from nothing. */}
+
+          <p className="text-center text-sm text-gray-400 mt-6">
             Don't have an account?{' '}
             {/* Carry the destination across, or someone who arrives from a shared provider link
                 and chooses to sign up instead loses it at the last step. */}

@@ -545,6 +545,67 @@ the project's email quota however often it runs.
 **Still open:** the email itself is Supabase's default template on Supabase's shared SMTP, which is
 rate-limited and not branded. Fine for now; a custom SMTP sender is a launch item, not a bug.
 
+### Four dead controls in the chrome, deleted (2026-08-11)
+
+Raised as *"remove these, and think critically about the rest"*. All four turned out to be the same
+defect wearing different clothes — **a control that cannot do what it appears to do** — which is the
+rule item 22 already set. Recorded individually because the reasoning differs.
+
+**❌ "Sign In" / "Get Started" in the navbar, signed out.** Deleted. Signed out the only reachable
+pages are the four `/auth` ones, so this pair was shown *exclusively* to people already standing on
+one of them. On each page one of the two is **circular** — a "Sign In" button on the sign-in page —
+and the other is already offered in the page's own body, where people look for it: *"Don't have an
+account? Sign up free"*, *"Already have an account? Sign in"*, *"Back to sign in"*, *"Send me a new
+link"*. So it was never a way in; it was two controls that either did nothing visible or repeated
+the sentence below them. The signed-out navbar is now the logo alone.
+
+**❌ The mobile hamburger, signed out.** Deleted with it, as a consequence rather than a separate
+decision: with no nav links and no auth pair, the panel it opened held **nothing**. The menu is also
+gated on `user` as well as `menuOpen`, or signing out with it open leaves an empty panel hanging.
+
+**❌ The "Mumbai, MH" location chip in the navbar.** Deleted for everyone, signed in included. Three
+independent reasons, any one sufficient:
+- It was a `<button>` with hover styling and **no `onClick`**. Nothing. Ever.
+- It **invented its own data**: the fallback was a hardcoded `'Mumbai, MH'`, so every user without a
+  city on their profile was told they were in Mumbai — and a signed-out visitor, who has no profile
+  at all, was told the same.
+- It **duplicated something that already works.** `/providers` and `/services` carry the real GPS +
+  pincode control and state what they are searching near ("Searching near 400064"). A chip in the
+  chrome implying a global "you are here" that no search reads is worse than no chip.
+
+**❌ "Quick demo access" on the sign-in page.** Deleted, and this was the worst of the four.
+It filled the form with `customer@seva.demo` / `provider@seva.demo` and `demo1234`. **Neither
+account exists** — checked against `auth.users`, where the only `@seva.demo` addresses are four
+seeded providers (`ramesh.electrician`, `sunita.cleaning`, `imran.plumber`, `lata.cook`). So the
+buttons were not merely inert: they loaded credentials guaranteed to fail, and the next click
+returned *"Invalid login credentials"*. **A control that manufactures an error is the worst kind of
+dead control**, because the visitor reasonably concludes the SITE is broken rather than the button.
+The divider above it went too — it existed to part the form from that block.
+
+**✅ The footer's contact details are real, and reachable.** `+91 98765 43210` is the stock
+placeholder every Indian mockup uses and `support@seva.com` is a domain this project does not own,
+so the one column promising help offered **two ways to reach nobody**. They are the owner's real
+number and inbox now, and they are `tel:` / `mailto:` **links** rather than plain text — on a phone,
+a support number you cannot tap is one you have to memorise and retype. Neither is a route, so the
+auth gate never sees them and they work signed out, which is exactly when somebody locked out of
+their account needs them. ⚠️ **These are personal details used as a stopgap so the footer stops
+lying, and they are in the git history from this commit on — swap them for a support desk before
+public launch.**
+
+**✅ The footer's location line keeps its pin but says whose it is** — "Based in Mumbai,
+Maharashtra". Unlike the navbar chip this is not a control and not a guess; it is the company's
+base, and Mumbai-first is true. The only defect was ambiguity: an unlabelled pin reading "Mumbai,
+Maharashtra, India" is read by a visitor in Pune as the site's guess at where *they* are — the very
+thing the deleted navbar chip pretended to know.
+
+**One harness consequence worth writing down.** Removing the auth pair made the signed-out navbar
+render **identically before and after the session is restored** (one anchor, the logo), which broke
+the settle-precondition added hours earlier: "wait for ≥2 nav anchors" would now hang forever. The
+replacement waits for the chrome to **stop changing** — two identical samples 800 ms apart — which
+needs no knowledge of what the settled navbar should contain, so it keeps working the next time
+something starts appearing late. *A precondition that hard-codes the expected shape is a
+precondition that breaks every time the shape is the thing being changed.*
+
 ### 🔴 REAL GAP, newly surfaced: sign-up asks for consent to documents that do not exist
 
 The same enumeration found `/terms` and `/privacy` linked from the sign-up consent line — **neither

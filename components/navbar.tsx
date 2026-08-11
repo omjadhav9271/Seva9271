@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import {
-  Bell, MapPin, Wallet, Menu, X, LogOut, User, BookOpen,
+  Bell, Wallet, Menu, X, LogOut, User, BookOpen,
   Heart, Settings, HelpCircle, ArrowUpRight, ArrowDownLeft, TrendingUp,
   CheckCircle, Info, AlertTriangle, AlertCircle, ShieldCheck, type LucideIcon
 } from 'lucide-react';
@@ -231,14 +231,17 @@ export default function Navbar() {
             ))}
           </div>
 
-          {/* Right Side */}
-          <div className="hidden md:flex items-center gap-3">
-            {/* Location */}
-            <button className="flex items-center gap-1.5 text-sm text-gray-300 hover:text-white transition-colors">
-              <MapPin className="w-4 h-4 text-[#FF9933]" />
-              <span>{profile?.city ? `${profile.city}, ${profile.state}` : 'Mumbai, MH'}</span>
-            </button>
+          {/* Right Side.
 
+              GONE FROM HERE: a location chip reading "Mumbai, MH". It was a <button> with hover
+              styling and NO onClick — a dead control, the thing this codebase keeps deleting. It
+              also invented its own data: the fallback was a hardcoded "Mumbai, MH", so every user
+              without a city on their profile was told they were in Mumbai, and a signed-out
+              visitor (no user at all) was told the same. And it duplicated something that already
+              works — /providers and /services carry the real GPS + pincode control and say what
+              they are searching near ("Searching near 400064"). A chip in the chrome implying a
+              global "you are here" that no search reads is worse than no chip. */}
+          <div className="hidden md:flex items-center gap-3">
             {!loading && (
               <>
                 {user ? (
@@ -438,38 +441,41 @@ export default function Navbar() {
                       )}
                     </div>
                   </>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <Link
-                      href="/auth/signin"
-                      className="text-sm font-medium text-gray-300 hover:text-white transition-colors px-3 py-1.5"
-                    >
-                      Sign In
-                    </Link>
-                    <Link
-                      href="/auth/signup"
-                      className="text-sm font-semibold bg-[#FF9933] hover:bg-[#e8872e] text-white px-4 py-1.5 rounded-lg transition-all duration-200 hover:shadow-lg hover:shadow-[#FF9933]/20"
-                    >
-                      Get Started
-                    </Link>
-                  </div>
-                )}
+                ) : null /* No "Sign In" / "Get Started" pair here any more.
+
+                    Signed out, the only pages that exist are the four /auth ones — so those two
+                    buttons were shown exclusively to people who were already standing on one of
+                    them. On each page one of the two is CIRCULAR (a "Sign In" button on the
+                    sign-in page) and the other is already offered in the page's own body, in the
+                    place people actually look for it: "Don't have an account? Sign up free",
+                    "Already have an account? Sign in", "Back to sign in", "Send me a new link".
+
+                    So the pair was never a way in — it was two extra controls that either did
+                    nothing visible or duplicated the sentence below them. Same rule that emptied
+                    the nav links and the footer's service column: a control that returns you to
+                    where you already are is worse than no control. */}
               </>
             )}
           </div>
 
-          {/* Mobile menu button */}
-          <button
-            className="md:hidden p-2 rounded-lg text-gray-300 hover:text-white transition-colors"
-            onClick={() => setMenuOpen(!menuOpen)}
-          >
-            {menuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-          </button>
+          {/* Mobile menu button — only when there is a menu to open.
+              Signed out the panel below holds nothing at all now (no nav links, and the auth pair
+              is gone for the reason above), so an always-rendered hamburger would be a control
+              that opens an empty box. */}
+          {user && (
+            <button
+              className="md:hidden p-2 rounded-lg text-gray-300 hover:text-white transition-colors"
+              onClick={() => setMenuOpen(!menuOpen)}
+            >
+              {menuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Mobile Menu */}
-      {menuOpen && (
+      {/* Mobile Menu. Gated on `user` as well as `menuOpen` — otherwise signing out with the menu
+          open leaves an empty panel hanging under the navbar. */}
+      {menuOpen && user && (
         <div className="md:hidden bg-[#0d0d0d] border-t border-[#2a2a2a]">
           <div className="px-4 py-4 space-y-2">
             {links.map((link) => (
@@ -485,25 +491,19 @@ export default function Navbar() {
                 {link.label}
               </Link>
             ))}
+            {/* No signed-out branch: this panel only renders for a signed-in user now. */}
             <div className="pt-2 border-t border-[#2a2a2a]">
-              {user ? (
-                <div className="space-y-2">
-                  <Link href="/profile" className="block px-4 py-3 rounded-lg text-sm text-gray-300 hover:bg-[#1e1e1e] hover:text-white">Profile</Link>
-                  {/* Mirrors the desktop menu — an admin gets neither bookings nor a wallet. */}
-                  {!isAdmin && (
-                    <>
-                      <Link href="/bookings" className="block px-4 py-3 rounded-lg text-sm text-gray-300 hover:bg-[#1e1e1e] hover:text-white">My Bookings</Link>
-                      <Link href="/wallet" className="block px-4 py-3 rounded-lg text-sm text-gray-300 hover:bg-[#1e1e1e] hover:text-white">Wallet</Link>
-                    </>
-                  )}
-                  <button onClick={handleSignOut} className="block w-full text-left px-4 py-3 rounded-lg text-sm text-red-400 hover:bg-red-900/20">Sign out</button>
-                </div>
-              ) : (
-                <div className="flex gap-3">
-                  <Link href="/auth/signin" className="flex-1 text-center px-4 py-3 rounded-lg text-sm font-medium text-gray-300 border border-[#2a2a2a] hover:border-[#FF9933]/50">Sign In</Link>
-                  <Link href="/auth/signup" className="flex-1 text-center px-4 py-3 rounded-lg text-sm font-semibold bg-[#FF9933] text-white hover:bg-[#e8872e]">Get Started</Link>
-                </div>
-              )}
+              <div className="space-y-2">
+                <Link href="/profile" className="block px-4 py-3 rounded-lg text-sm text-gray-300 hover:bg-[#1e1e1e] hover:text-white">Profile</Link>
+                {/* Mirrors the desktop menu — an admin gets neither bookings nor a wallet. */}
+                {!isAdmin && (
+                  <>
+                    <Link href="/bookings" className="block px-4 py-3 rounded-lg text-sm text-gray-300 hover:bg-[#1e1e1e] hover:text-white">My Bookings</Link>
+                    <Link href="/wallet" className="block px-4 py-3 rounded-lg text-sm text-gray-300 hover:bg-[#1e1e1e] hover:text-white">Wallet</Link>
+                  </>
+                )}
+                <button onClick={handleSignOut} className="block w-full text-left px-4 py-3 rounded-lg text-sm text-red-400 hover:bg-red-900/20">Sign out</button>
+              </div>
             </div>
           </div>
         </div>

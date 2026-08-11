@@ -181,32 +181,59 @@ async function signOut() {
    it showed up the moment the dev server got slow: identical code, 7 anchors on a warm run and 6
    on a cold one. Settling is therefore a PRECONDITION with its own failure message, never a silent
    part of some other assertion. */
-async function chromeSettled(label) {
-  return soft(waitFor(`document.querySelectorAll('nav a[href]').length >= 2`,
+async function chromeSettled(label, min = 2) {
+  return soft(waitFor(`document.querySelectorAll('nav a[href]').length >= ${min}`,
     { label: `${label}: the navbar to leave its loading state`, timeout: 30000 }));
 }
 
-async function anchorSweep(label) {
-  if (!await chromeSettled(label)) throw new Error(`${label}: the navbar never left its loading state`);
-  await waitFor("!!document.querySelector('footer a[href]')", { label: `${label}'s footer` });
-  const navCount = () => evaluate(`document.querySelectorAll('nav a[href]').length`);
-  const before = await navCount();
-  let opened = false;
-  for (let attempt = 1; attempt <= 6 && !opened; attempt++) {
-    await evaluate(`(() => {
-      const b = [...document.querySelectorAll('nav button')].find(x => (x.className || '').includes('md:hidden'));
-      if (b) b.click();
-      return !!b;
-    })()`);
-    await sleep(400);
-    opened = (await navCount()) > before;
+/* The signed-out version of the same precondition, and it cannot be the one above.
+   Signed out the navbar now renders IDENTICALLY before and after the session is restored — one
+   anchor, the logo — because the auth pair that used to appear at the end of the restore is gone.
+   So `wait for N anchors` would either pass instantly or hang forever, and neither says anything.
+
+   Waiting for the shape to STOP CHANGING does: two identical samples 800ms apart. It needs no
+   knowledge of what the settled navbar should contain, so it keeps working if a future navbar
+   starts swapping something in late again — which is precisely the failure this whole family of
+   preconditions exists to catch. */
+async function chromeStable(label, { timeout = 30000 } = {}) {
+  const count = () => evaluate(`document.querySelectorAll('nav a[href], footer a[href]').length`);
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const a = await count();
+    await sleep(800);
+    if (a > 0 && a === await count()) return true;
   }
-  if (!opened) throw new Error(`${label}: the mobile menu never opened, so its links went unswept`);
-  return evaluate(`[...document.querySelectorAll('a[href]')].map(a => ({
+  return false;
+}
+
+async function anchorSweep(label) {
+  if (!await chromeStable(label)) throw new Error(`${label}: the chrome never stopped changing`);
+  await waitFor("!!document.querySelector('footer a[href]')", { label: `${label}'s footer` });
+  const MOBILE_BTN = `[...document.querySelectorAll('nav button')].find(x => (x.className || '').includes('md:hidden'))`;
+  const navCount = () => evaluate(`document.querySelectorAll('nav a[href]').length`);
+
+  /* The hamburger is only rendered when there is a menu to open, which signed out there no longer
+     is. Its ABSENCE is therefore the correct state rather than a coverage hole — but if it is
+     present it must really open, or a second copy of the navigation goes unswept. */
+  let mobileMenu = 'absent';
+  if (await evaluate(`!!(${MOBILE_BTN})`)) {
+    const before = await navCount();
+    let opened = false;
+    for (let attempt = 1; attempt <= 6 && !opened; attempt++) {
+      await evaluate(`(() => { const b = ${MOBILE_BTN}; if (b) b.click(); return !!b; })()`);
+      await sleep(400);
+      opened = (await navCount()) > before;
+    }
+    if (!opened) throw new Error(`${label}: the mobile menu never opened, so its links went unswept`);
+    mobileMenu = 'opened';
+  }
+
+  const anchors = await evaluate(`[...document.querySelectorAll('a[href]')].map(a => ({
     href: a.getAttribute('href'),
     text: (a.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 32),
     where: a.closest('nav') ? 'nav' : a.closest('footer') ? 'footer' : 'page',
   }))`);
+  return { anchors, mobileMenu };
 }
 
 /* Is this anchor safe to offer someone with no session?
@@ -317,20 +344,21 @@ try {
     await send('Page.navigate', { url: APP + route });
     await waitFor(HAS_MAIN, { label: `${route} to render` });
     await sleep(600);
-    let anchors;
-    try { anchors = await anchorSweep(route); }
+    let anchors, mobileMenu;
+    try { ({ anchors, mobileMenu } = await anchorSweep(route)); }
     catch (err) { no(err.message); continue; }
     const bad = anchors.filter((a) => classify(a.href) === 'gated');
     const good = anchors.filter((a) => classify(a.href) === 'public');
     const regions = [...new Set(anchors.map((a) => a.where))].sort();
     /* "None of them was gated" is only worth anything if the sweep actually saw the whole page, so
-       prove the coverage before reporting the verdict: all three regions present, and the desktop
-       nav's logo + Sign In + Get Started, the mobile menu's pair, the footer's brand link and the
-       body's cross-link — seven — all found. */
-    if (regions.join(',') !== 'footer,nav,page' || anchors.length < 7) {
+       prove the coverage before reporting the verdict: all three regions present, and at least the
+       five anchors that must exist on any signed-out page — the nav logo, the footer's brand link
+       plus its phone and email, and the page's own cross-link. */
+    if (regions.join(',') !== 'footer,nav,page' || anchors.length < 5) {
       no(`${route}: the sweep only saw ${anchors.length} anchors across [${regions.join(', ')}] — too few to conclude anything`);
     } else if (bad.length === 0) {
-      ok(`${route}: ${anchors.length} anchors across nav+mobile menu+footer+body, none gated (${good.length} → sign-in/sign-up)`);
+      ok(`${route}: ${anchors.length} anchors across nav+footer+body (mobile menu ${mobileMenu}), ` +
+         `none gated (${good.length} → sign-in/sign-up, ${anchors.length - good.length} mail/phone)`);
     } else {
       no(`${route}: ${bad.length} anchor(s) point at gated routes — ` +
          bad.map((a) => `${a.where}:"${a.text}"→${a.href}`).join(', '));
@@ -341,16 +369,33 @@ try {
     // rather than only that the sweep found something.
     await send('Page.navigate', { url: `${APP}/auth/signin` });
     await waitFor(HAS_MAIN, { label: 'the sign-in page' });
-    if (!await chromeSettled('/auth/signin')) no('the navbar never left its loading state on /auth/signin');
+    if (!await chromeStable('/auth/signin')) no('the chrome never stopped changing on /auth/signin');
     await sleep(400);
     const nav = await evaluate(`(() => { const n = document.querySelector('nav');
       return { links: [...n.querySelectorAll('a[href]')].map(a => a.getAttribute('href')),
+               buttons: n.querySelectorAll('button').length,
                text: n.innerText.replace(/\\s+/g, ' ') }; })()`);
     const navGated = nav.links.filter((h) => classify(h) === 'gated');
     if (navGated.length === 0) ok('the navbar offers no gated destination: ' + nav.links.join(' '));
     else no('the navbar still links to ' + navGated.join(', '));
-    if (/Sign In/i.test(nav.text) && /Get Started/i.test(nav.text)) ok('…and still offers Sign In / Get Started');
-    else no('the navbar lost its Sign In / Get Started controls: ' + nav.text.slice(0, 80));
+
+    /* The "Sign In" / "Get Started" pair is GONE, and this assertion is the inverse of the one it
+       replaced. Signed out the only reachable pages are the four /auth ones, so that pair was
+       shown exclusively to people already standing on one of them: circular on the page it named,
+       and duplicated in the page's own body on the other. */
+    if (!/Sign In|Get Started/i.test(nav.text)) ok('…and no longer offers the circular Sign In / Get Started pair');
+    else no('the navbar still shows Sign In / Get Started: ' + nav.text.slice(0, 80));
+    if (nav.links.length === 1) ok('…leaving exactly one control, the logo → ' + nav.links[0]);
+    else no(`the signed-out navbar carries ${nav.links.length} links, expected just the logo`);
+
+    /* The location chip is gone. It was a <button> with no onClick whose fallback text was a
+       hardcoded "Mumbai, MH", so it told every visitor without a profile city — including every
+       signed-out one, who has no profile at all — that they were in Mumbai. */
+    if (!/Mumbai|MH\b/i.test(nav.text)) ok('…and the dead "Mumbai, MH" location chip is gone from the navbar');
+    else no('the navbar still shows a location chip: ' + nav.text.slice(0, 80));
+    // Nothing left to open: no nav links and no auth pair means the panel would be empty.
+    if (nav.buttons === 0) ok('…and there is no hamburger opening an empty mobile panel');
+    else no(`the signed-out navbar still renders ${nav.buttons} button(s)`);
 
     const foot = await evaluate(`(() => { const f = document.querySelector('footer');
       return { links: [...f.querySelectorAll('a[href]')].map(a => a.getAttribute('href')),
@@ -366,6 +411,23 @@ try {
       ok('…while still naming Privacy Policy and Terms of Service as "Soon"');
     } else no('Privacy Policy / Terms of Service vanished from the footer rather than being labelled');
 
+    /* The Support column used to offer two ways to reach nobody: "+91 98765 43210" is the stock
+       placeholder every Indian mockup uses, and support@seva.com is a domain this project does not
+       own. They are real now, and they are LINKS — tel: and mailto: are not routes, so the gate
+       never sees them and they work signed out, which is exactly when someone locked out of their
+       account needs them. */
+    if (/98765 43210/.test(foot.text) || /support@seva\.com/i.test(foot.text)) {
+      no('the footer still shows placeholder contact details');
+    } else ok('the footer\'s placeholder phone and email are gone');
+    if (foot.links.includes('tel:+918104996891')) ok('…the phone number is a tappable tel: link');
+    else no('the footer phone is not a tel: link: ' + foot.links.join(' '));
+    if (foot.links.includes('mailto:omjadhav9271@gmail.com')) ok('…and the email is a mailto: link');
+    else no('the footer email is not a mailto: link: ' + foot.links.join(' '));
+    /* "Based in" disambiguates whose location the pin means — unlabelled, a visitor in Pune reads
+       it as the site guessing at THEIR location, which is what the deleted navbar chip pretended. */
+    if (/Based in Mumbai/i.test(foot.text)) ok('…and the footer location says whose it is ("Based in Mumbai")');
+    else no('the footer location line is unlabelled again: ' + (foot.text.match(/Mumbai[^\n·]*/) ?? ['(absent)'])[0]);
+
     // "Forgot password?" spent a release as a dead "Soon" chip because the route did not exist.
     // It is a real link again, and the sweep above has already proved the destination is public.
     const forgot = await evaluate(`(() => {
@@ -373,6 +435,15 @@ try {
       return a ? a.getAttribute('href') : null; })()`);
     if (forgot === '/auth/forgot-password') ok('"Forgot password?" is a real link again → /auth/forgot-password');
     else no(`"Forgot password?" does not link to the reset flow (href: ${forgot})`);
+
+    /* The demo-access block is gone. It filled the form with customer@seva.demo / provider@seva.demo,
+       NEITHER OF WHICH EXISTS in auth.users — so the next click returned "Invalid login
+       credentials". A control that manufactures an error is the worst kind of dead control,
+       because the visitor concludes the site is broken rather than the button. */
+    const signinBody = await evaluate(`document.querySelector('main').innerText`);
+    if (!/quick demo|customer demo|provider demo|seva\.demo/i.test(signinBody)) {
+      ok('the demo-access buttons (for accounts that never existed) are gone from sign-in');
+    } else no('sign-in still offers demo accounts: ' + signinBody.slice(0, 120).replace(/\n/g, ' | '));
   }
 
   // ═══════════════ (c) ?next= comes back, and cannot be weaponised ═══════════════
@@ -421,7 +492,12 @@ try {
 
     // Same precondition as signed out: the nav links derive from `user`, so mid-restore there are
     // legitimately none and asserting early reads that as four missing links.
-    if (!await chromeSettled('/')) no('the navbar never left its loading state on / while signed in');
+    if (!await chromeSettled('/', 2)) no('the navbar never left its loading state on / while signed in');
+    const navText = await evaluate(`document.querySelector('nav').innerText.replace(/\\s+/g, ' ')`);
+    // The location chip was removed for everyone, not only signed-out visitors: it was dead in
+    // both states, and signed in it merely echoed a profile field with no effect on any search.
+    if (!/Mumbai, MH/i.test(navText)) ok('the dead location chip is gone for signed-in users too');
+    else no('the signed-in navbar still shows the location chip: ' + navText.slice(0, 80));
     const nav = await evaluate(`[...document.querySelectorAll('nav a[href]')].map(a => a.getAttribute('href'))`);
     for (const link of ['/services', '/providers', '/how-it-works', '/become-provider']) {
       if (nav.includes(link)) ok(`the navbar offers ${link} again`);

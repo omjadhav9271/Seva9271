@@ -99,9 +99,14 @@ export default function Footer() {
             <p className="text-blue-200/70 text-sm leading-relaxed mb-5">
               Connecting you with verified service providers across India. From home services to professional help, we've got you covered.
             </p>
+            {/* "Based in" is doing real work. An unlabelled pin reading "Mumbai, Maharashtra,
+                India" is ambiguous about WHOSE location it is — a visitor in Pune reasonably reads
+                it as the site's guess at where THEY are, which is exactly what the (now deleted)
+                navbar location chip was pretending to know. This is the company's base, and
+                Mumbai-first is true, so say which one it is. */}
             <div className="flex items-center gap-2 text-sm text-blue-200/60">
               <MapPin className="w-4 h-4 text-blue-300 flex-shrink-0" />
-              <span>Mumbai, Maharashtra, India</span>
+              <span>Based in Mumbai, Maharashtra</span>
             </div>
           </div>
 
@@ -140,15 +145,28 @@ export default function Footer() {
                 <li key={s.label}><FooterItem item={s} /></li>
               ))}
             </ul>
+            {/* Real, reachable contact details. What was here before was neither: "+91 98765
+                43210" is the stock placeholder number every Indian mockup uses, and
+                "support@seva.com" is a domain this project does not own — so the one column
+                promising help offered two ways to reach nobody.
+
+                They are also LINKS now rather than plain text. On a phone, a support number you
+                cannot tap is a number you have to memorise and retype. tel: and mailto: are not
+                routes, so the auth gate never sees them and they work signed out — which is when
+                someone locked out of their account most needs them.
+
+                ⚠️ These are the owner's PERSONAL number and inbox, used deliberately as a stopgap
+                so the footer stops lying. Swap them for a support desk before any public launch —
+                they are in the git history from this commit on. */}
             <div className="space-y-2">
-              <div className="flex items-center gap-2 text-sm text-blue-200/70">
+              <a href="tel:+918104996891" className="flex items-center gap-2 text-sm text-blue-200/70 hover:text-white transition-colors">
                 <Phone className="w-4 h-4 text-blue-300 flex-shrink-0" />
-                <span>+91 98765 43210</span>
-              </div>
-              <div className="flex items-center gap-2 text-sm text-blue-200/70">
+                <span>+91 81049 96891</span>
+              </a>
+              <a href="mailto:omjadhav9271@gmail.com" className="flex items-center gap-2 text-sm text-blue-200/70 hover:text-white transition-colors break-all">
                 <Mail className="w-4 h-4 text-blue-300 flex-shrink-0" />
-                <span>support@seva.com</span>
-              </div>
+                <span>omjadhav9271@gmail.com</span>
+              </a>
             </div>
           </div>
         </div>
