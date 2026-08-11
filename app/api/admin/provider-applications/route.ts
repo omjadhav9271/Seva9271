@@ -138,25 +138,67 @@ export async function GET(req: Request) {
     });
   }
 
-  // ---------------------------------------------------------------- the queue
-  // Everything that has ever been submitted, newest first. The page splits it into
-  // "to review" vs "decided" — one query keeps the console honest about its own backlog.
-  const { data, error } = await admin
-    .from('service_providers')
-    .select(LIST_COLUMNS)
-    .not('applied_at', 'is', null)
-    .order('applied_at', { ascending: false });
+  /* ---------------------------------------------------------------- the queue
+     🔴 BOUNDED, AND THE BACKLOG COMES FIRST.
+
+     This used to select EVERY row that had ever been submitted, newest first, and hand the whole
+     thing to the browser. Measured at 1,082 applications:
+
+       · PostgREST capped the result at 1,000 — silently, with nothing saying so;
+       · the rows it dropped were the OLDEST by applied_at, which is exactly the review backlog.
+         The one genuinely pending application fell off the end and the console showed an empty
+         queue while an applicant waited;
+       · the follow-up `.in(provider_id, [1000 uuids])` exceeded the request URL limit and returned
+         "Bad Request", which this code destructured away — so every completeness count silently
+         became "0 of N".
+
+     A review queue that hides the backlog as the backlog grows is worse than no queue. So: fetch
+     the two halves separately, each bounded, oldest-waiting first for the half a human works
+     through. The counts are returned alongside so the console can say how much it is NOT showing
+     rather than implying it showed everything. */
+  const PENDING_LIMIT = 200;   // a human review backlog; if it exceeds this, hiring is the fix
+  const DECIDED_LIMIT = 100;   // history, browsed rather than worked through
+
+  const [pendingRes, decidedRes, pendingCount, decidedCount] = await Promise.all([
+    admin.from('service_providers').select(LIST_COLUMNS)
+      .not('applied_at', 'is', null).eq('status', 'pending')
+      .order('applied_at', { ascending: true })          // oldest waiting first — fairest to review
+      .limit(PENDING_LIMIT),
+    admin.from('service_providers').select(LIST_COLUMNS)
+      .not('applied_at', 'is', null).neq('status', 'pending')
+      .order('reviewed_at', { ascending: false, nullsFirst: false })
+      .limit(DECIDED_LIMIT),
+    admin.from('service_providers').select('id', { count: 'exact', head: true })
+      .not('applied_at', 'is', null).eq('status', 'pending'),
+    admin.from('service_providers').select('id', { count: 'exact', head: true })
+      .not('applied_at', 'is', null).neq('status', 'pending'),
+  ]);
+  const error = pendingRes.error ?? decidedRes.error;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const rows = (data ?? []) as unknown as ApplicationRow[];
+  const rows = ([...(pendingRes.data ?? []), ...(decidedRes.data ?? [])]) as unknown as ApplicationRow[];
 
   // Step 9.5: completeness comes from the typed documents vs what the CATEGORY requires, so the
   // queue can show "2 of 5 verified" instead of a meaningless file count.
+  // CHUNKED: `.in()` builds a URL, and a few hundred uuids overflow it. Bounded above, but chunk
+  // anyway — the failure mode is a swallowed Bad Request that reads as "no documents", which is
+  // indistinguishable from a genuinely empty application on the reviewer's screen.
   const ids = rows.map((r) => r.id);
-  const [{ data: docs }, { data: reqs }] = await Promise.all([
-    admin.from('provider_documents').select('provider_id, doc_code, verification_status').in('provider_id', ids.length ? ids : ['00000000-0000-0000-0000-000000000000']),
-    admin.from('category_kyc_requirements').select('category_id, doc_code, requirement').eq('requirement', 'required'),
-  ]);
+  const CHUNK = 100;
+  const docChunks = await Promise.all(
+    Array.from({ length: Math.ceil(ids.length / CHUNK) }, (_, i) =>
+      admin.from('provider_documents')
+        .select('provider_id, doc_code, verification_status')
+        .in('provider_id', ids.slice(i * CHUNK, (i + 1) * CHUNK))),
+  );
+  const failedChunk = docChunks.find((c) => c.error);
+  if (failedChunk?.error) {
+    // Loud, not silent: a reviewer must never be shown "0 of 5" because a fetch failed.
+    return NextResponse.json({ error: `could not load documents: ${failedChunk.error.message}` }, { status: 500 });
+  }
+  const docs = docChunks.flatMap((c) => c.data ?? []);
+  const { data: reqs } = await admin
+    .from('category_kyc_requirements').select('category_id, doc_code, requirement').eq('requirement', 'required');
   const requiredByCat = new Map<string, number>();
   for (const r of reqs ?? []) {
     const key = r.category_id as string;
@@ -176,5 +218,15 @@ export async function GET(req: Request) {
     kyc_documents: undefined,
   }));
 
-  return NextResponse.json({ applications });
+  /* Counts are returned so the console can be honest about what it is NOT showing. The previous
+     version could not have said this — it believed it had everything. */
+  return NextResponse.json({
+    applications,
+    counts: {
+      pending: pendingCount.count ?? applications.length,
+      decided: decidedCount.count ?? 0,
+      pending_shown: pendingRes.data?.length ?? 0,
+      decided_shown: decidedRes.data?.length ?? 0,
+    },
+  });
 }

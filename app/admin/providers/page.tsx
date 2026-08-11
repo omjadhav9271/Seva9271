@@ -21,6 +21,12 @@ export default function AdminProvidersPage() {
   const [tab, setTab] = useState<'pending' | 'decided'>('pending');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /* What the SERVER holds, versus what it sent. The queue is bounded now (200 pending / 100
+     decided) because it used to select every application ever submitted and PostgREST silently
+     truncated it at 1,000 — dropping the oldest, which is precisely the backlog. A bounded list
+     that does not say it is bounded is the same lie in a smaller font, so the totals come back
+     with the page and are shown whenever they exceed it. */
+  const [counts, setCounts] = useState<{ pending: number; decided: number } | null>(null);
 
   useEffect(() => {
     if (guard !== 'ok') return;
@@ -29,7 +35,10 @@ export default function AdminProvidersPage() {
       const result = await fetchProviderApplications();
       if (!active) return;
       if ('error' in result) setError(result.error);
-      else setRows(result.data.applications ?? []);
+      else {
+        setRows(result.data.applications ?? []);
+        setCounts(result.data.counts ?? null);
+      }
       setLoading(false);
     })();
     return () => { active = false; };
@@ -65,10 +74,22 @@ export default function AdminProvidersPage() {
               }`}
             >
               {t === 'pending' ? 'To review' : 'Decided'}
-              {t === 'pending' && pendingCount > 0 ? ` (${pendingCount})` : ''}
+              {t === 'pending' && (counts?.pending ?? pendingCount) > 0
+                ? ` (${counts?.pending ?? pendingCount})` : ''}
             </button>
           ))}
         </div>
+
+        {/* Say it when the list is a page rather than the whole thing. An admin who cannot tell
+            "3 decided applications" from "the 100 most recent of 1,082" will draw the wrong
+            conclusion from an empty-looking screen — which is exactly what happened when the
+            silent 1,000-row truncation hid the only pending application. */}
+        {counts && (counts[tab] ?? 0) > visible.length && !loading && !error && (
+          <p className="text-xs text-gray-500 mb-4">
+            Showing {visible.length} of {counts[tab]} {tab === 'pending' ? 'waiting' : 'decided'}
+            {tab === 'pending' ? ' — oldest first.' : ' — most recently decided first.'}
+          </p>
+        )}
 
         {error ? (
           <p className="text-sm text-red-400">{error}</p>

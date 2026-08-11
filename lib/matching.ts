@@ -69,46 +69,54 @@ export async function fetchCityAnchors(): Promise<CityAnchor[]> {
 
 /* ── Pincode → a point we can rank from ──────────────────────────────────────
  *
- * This is deliberately NOT geocoding. Ranking needs a COARSE origin — the difference between two
- * points 3 km apart barely moves an 8 km decay curve, and the widening search absorbs the rest.
- * So a pincode resolves to the same city anchor the dropdown already offers: a grid-snapped point
- * built from at least three providers, which we already trust and already show.
+ * A pincode is the unit Indians actually know and state, and it is roughly a LOCALITY — the right
+ * grain for an 8 km proximity decay. A city is not: Greater Mumbai is ~12 million people across
+ * 60 km, so ranking a Borivali customer from the Mumbai anchor (near Fort, ~17 km away) is not
+ * approximate, it is wrong.
  *
- * Running the address through a geocoder would buy precision we do not need for ranking, at the
- * cost of an external dependency on the customer's critical path — and the one we have already
- * fails on exactly the Indian addresses that matter (see the decisions log: it cannot resolve
- * "Prem Auto" or "Don Bosco School"). The PRECISE address is captured at booking time and handed
- * to Google Maps, which geocodes far better than we would.
+ * The first version of this mapped a pincode to a CITY anchor by digit prefix, which threw away
+ * the precision that made pincodes worth asking for — 400050 (Bandra) and 400097 (Malad) both
+ * landed on the same point. resolve_pincode() replaces it with a real locality centroid derived
+ * from our own providers (see 20260826120000), degrading through the sorting district when we
+ * don't have enough supply in a pincode to place it. `precision` says which happened, because
+ * "near 400097" and "near the 400 area" are different promises to make to a customer.
  *
- * Longest prefix wins, so Thane (400601-400615) and Navi Mumbai (400701-400710) are not swallowed
- * by Mumbai's 400. Every target is resolved against the LIVE anchor list, so this table can never
- * point at a city we cannot actually rank from — an unknown pincode falls through to the picker
- * rather than pretending. */
-const PIN_PREFIX_CITY: [string, string][] = [
-  ['4006', 'Thane'],
-  ['4007', 'Navi Mumbai'],
-  ['400', 'Mumbai'],
-  ['401', 'Mumbai Suburban'],   // Vasai / Virar / Palghar — the suburban anchor is the nearest
-  ['410', 'Navi Mumbai'],       // Panvel / Kharghar
-  ['411', 'Pune'],
-  ['412', 'Pune'],
-  ['421', 'Kalyan'],            // Kalyan / Dombivli / Ambernath
-  ['560', 'Bengaluru'],
-  ['561', 'Bengaluru'],
-  ['562', 'Bengaluru'],
-];
+ * Still NOT geocoding, and still nothing external on the customer's critical path. */
 
 export const isPincode = (s: string): boolean => /^[1-9][0-9]{5}$/.test(s.trim());
 
-/** The anchor a pincode should search from, or null if we don't cover it (say so; don't guess). */
-export function anchorForPincode(pin: string, anchors: CityAnchor[]): CityAnchor | null {
-  const digits = pin.trim();
-  if (!isPincode(digits)) return null;
-  const match = [...PIN_PREFIX_CITY]
-    .sort((a, b) => b[0].length - a[0].length)
-    .find(([prefix]) => digits.startsWith(prefix));
-  if (!match) return null;
-  return anchors.find((a) => a.city.toLowerCase() === match[1].toLowerCase()) ?? null;
+export type ResolvedPincode = LatLng & {
+  label: string;
+  /** Named `granularity`, not `precision`: PRECISION is a reserved word in Postgres, so an OUT
+   *  column called that will not parse. Kept identical on both sides to avoid a silent mismatch. */
+  granularity: 'pincode' | 'district';
+  provider_count: number;
+};
+
+/** Where to search from for a typed pincode, or null when we have no supply anywhere near it —
+ *  in which case the caller says so honestly instead of guessing a point. */
+export async function resolvePincode(pin: string): Promise<ResolvedPincode | null> {
+  if (!isPincode(pin)) return null;
+  const { data, error } = await supabase.rpc('resolve_pincode', { p_pincode: pin.trim() });
+  if (error) {
+    console.error('resolve_pincode failed:', error.message);
+    return null;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  return (row as ResolvedPincode) ?? null;
+}
+
+export type PincodeAnchor = LatLng & { pincode: string; city: string; provider_count: number };
+
+/** The pincodes we can actually search from. Used to SUGGEST real coverage when someone types a
+ *  pincode we don't serve — a short list of places that work beats a dropdown of every Indian city. */
+export async function fetchPincodeAnchors(): Promise<PincodeAnchor[]> {
+  const { data, error } = await supabase.rpc('pincode_anchors');
+  if (error) {
+    console.error('pincode_anchors failed:', error.message);
+    return [];
+  }
+  return (data ?? []) as PincodeAnchor[];
 }
 
 /**
@@ -184,6 +192,10 @@ export type WideningResult = {
   radiusKm: number;
   /** True when we had to look past the near radius to find anybody. */
   widened: boolean;
+  /** Whether more providers matched than we asked for. Detected by asking for ONE more row than
+   *  we intend to show — no count query, no second round trip, and it cannot disagree with the
+   *  page because it comes from the same result set. */
+  hasMore: boolean;
 };
 
 /**
@@ -203,44 +215,53 @@ export async function searchProvidersWidening(
 ): Promise<WideningResult | { error: string }> {
   let last: ProviderSearchResult[] = [];
   let lastRadius: number = RADIUS_STEPS_KM[0];
+  // Ask for one more than we will show, purely to learn whether there IS more. Cheaper and more
+  // honest than a separate count: a count can disagree with the page it labels.
+  const want = opts.limit ?? PAGE_SIZE;
+  const probe = want + 1;
 
   for (const radiusKm of RADIUS_STEPS_KM) {
-    const res = await searchProviders({ ...opts, radiusKm });
+    const res = await searchProviders({ ...opts, radiusKm, limit: probe });
     if ('error' in res) return res;
     last = res.data;
     lastRadius = radiusKm;
     if (res.data.length >= MIN_RESULTS) break;
   }
 
-  return { data: last, radiusKm: lastRadius, widened: lastRadius > RADIUS_STEPS_KM[0] };
+  const hasMore = last.length > want;
+  return {
+    data: hasMore ? last.slice(0, want) : last,
+    radiusKm: lastRadius,
+    widened: lastRadius > RADIUS_STEPS_KM[0],
+    hasMore,
+  };
 }
 
+/** How many providers a page shows at once, and how many more each "Load more" adds.
+ *  Small on purpose: 555 electricians can sit within 15 km of one Mumbai junction, and a customer
+ *  scanning for someone to trust does not read 555 cards. */
+export const PAGE_SIZE = 30;
+
 /**
- * Sorting for CATALOG MODE ONLY — the unranked list a customer sees before sharing a location.
+ * How CATALOG MODE orders itself — the unranked list shown before a customer gives a location.
  *
- * Client-side sorting is safe here and nowhere else, and the distinction is the whole lesson of
- * 20260822120000: catalog mode holds the COMPLETE list of approved providers, so ordering it
- * orders the entire set. Ranked mode holds a CUT — the top N by whatever the query ordered on —
- * and re-sorting a cut silently answers a different question. If you ever add a limit to the
- * catalog query, this function becomes the bug it was written to avoid.
+ * 🔴 This returns a PostgREST order spec, not a comparator, and that is the whole point. It used
+ * to be a client-side sort, justified by "catalog mode holds the COMPLETE list so ordering it
+ * orders the entire set" — with a warning attached that adding a limit would turn it into the very
+ * bug it was written to avoid. PostgREST added the limit for us: it caps at 1,000 rows, we passed
+ * 1,085 approved providers, and the sort quietly became a sample of the set.
  *
- * 'match' and 'distance' are absent on purpose: neither exists without a location.
+ * So the catalog orders in the query now, exactly like the ranked path. 'match' and 'distance' are
+ * absent because neither exists without a location.
  */
-export function catalogComparator<T extends { rating: number; total_reviews: number; hourly_rate: number }>(
-  mode: SortMode,
-): (a: T, b: T) => number {
-  // Mirrors the SQL: hourly_rate 0 means "custom pricing", not free, so those providers sort LAST
-  // in both directions rather than heading the cheapest page.
-  const price = (v: number) => (v > 0 ? v : Number.POSITIVE_INFINITY);
+export function catalogOrder(mode: SortMode): { column: string; ascending: boolean; nullsFirst: boolean } {
   switch (mode) {
-    case 'reviews':    return (a, b) => b.total_reviews - a.total_reviews;
-    case 'price_low':  return (a, b) => price(a.hourly_rate) - price(b.hourly_rate);
-    case 'price_high': return (a, b) => (
-      price(a.hourly_rate) === Infinity || price(b.hourly_rate) === Infinity
-        ? price(a.hourly_rate) - price(b.hourly_rate)   // unpriced last, not first
-        : b.hourly_rate - a.hourly_rate
-    );
-    default:           return (a, b) => b.rating - a.rating;
+    case 'reviews':    return { column: 'total_reviews', ascending: false, nullsFirst: false };
+    // price_sort is NULL for "custom pricing" providers (generated column, 20260827120000), so
+    // nullsFirst:false keeps them LAST in BOTH directions — unpriced, not free and not dearest.
+    case 'price_low':  return { column: 'price_sort', ascending: true, nullsFirst: false };
+    case 'price_high': return { column: 'price_sort', ascending: false, nullsFirst: false };
+    default:           return { column: 'rating', ascending: false, nullsFirst: false };
   }
 }
 

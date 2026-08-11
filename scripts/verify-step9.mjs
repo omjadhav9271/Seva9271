@@ -390,9 +390,15 @@ try {
   // ================= (c2) approved = live and bookable =================
   console.log('\n[c2) once approved, the provider is live]');
   {
-    const list = await anon.from('service_providers').select('id').eq('status', 'approved');
-    if ((list.data ?? []).some((p) => p.id === providerId)) ok('approved provider now appears in the public list');
-    else no('approved provider still missing from the list');
+    /* Ask about THIS provider, rather than downloading every approved provider and searching the
+       result. The enumerate-then-find version was silently capped at PostgREST's 1,000 rows: past
+       1,000 approved providers it reported "still missing from the list" for a provider that was
+       perfectly visible, which reads as an approval bug and is not one. Same 1,000-row cap that
+       truncated the catalog and the admin queue — its third appearance, this time in a test. */
+    const list = await anon.from('service_providers').select('id')
+      .eq('status', 'approved').eq('id', providerId);
+    if ((list.data ?? []).length === 1) ok('approved provider is publicly visible as approved');
+    else no('approved provider is not publicly visible: ' + JSON.stringify(list.error ?? list.data));
 
     const bk = await mkBooking(booker, bookerId, providerId);
     if (!bk.error && bk.data?.id) { ok('an approved provider CAN be booked'); bookingIds.push(bk.data.id); }

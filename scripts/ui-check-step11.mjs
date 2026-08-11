@@ -34,6 +34,11 @@ const ORIGIN = { lat: 19.0760, lng: 72.8777 };
    check here starts failing by showing MORE than expected, suspect that the data thinned out and
    the page widened, not that a filter broke. */
 const NEAR_KM = 15;
+/* The page size the listing pages now request (lib/matching.ts PAGE_SIZE). They used to ask for 60
+   and render everything; they now show a page and offer "Show 30 more", because a query can match
+   555 providers and nobody reads 555 cards. Every "should show N" figure below is capped at this,
+   so these checks measure the FIRST PAGE of a correct result set rather than the whole set. */
+const PAGE = 30;
 
 const env = Object.fromEntries(
   readFileSync('.env.local', 'utf8').split(/\r?\n/)
@@ -122,11 +127,18 @@ const urlOf = new Map();
    in a render loop is invisible to every other assertion here — it renders the right cards, shows
    the right distances, leaks nothing — while hammering the database. Only the request RATE shows it. */
 let rpcRequests = 0;
+let catalogRequests = 0;
 function watchNetwork() {
   ws.addEventListener('message', async (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.method === 'Network.requestWillBeSent'
         && /rpc\/search_providers/.test(msg.params?.request?.url ?? '')) rpcRequests++;
+    /* Count the CATALOG query separately. It is a plain REST read of service_providers, so the
+       search_providers counter above never saw it — and while the page was ranking, every filter
+       change fired one whose result was discarded on arrival. Two round trips per interaction,
+       one of them pure waste, invisible to every assertion in this file. */
+    if (msg.method === 'Network.requestWillBeSent'
+        && /\/rest\/v1\/service_providers\?/.test(msg.params?.request?.url ?? '')) catalogRequests++;
     if (msg.method === 'Network.responseReceived' && msg.params?.requestId) {
       urlOf.set(msg.params.requestId, msg.params.response?.url ?? '');
     }
@@ -280,8 +292,22 @@ try {
       if (/near your location/i.test(body)) ok('the header states the results are near the customer, best match first');
       else no('the "near your location" summary is missing');
 
-      const distances = [...body.matchAll(/([\d.]+) km away/g)].map((m) => Number(m[1]));
-      if (distances.length > 0) ok(`${distances.length} cards show a distance (e.g. "${distances[0]} km away")`);
+      /* Read distances from the CARDS in DOM order, in a single unit, handling BOTH renderings.
+         This used to scan the whole body for "N km away" only — which silently dropped every
+         "~300 m away" card. Harmless when providers were sparse; with real density most of a
+         Mumbai page is sub-kilometre, so the ordering assertion below was judging the handful of
+         km-cards that happened to be left, and skipped as "reputations may be level" against data
+         whose reputations were anything but. A filter that quietly discards most of its input is
+         the same mistake this whole file exists to catch, wearing a test's clothes. */
+      const distances = await evaluate(`[...document.querySelectorAll('a[href^="/providers/"]')]
+        .map(a => {
+          const km = a.innerText.match(/([\\d.]+) km away/);
+          if (km) return Number(km[1]);
+          const m = a.innerText.match(/~(\\d+) m away/);
+          return m ? Number(m[1]) / 1000 : null;
+        })
+        .filter(v => v !== null)`);
+      if (distances.length > 0) ok(`${distances.length} cards show a distance (nearest rendered: ${Math.min(...distances)} km)`);
       else no('no card shows a distance');
 
       // One decimal only: the point is grid-snapped, so metre precision would be a lie.
@@ -345,13 +371,14 @@ try {
     await setGeolocation({ granted: false });
     await send('Page.navigate', { url: `${APP}/providers` });
     await waitFor(`document.body.innerText.includes('Showing')`, { label: 'the providers list', timeout: 60000 });
+    // The fallback copy now points at the PINCODE box, not a city dropdown — the dropdown is gone.
     const clicked = await clickUntil('Use my location',
-      `document.body.innerText.includes('pick your city') || document.body.innerText.includes('Pick your city')`);
+      `/enter your pincode/i.test(document.body.innerText)`);
     if (!clicked) { no('declining produced no message at all — the customer is left guessing'); }
     else {
       const body = await text();
       ok('declining produces a plain sentence, not an error: "' +
-        (body.match(/[^\n]*[Pp]ick your city[^\n]*/)?.[0] ?? '').trim().slice(0, 90) + '"');
+        (body.match(/[^\n]*[Ee]nter your pincode[^\n]*/)?.[0] ?? '').trim().slice(0, 90) + '"');
 
       const names = await cardNames();
       if (names.length > 0) ok(`the list is STILL populated after declining (${names.length} cards) — not a dead end`);
@@ -392,57 +419,127 @@ try {
     }
   }
 
-  /* ===== 6) REGRESSION: every city offered must be a city we can rank from =====
-     The dropdown used to be built from the cities present in the provider rows while the anchors
-     were a hardcoded list of four. Any city missing from that list (Kalyan, Bengaluru, Mumbai
-     Suburban — 312 of 485 providers at the time) silently fell back to the unranked catalog: no
-     ordering, no distances, no explanation. A choice the ranking cannot honour must not be offered. */
-  console.log('\n[city dropdown: every option can actually rank]');
-  {
-    const { data: cityAnchors, error: caErr } = await service.rpc('city_anchors');
-    if (caErr) {
-      no('city_anchors() failed: ' + caErr.message);
-    } else if (!cityAnchors?.length) {
-      sk('city_anchors() returned nothing — too few providers per city to anchor');
-    } else {
-      await setGeolocation({ granted: true, ...ORIGIN });
-      await send('Page.navigate', { url: `${APP}/providers` });
-      /* Scope BOTH the wait and the read to the city dropdown by its aria-label. These used to say
-         `document.querySelectorAll('select')`, which was fine when the page had exactly one — the
-         sort control added a second, and the loose version then (a) waited on the SORT select's
-         options, which render immediately, so it stopped waiting before the city anchors had
-         arrived from the DB, and (b) read "reviews / price_low / price_high" back as if they were
-         cities that could not rank. Both failures pointed at the app; both were this selector. */
-      const CITY_SELECT = `select[aria-label="Search from a city"]`;
-      await waitFor(`(document.querySelector('${CITY_SELECT}') || { options: [] }).options.length > 1`,
-        { label: 'city options', timeout: 60000 });
-      const options = await evaluate(`[...document.querySelector('${CITY_SELECT}').options]
-        .slice(1).map(o => o.value)`);
-      const anchorCities = cityAnchors.map((c) => c.city);
-      const unrankable = options.filter((o) => !anchorCities.includes(o));
-      if (unrankable.length === 0) ok(`all ${options.length} offered cities have an anchor (${anchorCities.length} available)`);
-      else no('cities offered that CANNOT rank: ' + unrankable.join(', '));
+  /* ===== 6) LOCATION IS A PINCODE, NOT A CITY =====
+     The city dropdown is gone. It was replaced because in India a city is not a location: Greater
+     Mumbai is ~12 million people across 60 km, so ranking from "Mumbai" put a Borivali customer
+     ~17 km from their own search origin — and the list becomes unusable the moment we serve more
+     than a handful of cities. resolve_pincode() answers at locality grain, degrading to the
+     sorting district and then to an honest empty state.
 
-      // And prove it end to end on the biggest one, rather than trusting the list comparison.
-      const target = anchorCities[0];
-      const picked = await evaluate(`(() => { const s = document.querySelector('${CITY_SELECT}');
-        if (!s || ![...s.options].some(o => o.value === ${JSON.stringify(target)})) return false;
-        const set = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype,'value').set;
-        set.call(s, ${JSON.stringify(target)}); s.dispatchEvent(new Event('change',{bubbles:true})); return true; })()`);
-      if (!picked) no(`the city dropdown never offered "${target}" to pick`);
-      if (picked) {
-        try {
-          await waitFor(`document.body.innerText.includes(${JSON.stringify('near ' + target)})`,
-            { label: `results near ${target}`, timeout: 25000 });
-          const withDistance = await evaluate(`[...document.querySelectorAll('a[href^="/providers/"]')]
-            .filter(a => /km away|m away/.test(a.innerText)).length`);
-          const total = await evaluate(`document.querySelectorAll('a[href^="/providers/"]').length`);
-          if (total > 0 && withDistance === total) ok(`picking "${target}" ranks and shows a distance on all ${total} cards`);
-          else no(`picking "${target}" left ${total - withDistance} of ${total} cards with no distance`);
-        } catch {
-          no(`picking "${target}" did not produce ranked results — it fell back to the flat list`);
+     What must hold: a covered pincode RANKS (distances on every card), two different pincodes in
+     the same city rank from DIFFERENT points, and an uncovered one says so instead of guessing. */
+  console.log('\n[location is a pincode, and it resolves to a real locality]');
+  {
+    const { data: anchors, error: paErr } = await service.rpc('pincode_anchors');
+    if (paErr) {
+      no('pincode_anchors() failed: ' + paErr.message);
+    } else if ((anchors ?? []).length < 2) {
+      sk(`only ${(anchors ?? []).length} pincode anchor(s) — need 2 to prove they differ`);
+    } else {
+      // Two well-covered pincodes in the SAME city: the case a city picker could never separate.
+      const sameCity = {};
+      for (const a of anchors) (sameCity[a.city] ??= []).push(a);
+      const pair = Object.values(sameCity).find((list) => list.length >= 2)?.slice(0, 2) ?? anchors.slice(0, 2);
+
+      /* Type, then WAIT FOR AN OUTCOME — not for a fixed number of milliseconds.
+         Resolving a pincode is an RPC followed by a search, and a `sleep(3000)` after it passed
+         standalone and failed inside verify-all, where the machine is running a dev server and a
+         browser and the round trip takes longer. Every failure read "30 cards, 30 without a
+         distance", i.e. the page had simply not finished. Waiting on the effect makes it
+         deterministic; the timeout is generous because being slow is not being wrong. */
+      /* Type a pincode and RETRY until it takes — the same shape as clickUntil, for the same
+         reason. Two traps stack here:
+
+         1. HYDRATION. The input exists in the server-rendered HTML before React attaches its
+            handlers, so an `input` event dispatched too early goes into a dead field. Verified by
+            hand: the identical sequence works in a browser given 5s to settle and fails at 1.2s,
+            reporting "30 cards, no distance" — which reads as a broken resolver rather than as a
+            test that typed into nothing.
+         2. SAME-TICK ENTER. Dispatching input and keydown together leaves the keydown handler
+            holding the PREVIOUS render's closure, which captured an empty box and returns early.
+
+         So: set the value, let React commit, press Enter, then wait for a real outcome — and if
+         none arrives, assume hydration lost the race and do the whole thing again. */
+      const typePincode = async (pin) => {
+        for (let attempt = 1; attempt <= 4; attempt++) {
+          await evaluate(`(() => {
+            const box = document.querySelector('input[aria-label="Search location"]');
+            if (!box) return false;
+            const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
+            set.call(box, ${JSON.stringify(pin)});
+            box.dispatchEvent(new Event('input', { bubbles: true }));
+            return true; })()`);
+          await sleep(600);   // let React commit the new value into the handlers
+          await evaluate(`(() => {
+            const box = document.querySelector('input[aria-label="Search location"]');
+            if (box) box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+            return true; })()`);
+          try {
+            // Either it ranked (distances appear) or it said plainly that it cannot.
+            await waitFor(`/km away|m away/.test(document.body.innerText)
+              || /don't have providers around/i.test(document.body.innerText)`,
+              { label: `a result for pincode ${pin}`, timeout: 12000 });
+            await sleep(600);   // let the last render settle before reading the DOM
+            return true;
+          } catch { /* not hydrated yet — type it again */ }
+        }
+        return false;
+      };
+
+      const results = [];
+      for (const a of pair) {
+        await setGeolocation({ granted: false });
+        await send('Page.navigate', { url: `${APP}/providers` });
+        await waitFor(`document.querySelector('input[aria-label="Search location"]') !== null`,
+          { label: 'the pincode box', timeout: 60000 });
+        await sleep(1200);
+        await typePincode(a.pincode);
+        const body = await text();
+        const total = await evaluate(`document.querySelectorAll('a[href^="/providers/"]').length`);
+        const withDistance = await evaluate(`[...document.querySelectorAll('a[href^="/providers/"]')]
+          .filter(x => /km away|m away/.test(x.innerText)).length`);
+        const names = await cardNames();
+        results.push({ pin: a.pincode, city: a.city, total, withDistance, names, body });
+      }
+
+      for (const r of results) {
+        if (r.total > 0 && r.withDistance === r.total) {
+          ok(`pincode ${r.pin} (${r.city}) ranks — ${r.total} cards, every one with a distance`);
+        } else {
+          no(`pincode ${r.pin} showed ${r.total} cards, ${r.total - r.withDistance} without a distance`);
+        }
+        if (r.body.includes(r.pin)) ok(`…and the page says it is searching near ${r.pin}`);
+        else no(`the page does not say where it searched for ${r.pin}`);
+      }
+
+      /* The point of the whole change: two pincodes in ONE city must not be the same search.
+         Under the old city picker these two were literally the same origin. */
+      if (results.length === 2 && results[0].names.length && results[1].names.length) {
+        if (results[0].names[0] !== results[1].names[0]) {
+          ok(`${results[0].pin} and ${results[1].pin} are the same city but rank differently ` +
+             `("${results[0].names[0]}" vs "${results[1].names[0]}") — the city picker could not do this`);
+        } else {
+          no(`${results[0].pin} and ${results[1].pin} returned the same top provider — pincode precision is not reaching the query`);
         }
       }
+
+      // An uncovered pincode: honest, and never a silent guess at some other place.
+      await setGeolocation({ granted: false });
+      await send('Page.navigate', { url: `${APP}/providers` });
+      await waitFor(`document.querySelector('input[aria-label="Search location"]') !== null`,
+        { label: 'the pincode box', timeout: 60000 });
+      await sleep(1200);
+      await typePincode('799001');   // Agartala — real pincode, no supply
+      const body = await text();
+      if (/don't have providers around 799001/i.test(body)) ok('an uncovered pincode says so plainly');
+      else no('an uncovered pincode produced no honest message: ' + body.slice(0, 160).replace(/\n/g, ' | '));
+      if (/We do cover/i.test(body)) ok('…and offers areas we genuinely cover instead of a dead end');
+      else no('no coverage suggestions were offered for an uncovered pincode');
+
+      // and the control it replaced must be GONE, or we have two ways to say where you are
+      const citySelect = await evaluate(`!!document.querySelector('select[aria-label="Search from a city"]')`);
+      if (!citySelect) ok('the city dropdown is gone from /providers');
+      else no('the city dropdown is still on /providers alongside the pincode box');
     }
   }
 
@@ -452,6 +549,12 @@ try {
      2 of the 7 in range, and the 5 it dropped included nearer ones. */
   console.log('\n[category filtering happens server-side]');
   {
+    /* Grant location EXPLICITLY. This section drives "Use my location", and it used to inherit
+       whatever permission the previous section happened to leave behind — which broke the moment
+       the section order changed, failing here with "could not drive the category" while nothing
+       about categories was wrong. Preconditions belong to the section that needs them. */
+    await setGeolocation({ granted: true, ...ORIGIN });
+
     /* Drive the labels the PAGE offers, not the DB's category names: /services carries its own
        hardcoded chip list, so the DB's "Farm Fresh Delivery" is the button "Farm Fresh" and a
        click on the DB name silently finds nothing. (That list also covers only some of the
@@ -505,7 +608,7 @@ try {
     if (!best || best.count === 0) {
       sk('no category reachable from the page chips has providers in range');
     } else {
-      const expected = Math.min(best.count, 60);   // the page asks for 60
+      const expected = Math.min(best.count, PAGE);   // the page shows one page, then offers more
       const pickedCat = await clickUntil(best.chip, `document.body.innerText.includes('providers found')`);
       await sleep(1200);
       const located = await clickUntil('Use my location', `/km away|m away/.test(document.body.innerText)`);
@@ -596,8 +699,8 @@ try {
     });
     const hits = (r) => (r.business_name ?? '').toLowerCase().includes(term)
       || (r.category_name ?? '').toLowerCase().includes(term);
-    const expected = Math.min((everything ?? []).filter(hits).length, 60);  // the page asks for 60
-    const inTop60 = (everything ?? []).slice(0, 60).filter(hits).length;
+    const expected = Math.min((everything ?? []).filter(hits).length, PAGE);  // one page
+    const inTop60 = (everything ?? []).slice(0, PAGE).filter(hits).length;
 
     if (!expected) {
       sk(`nothing matches "${term}" near the origin`);
@@ -621,8 +724,8 @@ try {
         const shown = await evaluate(`document.querySelectorAll('a[href^="/providers/"]').length`);
         if (shown === expected) ok(`/services: "${term}" shows all ${expected} matches in range`);
         else no(`/services: "${term}" showed ${shown}, expected ${expected} — filtering the returned page, not the query`);
-        if (expected > inTop60) ok(`…more than filtering the 60 rows it had would have found (${inTop60})`);
-        else sk('every match already sat in the top 60 here, so this data cannot prove the difference');
+        if (expected > inTop60) ok(`…more than filtering the ${PAGE} rows it had would have found (${inTop60})`);
+        else sk(`every match already sat in the first ${PAGE} here, so this data cannot prove the difference`);
       }
     }
   }
@@ -672,21 +775,30 @@ try {
           box.closest('form').requestSubmit();
           return true; })()`);
         await waitFor(`location.pathname === '/services'`, { label: '/services after the hero search', timeout: 30000 });
-        const url = await evaluate('location.href');
-        if (url.includes(`city=${encodeURIComponent(pick.city)}`)) ok(`the hero emits ?city=${pick.city}, not the dead ?location=`);
-        else no(`the hero navigated to ${url} — the chosen city is not in the URL`);
+        /* Read the PARSED parameter, not the raw string. A form submission encodes a space as "+"
+           while encodeURIComponent gives "%20", so a literal comparison passed only while the
+           biggest city happened to be one word ("Kalyan") and started failing the day the data
+           made it "Mumbai Suburban" — a false alarm about the hero, caused by the assertion. */
+        const cityParam = await evaluate(`new URL(location.href).searchParams.get('city')`);
+        if (cityParam === pick.city) ok(`the hero emits ?city=${pick.city}, not the dead ?location=`);
+        else no(`the hero put city=${JSON.stringify(cityParam)} in the URL, expected ${JSON.stringify(pick.city)}`);
 
         try {
           await waitFor(`document.body.innerText.includes('km away') || document.body.innerText.includes('m away')`,
             { label: `distances after landing on ?city=${pick.city}`, timeout: 30000 });
           const shown = await evaluate(`document.querySelectorAll('a[href^="/providers/"]').length`);
           ok(`/services ranks from ${pick.city} on arrival — ${shown} cards, each with a distance`);
-          const selected = await evaluate(`(() => {
-            const s = [...document.querySelectorAll('select')]
-              .find(x => [...x.options].some(o => o.value === ${JSON.stringify(pick.city)}));
-            return s ? s.value : null; })()`);
-          if (selected === pick.city) ok(`the /services city picker shows "${pick.city}" — the choice is visible, not implicit`);
-          else no(`the /services city picker shows "${selected}" after arriving with ?city=${pick.city}`);
+          /* The choice must be VISIBLE, not implicit — but there is no city picker to read it
+             back from any more (the pincode box replaced it). The page states where it is
+             searching instead, which is the property that actually mattered: the customer can see
+             that the city they picked on the homepage is the one being used. */
+          const shownLabel = await evaluate(
+            `(document.body.innerText.match(/Searching near\\s*\\n?\\s*([^\\n]+)/) || [])[1] || null`);
+          if (shownLabel && shownLabel.includes(pick.city)) {
+            ok(`/services says it is "Searching near ${shownLabel}" — the hero's choice is visible, not implicit`);
+          } else {
+            no(`/services does not show the arriving city: got ${JSON.stringify(shownLabel)} for ?city=${pick.city}`);
+          }
         } catch {
           no(`landing on ?city=${pick.city} did not rank — the location choice is still being dropped`);
         }
@@ -709,8 +821,8 @@ try {
       {
         label: '4+ rating',
         click: `[...document.querySelectorAll('button')].find(b => b.textContent.trim() === '4+')`,
-        expected: Math.min(inRange.filter((p) => Number(p.rating) >= 4).length, 60),
-        naive: inRange.slice(0, 60).filter((p) => Number(p.rating) >= 4).length,
+        expected: Math.min(inRange.filter((p) => Number(p.rating) >= 4).length, PAGE),
+        naive: inRange.slice(0, PAGE).filter((p) => Number(p.rating) >= 4).length,
       },
       {
         // Now a plain checkbox in the results toolbar rather than a switch in the sidebar — the
@@ -718,8 +830,8 @@ try {
         // must filter the QUERY, not the page.
         label: 'Available now',
         click: `document.querySelector('input[type="checkbox"][aria-label="Available now"]')`,
-        expected: Math.min(inRange.filter((p) => p.is_available).length, 60),
-        naive: inRange.slice(0, 60).filter((p) => p.is_available).length,
+        expected: Math.min(inRange.filter((p) => p.is_available).length, PAGE),
+        naive: inRange.slice(0, PAGE).filter((p) => p.is_available).length,
       },
     ];
 
@@ -738,8 +850,8 @@ try {
       const shown = await evaluate(`document.querySelectorAll('a[href^="/providers/"]').length`);
       if (shown === c.expected) ok(`/services: "${c.label}" returns all ${c.expected} in range`);
       else no(`/services: "${c.label}" showed ${shown}, expected ${c.expected} — filtering the returned page, not the query`);
-      if (c.expected > c.naive) ok(`…more than filtering the 60 rows it had would have found (${c.naive})`);
-      else sk(`every "${c.label}" match already sat in the top 60, so this data cannot prove the difference`);
+      if (c.expected > c.naive) ok(`…more than filtering the ${PAGE} rows it had would have found (${c.naive})`);
+      else sk(`every "${c.label}" match already sat in the first ${PAGE}, so this data cannot prove the difference`);
     }
   }
 
@@ -751,11 +863,11 @@ try {
   console.log('\n[/services: the sort runs in the query]');
   {
     const { data: byRating } = await service.rpc('search_providers', {
-      p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null, p_radius_km: NEAR_KM, p_limit: 60,
+      p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null, p_radius_km: NEAR_KM, p_limit: PAGE,
       p_query: null, p_min_rating: null, p_available_only: false, p_sort: 'rating',
     });
     const { data: byMatch } = await service.rpc('search_providers', {
-      p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null, p_radius_km: NEAR_KM, p_limit: 60,
+      p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_category_id: null, p_radius_km: NEAR_KM, p_limit: PAGE,
       p_query: null, p_min_rating: null, p_available_only: false, p_sort: 'match',
     });
 
@@ -829,7 +941,7 @@ try {
     let chosen = null;
     for (const c of SPARSE) {
       const near = await service.rpc('search_providers', {
-        p_lat: c.lat, p_lng: c.lng, p_category_id: null, p_radius_km: NEAR_KM, p_limit: 60,
+        p_lat: c.lat, p_lng: c.lng, p_category_id: null, p_radius_km: NEAR_KM, p_limit: PAGE,
         p_query: null, p_min_rating: null, p_available_only: false, p_sort: 'match',
       });
       const wide = await service.rpc('search_providers', {
@@ -898,7 +1010,20 @@ try {
         document.body.innerText.includes('m away')`);
       if (!located) { sk(`could not put ${path} into ranked mode`); continue; }
       await sleep(2500);        // let the initial burst settle
-      rpcRequests = 0;
+
+      /* Once RANKED, changing a filter must cost ONE query, not two. The catalog is dead weight
+         from the moment we know where the customer is — `ranked ?? catalog` never reads it — yet
+         the catalog effect depends on every filter, so each change fired a second full read that
+         was discarded on arrival. Exercise a real interaction and count both. */
+      rpcRequests = 0; catalogRequests = 0;
+      await clickContaining('Top rated');
+      await sleep(3000);
+      if (catalogRequests === 0) ok(`${path}: changing a filter while ranked costs no catalog query`);
+      else no(`${path}: a filter change fired ${catalogRequests} catalog quer(ies) whose result is discarded`);
+      if (rpcRequests >= 1) ok(`${path}: …and it does re-run the ranked search (${rpcRequests})`);
+      else no(`${path}: the filter change did not re-query at all`);
+
+      rpcRequests = 0; catalogRequests = 0;
       await sleep(IDLE_MS);     // nothing touches the page in this window
       if (rpcRequests === 0) ok(`${path} is silent while idle — no re-query loop`);
       else no(`${path} fired ${rpcRequests} search_providers calls in ${IDLE_MS / 1000}s idle ` +

@@ -133,8 +133,15 @@ async function adminGet<T>(path: string): Promise<{ data: T } | { error: string 
   return { data: json as T };
 }
 
+/** The queue is BOUNDED server-side (200 pending / 100 decided), so `counts` reports the true
+ *  totals alongside the page. Without them the console cannot distinguish "nothing waiting" from
+ *  "we only sent you the first page" — the distinction that hid a real pending application when
+ *  PostgREST silently truncated the old unbounded query at 1,000 rows. */
 export function fetchProviderApplications() {
-  return adminGet<{ applications: ProviderApplicationRow[] }>('/api/admin/provider-applications');
+  return adminGet<{
+    applications: ProviderApplicationRow[];
+    counts?: { pending: number; decided: number; pending_shown: number; decided_shown: number };
+  }>('/api/admin/provider-applications');
 }
 
 export function fetchProviderApplication(id: string) {

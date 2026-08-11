@@ -21,7 +21,7 @@ const DB_SCRIPTS = [
   'verify-hardening', 'verify-provider-pii', 'verify-step2', 'verify-step3', 'verify-step4',
   'verify-step5', 'verify-step6', 'verify-step7', 'verify-step8', 'verify-step8-evidence',
   'verify-step9', 'verify-step9-5', 'verify-step10', 'verify-step11', 'verify-search-location',
-  'verify-admin',
+  'verify-scale', 'verify-data-fidelity', 'verify-admin',
 ];
 const UI_SCRIPTS = ['ui-check-step8', 'ui-check-step9', 'ui-check-step10', 'ui-check-step11', 'ui-check-dispute-clarity',
   'ui-check-live-counter-offer', 'ui-check-admin'];

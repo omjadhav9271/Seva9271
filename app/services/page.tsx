@@ -7,7 +7,7 @@ import { Search, MapPin, Star, SlidersHorizontal, CheckCircle, Clock, Compass } 
 import { supabase } from '@/lib/supabase';
 import type { ProviderSearchResult } from '@/lib/supabase';
 import {
-  MAX_RADIUS_KM, RADIUS_STEPS_KM, catalogComparator, effectiveSort, fetchCityAnchors,
+  MAX_RADIUS_KM, PAGE_SIZE, RADIUS_STEPS_KM, catalogOrder, effectiveSort, fetchCityAnchors,
   formatDistance, searchProvidersWidening,
   type CityAnchor, type SearchOrigin, type SortMode,
 } from '@/lib/matching';
@@ -60,6 +60,11 @@ function ServicesContent() {
      to be told that is what happened rather than left to work it out from the distance labels. */
   const [radiusKm, setRadiusKm] = useState<number | null>(null);
   const [anchors, setAnchors] = useState<CityAnchor[]>([]);
+  /* Paging. Grows rather than offsets: the ordering is deterministic (20260824120000), so a bigger
+     limit returns a stable superset and nothing jumps between pages. */
+  const [limit, setLimit] = useState(PAGE_SIZE);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   /* The category chips come from the DB, not a hardcoded array: service_categories is
      admin-managed, so a mirrored list goes stale on the next insert. It already had — 11 of 25
      categories (Laundry, Maid, Painter, Tailor, Security, Water Tanker…) could not be filtered
@@ -78,20 +83,51 @@ function ServicesContent() {
 
   // The catalog always loads: it is the fallback when the customer won't share a location, and it
   // is what the city list is built from.
+  /* 🔴 BOUNDED AND SERVER-ORDERED — see /providers for the write-up. The unbounded version was
+     silently capped at 1,000 rows by PostgREST, hiding 85 of 1,085 providers and turning the
+     client-side sort into a sort of a sample. */
+  const catalogSort = effectiveSort(sortBy, false);
   useEffect(() => {
+    /* 🔴 Don't fetch a catalog nobody will read. `providers = ranked ?? catalog`, so once we know
+       where the customer is, the catalog is dead weight — yet this effect depends on every filter,
+       so each sort/category/availability change was firing a SECOND full query whose result was
+       discarded on arrival. Two round trips per interaction, one of them pure waste, and invisible
+       to the existing "no re-query loop" assertion because that one only counts search_providers.
+       Clearing the location re-runs this and the catalog comes back.
+
+       🔴 setLoading(false) BEFORE returning — see /providers. If the prefill sets `origin` while
+       the mount-time catalog fetch is still in flight, that run is marked stale and never clears
+       `loading`, and this run would return without clearing it either: a page stuck on its
+       loading state for exactly the customers who have already granted location. */
+    if (origin) { setLoading(false); return; }
     let mounted = true;
     (async () => {
-      const { data, error } = await supabase
+      const order = catalogOrder(catalogSort);
+      let q = supabase
         .from('service_providers')
         .select('id, business_name, bio, rating, total_reviews, hourly_rate, experience_years, city, is_verified, is_available, service_categories(name, slug)')
-        .eq('status', 'approved')
-        .order('rating', { ascending: false });
+        .eq('status', 'approved');
+      if (availableOnly) q = q.eq('is_available', true);
+      if (minRating > 0) q = q.gte('rating', minRating);
+      // category_id, not the embedded slug: filtering an embed without !inner narrows the EMBED,
+      // not the parent rows — every provider would still come back, just with a null category.
+      if (selectedCategory && categoryIds[selectedCategory]) q = q.eq('category_id', categoryIds[selectedCategory]);
+      // The text box belongs in the query now the catalog is a CUT. Sanitised because PostgREST's
+      // or() is comma/paren delimited and raw punctuation would corrupt the filter.
+      const term = searchQuery.trim().replace(/[^\p{L}\p{N} ]/gu, '');
+      if (term) q = q.or(`business_name.ilike.*${term}*,city.ilike.*${term}*`);
+      const { data, error } = await q
+        .order(order.column, { ascending: order.ascending, nullsFirst: order.nullsFirst })
+        .order('id', { ascending: true })
+        .limit(limit + 1);
       if (!mounted) return;
       if (error) {
         console.error('Failed to load providers:', error.message);
         setCatalog([]);
       } else {
-        const mapped: ProviderCard[] = (data ?? []).map((p: any) => ({
+        const rows = (data ?? []).slice(0, limit);
+        if (!origin) setHasMore((data ?? []).length > limit);
+        const mapped: ProviderCard[] = rows.map((p: any) => ({
           id: p.id,
           business_name: p.business_name,
           category: p.service_categories?.name ?? 'Service',
@@ -113,7 +149,8 @@ function ServicesContent() {
       setLoading(false);
     })();
     return () => { mounted = false; };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [origin, catalogSort, availableOnly, minRating, limit, selectedCategory, categoryIds, searchQuery]);
 
   useEffect(() => {
     let mounted = true;
@@ -146,7 +183,7 @@ function ServicesContent() {
     const res = await searchProvidersWidening({
       origin: next,
       categoryId: selectedCategory ? categoryIds[selectedCategory] ?? null : null,
-      limit: 60,
+      limit,
       query: searchQuery,
       minRating,
       availableOnly,
@@ -160,6 +197,8 @@ function ServicesContent() {
       return;
     }
     setRadiusKm(res.radiusKm);
+    setHasMore(res.hasMore);
+    setLoadingMore(false);
     setRanked(res.data.map((p: ProviderSearchResult) => ({
       id: p.id,
       business_name: p.business_name,
@@ -178,7 +217,7 @@ function ServicesContent() {
       distanceKm: p.distance_km,
     })));
     setLocationNote(null);
-  }, [categoryIds, selectedCategory, searchQuery, minRating, availableOnly, sortBy]);
+  }, [categoryIds, selectedCategory, searchQuery, minRating, availableOnly, sortBy, limit]);
 
   /* ONE re-query path for every filter. Each of these belongs in the query rather than applied to
      what came back, so each must re-run the search; debounced together so a burst of adjustments
@@ -190,7 +229,12 @@ function ServicesContent() {
     const t = setTimeout(() => { runSearch(origin); }, 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCategory, categoryIds, searchQuery, minRating, availableOnly, sortBy]);
+  }, [selectedCategory, categoryIds, searchQuery, minRating, availableOnly, sortBy, limit]);
+
+  // Changing what you searched for restarts the page count, or a narrowed search would keep
+  // rendering however many pages the previous, broader one had loaded.
+  useEffect(() => { setLimit(PAGE_SIZE); },
+    [selectedCategory, searchQuery, minRating, availableOnly, sortBy, origin]);
 
   /* One entry point for "where am I searching from", whichever of the three inputs produced it —
      device location, a typed pincode, or the city list. SearchLocation owns collecting it; this
@@ -222,23 +266,10 @@ function ServicesContent() {
 
   const providers = ranked ?? catalog;
 
-  const filtered = providers.filter((p) => {
-    /* In ranked mode the SERVER already applied the text search across everything in range, so
-       re-applying it here could only narrow a correct result set back down to a sample. The
-       client-side match remains for catalog mode, where there is no query to push down. */
-    const matchesSearch = ranked ? true : !searchQuery ||
-      (p.business_name ?? '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.category.toLowerCase().includes(searchQuery.toLowerCase());
-    /* Kept in both modes: in ranked mode the server has already filtered by category, so this is a
-       no-op on correct data — but it still covers the window before the slug→id map has loaded,
-       when the query necessarily goes out unfiltered. */
-    const matchesCategory = !selectedCategory || p.slug === selectedCategory;
-    // Rating floor and availability are query parameters now, for the same reason as the text
-    // search: applied here they could only sample the 60 rows that came back.
-    const matchesRating = ranked ? true : p.rating >= minRating;
-    const matchesAvailable = ranked ? true : (!availableOnly || p.is_available);
-    return matchesSearch && matchesCategory && matchesRating && matchesAvailable;
-  });
+  /* Every filter now runs in the QUERY — the RPC in ranked mode, PostgREST in catalog mode — so
+     nothing is filtered here. The category check survives only to cover the window before the
+     slug→id map has loaded, when the query necessarily goes out unfiltered. */
+  const filtered = providers.filter((p) => !selectedCategory || p.slug === selectedCategory);
 
   /* In RANKED mode the ORDER BY ran in the query (p_sort), so these rows already arrived in the
      order the customer asked for — re-sorting them here would be the same mistake as re-filtering
@@ -247,7 +278,7 @@ function ServicesContent() {
      In CATALOG mode there is no cut — that query returns every approved provider — so ordering it
      here orders the whole set, which is honest. Two modes, two mechanisms, one reason. */
   const shownSort = effectiveSort(sortBy, Boolean(ranked));
-  const sorted = ranked ? filtered : [...filtered].sort(catalogComparator(shownSort));
+  const sorted = filtered;
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] pt-20">
@@ -274,12 +305,7 @@ function ServicesContent() {
             {/* Arriving with ?city= IS a location choice — don't let the passive GPS prefill
                 overrule it. The homepage hero's whole point is that the city it was given survives
                 the trip to this page. */}
-            <SearchLocation
-              anchors={anchors}
-              origin={origin}
-              onOrigin={handleOrigin}
-              autoLocate={!cityParam}
-            />
+            <SearchLocation origin={origin} onOrigin={handleOrigin} autoLocate={!cityParam} />
           </div>
 
           {locationNote && (
@@ -490,6 +516,24 @@ function ServicesContent() {
                     </div>
                   </Link>
                 ))}
+              </div>
+            )}
+
+            {/* More exist — detected by asking for one row past the page, so it can never disagree
+                with the list it labels. */}
+            {sorted.length > 0 && hasMore && (
+              <div className="mt-8 text-center">
+                <button
+                  type="button"
+                  onClick={() => { setLoadingMore(true); setLimit((n) => n + PAGE_SIZE); }}
+                  disabled={loadingMore}
+                  className="px-6 py-3 rounded-xl text-sm font-semibold bg-[#1a1a1a] border border-[#2a2a2a] text-white hover:border-[#FF9933] transition-colors disabled:opacity-60"
+                >
+                  {loadingMore ? 'Loading…' : `Show ${PAGE_SIZE} more`}
+                </button>
+                <p className="text-xs text-gray-600 mt-2">
+                  Showing the {sorted.length} best matches so far — there are more.
+                </p>
               </div>
             )}
           </div>

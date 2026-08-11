@@ -164,6 +164,85 @@ Each was invisible to 33 green DB assertions, because each lived in *when the pa
 
 ---
 
+## Realistic data, pincode precision & scale (2026-08-11) — ✅ DONE
+
+Prompted by a real observation: *"best match or nearest is not working on seeded data"*, plus *"I don't like selecting a city — in India a small place holds a large population"*, plus *"can the system handle 60 / 600 / 1000 providers for a category?"*. All three were right, and the first was right for a reason nobody had guessed.
+
+### 🔴 The ranking was never broken — the seed data made it untestable, and the nightly job proved it
+
+Measured before touching anything: **484 providers claiming 76,367 reviews between them, against 8 actual rows in `reviews`**, and only **3 distinct `reputation_score` values** (sd 0.078) across 485 providers.
+
+The old seeder wrote `reputation_score` directly. `nightly-reputation` then recomputed every score from real reviews at 02:00, found none, and returned the Bayesian prior for everyone — flattening the spread overnight, every night. **You cannot fake reputation_score; the engine owns it (invariant 1) and will overwrite you.** That is the system working correctly.
+
+With the reputation term constant, `match_score` collapsed to `0.45 × proximity + 0.10 × availability + a constant`, so **"Best match" and "Nearest" returned the same top-10 set**, merely reshuffled. And because `rating` was fake (48 distinct values on one page) while `reputation_score` was real (2 values), the number shown and the number ranked on described different worlds — a 4.96★ provider sat below a 3.4★ one with no explanation available to anyone.
+
+**The fix is to seed INPUTS, not outputs.** `seed-scale-providers.mjs` now gives each provider a hidden `quality`, generates real bookings and dated reviews as noisy samples of it, lets the `update_provider_rating` trigger set `rating`/`total_reviews`, and calls `recompute_all_reputation()` — the same function the cron runs. Nothing writes a score. Result: **99 distinct reputation values (sd 0.205)**, Best-match vs Nearest overlap **10/10 → 5/10**, and it survives 02:00 because the numbers were always the engine's own. Review counts follow a heavy-tailed mixture (18% have none) so Bayesian shrinkage is visible; ~8% quote per job, so the "Custom pricing" branch and the unpriced-sorts-last rule are exercised instead of being dead code.
+
+**Migration `20260825120000` fixes the same disease at its source:** the four `@seva.demo` providers seeded by migration `20260710121000` claimed 312/205/128/96 reviews with **zero** rows — baked into a migration, so every fresh database was born with it, and it defeated the rating filter ("4+ stars" admitting a provider on the strength of reviews that don't exist). Counters are now reconciled from the reviews table, and the migration fails if any still disagree.
+
+### Location is a PINCODE, not a city (migration `20260826120000`)
+
+A city is not a location in India: Greater Mumbai is ~12 million people across 60 km, and the city anchor sits near Fort — so a Borivali customer was ranked from **17 km away**. The first pincode implementation made it worse by mapping pincodes to *city* anchors, throwing away the precision that made pincodes worth asking for. Measured after the fix, four Mumbai pincodes resolve to four points spanning **5.3 / 12.5 / 17.3 / 20.1 km** from that single old anchor.
+
+**❌ A pincode reference table was rejected, and the reasoning is the part to keep.** Shipping one means *supplying coordinates for pincodes* — from an external dataset (a licensing and freshness dependency) or from memory, which is **fabricated geodata**: invented numbers that ship looking authoritative and silently mis-rank real people, with nothing in the system able to detect it.
+
+Deriving anchors from providers has a property no reference table has: **nobody ever states a pincode's coordinates.** The provider states their own pincode — a fact about themselves — and the position comes from a service base we already verified. A mistyped pincode groups someone oddly; it cannot invent a place. `resolve_pincode()` answers at the finest grain the data supports (exact pincode → 3-digit sorting district) with the same ≥3-provider and grid-snap guards as `city_anchors()`, and reports **which** grain, because "near 400097" and "near the 400 area" are different promises.
+
+**Honest weakness, recorded not hidden:** this only resolves pincodes where we have supply. Where we don't, it degrades to the district — and that is exactly where a customer most needs a true distance. It is bounded (thin supply means the honest answer is "nobody near you yet" anyway) but real. The upgrade, when it earns its dependency, is a geocoder-backed pincode cache filled once per pincode server-side; the table is already shaped for it via `source`.
+
+**The city dropdown is gone from both pages** — it does not scale past a handful of Indian cities. An uncovered pincode gets a plain sentence plus a few clickable areas we genuinely cover: a short list of places that work, not a dropdown of everywhere we might one day be. `/providers` gained a **category dropdown** in that slot, which is what customers actually filter on. **Name search stayed** (asked for, and "the electrician my neighbour recommended" is a real journey) — repositioned to narrow *within* a category.
+
+### 🔴 The 1,000-row cap: the same bug, three times (migration `20260827120000`)
+
+PostgREST caps result sets at 1,000 rows. At **1,085 approved providers** that stopped being theoretical, and it bit in three places:
+
+1. **The catalog** on `/providers` and `/services` was an unbounded select — returned exactly 1000, silently, hiding 85 providers. Worse, `catalogComparator` sorted them client-side *believing it had the complete set*; its own comment had warned "if you ever add a limit to the catalog query, this becomes the bug it was written to avoid." PostgREST added the limit for us. Both pages now bound and **server-order** the catalog, with category, availability, rating floor and text pushed into the query — bounding it turned every remaining client-side filter into the same sample bug, so they had to move together.
+2. **The admin review queue** selected every row with `applied_at` — 1,082 of them, truncated to 1,000 *oldest-first-dropped*, so the one genuinely pending application fell off the end and the console showed an empty queue while an applicant waited. Its follow-up `.in(provider_id, [1000 uuids])` then exceeded the URL limit and returned Bad Request, which the route destructured away — every completeness count silently became "0 of N". Now: the backlog is fetched separately, oldest-waiting first, bounded, with `.in()` chunked and its failure returned loudly instead of read as "no documents". Counts are returned so the console can say what it is not showing.
+3. **`verify-step9`** enumerated every approved provider and searched client-side, reporting "approved provider still missing from the list" for a provider that was perfectly visible. Now it asks about that provider directly — testing the property instead of by enumeration.
+
+**Pagination:** both pages show 30 and offer "Show 30 more". "Is there more" is answered by asking for one row past the page — no count query that could disagree with the list it labels. Offset paging is safe now only because `20260824120000` made the order deterministic.
+
+**`price_sort`** (generated `NULLIF(hourly_rate,0)`) exists because PostgREST cannot express that in an `.order()` clause, and without it the catalog's "Lowest price" opens with every provider who has *no* price — useless, and a lie about what they cost.
+
+### What the scale harness proves (`scripts/verify-scale.mjs`, 35/0/1)
+
+The central assertion is the **prefix property**: for the same query, `limit N` must equal the first N of `limit BIG`. It is the formal version of "the page you see is the top of the list you asked for", and one property catches three bug classes — non-deterministic ordering, a cut taken before the sort, and unstable pagination. Verified at 24 / 96 / 555 / 671 / 911 matches, across all six sorts, plus filter integrity at every size and **45–62 ms per page**.
+
+### Seed data that the ENGINES can read (2026-08-11, second pass)
+
+The first pass fixed `reputation_score`. The same disease turned out to be in two more places, and the pattern is the thing to remember: **Seva derives three verdicts from evidence, and the seeder was writing verdicts.**
+
+```
+rating / total_reviews  ←  reviews                (update_provider_rating trigger)
+reputation_score        ←  reviews + outcomes     (compute_reputation)
+trust_tier              ←  verified documents     (recompute_trust_tier)
+```
+
+- **🔴 `trust_tier` was fabricated for 435 providers** — tier 2 or 3 with **zero** verified documents. `recompute_trust_tier()` derives it from `provider_documents`, and `nightly-expire-documents` re-runs that logic, so those tiers were fiction with an expiry date exactly as the reputation scores had been. The seeder now writes documents (photo_id + selfie for everyone; a credential for ~30%; an in-date police check for ~8%) and calls the function. Note `pan`/`id_secondary` are deliberately not used as the credential — 20260817120000 excludes them so a PAN photocopy cannot buy the tier a trade certificate means.
+- **Bookings had no history.** 20,202 seeded bookings shared **145 `booking_events`** and **24 `payment_transactions`**, so every seeded booking rendered an empty timeline and the escrow ledger described almost none of the money the platform believed it had moved. Now a full transition trail per booking (144,795 rows — `17,851×8 + 1,147×1 + 140×6`, arithmetic that matches exactly) and a payment row per settled booking, in **paise**, with the 1% split. The trail is synthesised rather than driven through `transition_booking` (~7 authenticated RPCs × 20k bookings is unaffordable); shapes were copied from real rows rather than invented, and the fidelity contract below enforces the match.
+- **The `@seva.demo` providers get real history too.** 20260825120000 correctly reset them to "New on Seva", which was truthful but left the four best-known names looking empty. They are real approved providers and now look like it.
+- **~8% quote per job** (`hourly_rate` 0), so the "Custom pricing" UI branch and the unpriced-sorts-last rule are exercised instead of being dead code.
+
+### The contract: `scripts/verify-data-fidelity.mjs` (16/0/4)
+
+The three failures above were not really seeding bugs. They were one missing rule: **nothing asserted that a stored verdict must be derivable from stored evidence.** This file is that rule, and it runs against **all** data rather than seeded rows — a production row that violates it is the worse bug, and if it only checked seeds it would have to know which rows are seeds, which is precisely the distinction that should not exist.
+
+It re-derived the entire hand diagnosis independently, which is the point: the next occurrence costs seconds. Its skips are enumerated exclusions, not holes — six trail-less bookings and one payment-less booking belong to verify-suite fixtures (inserted directly at a chosen status, so legitimately trail-less). They are **not deleted**: several feed the accumulated reputation fixtures `verify-step7`/`step8` assert against on a 2-decimal knife-edge, and perturbing the system to make a new checker green is the wrong way round.
+
+Two of its own bugs are worth recording, because both are the same family this log keeps documenting:
+- it shipped with `range()` paging and **no `ORDER BY`**, reporting "82 providers never scored" and "6 bookings with no events" — *misses*, not violations, indistinguishable from real findings by eye. Third occurrence of unstable pagination in this codebase (after `search_providers` and the seeder itself, on the same day). **Assume any `range()` without a total order is wrong.**
+- it conflated **arithmetic** with **policy**: eight real payments charge 15% because that is what the platform charged when they were taken. They balance perfectly. `fee + provider = amount` is the invariant; the 1% *rate* is policy that changed, so it is asserted only for rows written since 20260730120000.
+
+### ⚡ The catalog was being fetched and thrown away (efficiency)
+
+`providers = ranked ?? catalog`, so once a location is known the catalog is dead weight — but its effect depended on every filter, so **each sort/category/availability change fired a second full query whose result was discarded on arrival**. Two round trips per interaction, one pure waste, and invisible to the existing "no re-query loop" assertion because that one counts only `search_providers`. Now guarded, and `ui-check-step11` counts catalog reads separately: a filter change while ranked must cost **one** query.
+
+🔴 **The guard hung the page on the first attempt, and the lesson generalises.** The catalog fetch starts on mount; the GPS prefill sets `origin` while it is in flight; the effect re-runs, its cleanup marks the first run stale, and that run's `if (!mounted) return` skips its own `setLoading(false)`. An early `return` in the new run meant nothing ever cleared it — so exactly the customers who had already granted location sat on "Loading providers…" forever. **An early return from an effect must still settle any state that effect owns.** Caught by the assertion added alongside the guard, which is the only reason it was not shipped.
+
+**Still open:** both pages still make one catalog request on first paint before the prefill resolves. That one is unavoidable without knowing the permission state before render, and it is a single request rather than one per interaction.
+
+---
+
 ## Known-open — tracked, low priority (⚠️ not regressions, do NOT re-flag as new bugs)
 
 - ~~**`/services` hardcodes its own category chips.**~~ **RESOLVED (2026-08-10).** The page carried a 14-entry array against a 25-row table, so **11 categories — Laundry, Maid, Mason, Painter, Security, Tailor, Water Tanker, Mobile Repair, Cycle Repair, Auto Rickshaw, Cow Dung — could not be filtered from the browse page at all**, and its labels had drifted from the DB names ("Farm Fresh" vs "Farm Fresh Delivery"). Categories are admin-managed, so a hardcoded mirror is a bug waiting for the next insert. Chips now come from `service_categories`. What stays in code is only the *look* — `lib/categories.ts` maps slug → icon + colour + gradient, with a neutral default so a category added tomorrow renders correctly today instead of vanishing. `/providers` used the same shared map, replacing its own partial copy that covered 12 of 25 slugs (the rest rendered slate-grey). Long DB names are shortened for the chip only (`chipLabel`: "Mobile Repair / Accessories" → "Mobile Repair"); the card still shows the full name. Asserted in `ui-check-step11`: **every category in the DB must have a chip.**
