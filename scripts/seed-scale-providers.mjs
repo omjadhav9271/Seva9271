@@ -283,19 +283,35 @@ for (let n = 0; n < TOTAL; n++) {
     : pool[n % pool.length];
   const category = dense ? denseCategory : pick(categories);
   // ±0.005° ≈ ±550 m — providers cluster around the locality, they don't sit on one pin.
-  const quality = clamp(5 - Math.abs(gaussian(0, 0.75)), 2.4, 5);
+  /* `quality` is the CEILING on how far reputation can ever spread: reviews are noisy samples of
+     it, so with infinite reviews review_score converges on it and no more. Measured on the previous
+     seed, that ceiling was the binding constraint — the 46+ review band reached sd 0.450 against a
+     quality sd of 0.452 (σ 0.75 × √(1−2/π)), i.e. the engine had already recovered everything there
+     was to recover. Widening σ to 0.95 lifts the ceiling to ~0.573. It also pulls mean quality from
+     4.40 to 4.24 and drops the floor to 2.0, which is the more honest shape anyway: a real
+     marketplace has genuinely bad tradespeople, and a seed with none of them cannot show the
+     ranking doing its job. */
+  const quality = clamp(5 - Math.abs(gaussian(0, 0.95)), 2.0, 5);
   /* Review count: an explicit heavy-tailed mixture rather than a uniform draw. A young marketplace
-     looks like this — most providers have a handful of reviews, a minority have real track
-     records, and a fifth are genuinely new. It matters for more than realism: the Bayesian
-     shrinkage in compute_reputation only becomes visible when review COUNTS differ, so a uniform
-     0-320 spread (the old version) hid the very mechanism Step 7 exists for.
-     The bands are also what keeps the seed affordable — mean ≈ 12 reviews, so 1,000 providers cost
-     ~13k reviews rather than the ~50k an exp() tail would have produced. */
+     looks like this — most providers have a handful of reviews, a minority have real track records,
+     and a chunk are genuinely new. It matters for more than realism: the Bayesian shrinkage in
+     compute_reputation only becomes visible when review COUNTS differ, so a uniform 0-320 spread
+     (the oldest version) hid the very mechanism Step 7 exists for.
+
+     Bands shifted up on 2026-08-12 (mean ≈ 12 → ≈ 20). compute_reputation shrinks toward a prior of
+     4.0 with c_confidence = 5 virtual reviews, so a provider only escapes the prior once their
+     time-decayed weight clears 5. Measured on the previous seed, 878 of 1,085 providers (81%) sat at
+     ≤10 reviews and scored sd 0.192 — the prior, not their work, was setting their rank. The tail
+     lengthens to 180 because a marketplace's visible winners are the ones with real track records,
+     and they are what "Best match" has to be able to surface.
+
+     Cost is still the reason these are bands and not an exp() tail: mean ≈ 20 puts 1,000 providers
+     at ~21k reviews, up from ~13k but nowhere near the ~50k an exponential would have produced. */
   const roll = rnd();
-  const reviewCount = roll < 0.18 ? 0
-    : roll < 0.80 ? intBetween(1, 10)
-    : roll < 0.96 ? intBetween(11, 45)
-    : intBetween(46, 160);
+  const reviewCount = roll < 0.15 ? 0
+    : roll < 0.65 ? intBetween(2, 12)
+    : roll < 0.93 ? intBetween(13, 50)
+    : intBetween(51, 180);
   plans.push({
     dense,
     region, loc, category, quality, reviewCount,
@@ -447,7 +463,14 @@ if (NO_REVIEWS) {
     for (let i = 0; i < completed + cancels + disputes; i++) {
       const isCancel = i >= completed && i < completed + cancels;
       const isDispute = i >= completed + cancels;
-      const daysAgo = Math.floor(between(1, 200));
+      /* Skewed RECENT, not uniform over the window. This is the cheapest fix of the three and was
+         the least obvious: compute_reputation decays reviews on a ~90-day half-life, so a date
+         drawn uniformly from 1-200 days is worth only ~0.51 of its face weight on average, and ten
+         real reviews landed at Σw ≈ 5.1 against a prior weight of 5 — a dead heat the prior wins
+         half of. Weighting toward recent lifts that average to ~0.64 for the same number of rows,
+         costing nothing in runtime. It is also what a GROWING marketplace looks like: volume rises
+         over time, so most reviews are recent ones. u^1.8 over the same 200-day window. */
+      const daysAgo = Math.floor(1 + 199 * Math.pow(rnd(), 1.8));
       const when = new Date(Date.now() - daysAgo * DAY).toISOString();
       const amount = p.hourly_rate * 2;
       bookingRows.push({
