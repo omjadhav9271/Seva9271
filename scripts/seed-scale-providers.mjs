@@ -47,9 +47,14 @@
     node scripts/seed-scale-providers.mjs                          # 480 spread over 7 regions
     node scripts/seed-scale-providers.mjs --count 300 --customers 40
 
-    # density for scale testing — N providers in ONE category around ONE city, on top of the spread:
-    node scripts/seed-scale-providers.mjs --count 200 \
-         --dense-category electrician --dense-city "Mumbai Suburban" --dense-count 600
+    # density for scale testing — N providers in ONE category around ONE city, on top of the spread
+    # THIS RUN CREATES. It is not additive to data already in the DB: seeding aborts if any
+    # @sevascale.test user exists, so changing the dense city means --purge then reseed, which
+    # destroys and rebuilds every seeded booking and review. The spread comes back identical
+    # (--seed is deterministic); only the dense cohort moves.
+    node scripts/seed-scale-providers.mjs --purge
+    node scripts/seed-scale-providers.mjs --count 480 \
+         --dense-category electrician --dense-city "Bengaluru" --dense-count 600
 
     --no-reviews    providers only (fast; leaves every score at the prior — for load tests only)
     --seed N        deterministic re-run
@@ -657,9 +662,17 @@ const { error: repErr } = await service.rpc('recompute_all_reputation');
 if (repErr) console.log('  ! recompute_all_reputation failed: ' + repErr.message);
 else console.log(`  reputation recomputed in ${((Date.now() - tRep) / 1000).toFixed(1)}s`);
 
-/* ── 5) report the distribution, because a seed you cannot see is a seed you cannot trust ── */
+/* ── 5) report the distribution, because a seed you cannot see is a seed you cannot trust ──
+   Report from where the density actually IS. This was pinned to Mumbai centre, which silently
+   measured the wrong cohort the moment --dense-city named anywhere else: a Bengaluru density run
+   would print the Maharashtra spread's stats and fire (or fail to fire) the narrow-spread warning
+   on providers the run never touched. The default stays Mumbai centre only because that is where
+   the unweighted spread is thickest. */
+const reportAt = denseRegion
+  ? { name: `${denseRegion.city} (dense cohort)`, lat: denseRegion.localities[0].lat, lng: denseRegion.localities[0].lng }
+  : { name: 'Mumbai centre', lat: 19.0760, lng: 72.8777 };
 const { data: stats } = await service.rpc('search_providers', {
-  p_lat: 19.0760, p_lng: 72.8777, p_category_id: null, p_radius_km: 15, p_limit: 1000,
+  p_lat: reportAt.lat, p_lng: reportAt.lng, p_category_id: null, p_radius_km: 15, p_limit: 1000,
   p_query: null, p_min_rating: null, p_available_only: false, p_sort: 'match',
 });
 const { count: total } = await service.from('service_providers')
@@ -672,7 +685,7 @@ if (stats?.length) {
   const uniq = new Set(reps.map((v) => v.toFixed(2)));
   const mean = reps.reduce((a, b) => a + b, 0) / reps.length;
   const sd = Math.sqrt(reps.reduce((a, b) => a + (b - mean) ** 2, 0) / reps.length);
-  console.log(`\nWithin 15 km of Mumbai centre (${stats.length} providers):`);
+  console.log(`\nWithin 15 km of ${reportAt.name} (${stats.length} providers):`);
   console.log(`  reputation_score : ${Math.min(...reps).toFixed(2)} – ${Math.max(...reps).toFixed(2)}` +
     `  mean ${mean.toFixed(2)}  sd ${sd.toFixed(3)}  (${uniq.size} distinct values)`);
   if (rats.length) console.log(`  star rating      : ${Math.min(...rats).toFixed(2)} – ${Math.max(...rats).toFixed(2)} across ${rats.length} rated providers`);
