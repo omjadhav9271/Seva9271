@@ -1,353 +1,411 @@
 'use client';
 
+/* The signed-in home.
+ *
+ * `/` is behind AuthGate — only the four /auth routes are public — so everyone who reaches this
+ * page is already a member. It used to be a logged-out acquisition page anyway: an "India's #1
+ * Service Marketplace" badge, an eight-tile "Why Choose Seva?" explainer, and a closing "Join
+ * thousands of satisfied customers" CTA, all aimed at converting people who had already converted.
+ * Worse, its two pieces of evidence were invented — three hardcoded "Top Rated Providers" (Amit
+ * Sharma 4.9, 156 reviews) and two statistics that were words wearing a number's clothes (`ID`,
+ * `Escrow`) — directly beneath a comment insisting every claim here be literally true.
+ *
+ * So this page now answers the only two questions a member actually arrives with: what do I owe,
+ * and what can I get. Everything it prints comes from lib/home.ts, which reads the database and
+ * refuses the figures that RLS makes unknowable to a client. Colours, gradients and card styling
+ * are unchanged.
+ */
+
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { fetchCityAnchors, type CityAnchor } from '@/lib/matching';
+import { useAuth } from '@/lib/auth-context';
+import { fetchCityAnchors, formatDistance, type CityAnchor } from '@/lib/matching';
+import { statusConfig } from '@/lib/bookings';
 import {
-  Search, MapPin, Star, CheckCircle, Shield, Clock, Users, Zap, Wrench,
-  ChefHat, Sparkles, Heart, Car, Stethoscope, GraduationCap, Settings,
-  Hammer, Leaf, Scissors, ShoppingBasket, Truck, ArrowRight, Award,
-  CreditCard, MessageCircle
+  fetchPlatformStats, fetchCustomerBand, fetchProviderBand, fetchAdminBand, fetchTopProviders,
+  type PlatformStats, type CustomerBand, type ProviderBand, type AdminBand,
+  type TopProviders, type HomeBooking,
+} from '@/lib/home';
+import {
+  Search, MapPin, Star, Shield, Users, ArrowRight, Layers, Building2,
+  CalendarClock, Wallet, AlertTriangle, FileCheck, Briefcase, ChevronRight,
 } from 'lucide-react';
-
-const categories = [
-  { icon: Zap, name: 'Electrician', desc: 'Wiring, repairs, installations', slug: 'electrician', bg: '#FF9933', cardBg: 'rgba(40,30,8,0.9)' },
-  { icon: Wrench, name: 'Plumber', desc: 'Pipes, leaks, bathroom fixes', slug: 'plumber', bg: '#3b82f6', cardBg: 'rgba(10,20,40,0.9)' },
-  { icon: ChefHat, name: 'Home Cook / Tiffin', desc: 'Fresh meals, tiffin service', slug: 'home-cook', bg: '#ef4444', cardBg: 'rgba(40,8,8,0.9)' },
-  { icon: Sparkles, name: 'House Cleaning', desc: 'Deep cleaning, maintenance', slug: 'house-cleaning', bg: '#22c55e', cardBg: 'rgba(8,30,15,0.9)' },
-  { icon: Heart, name: 'Caretaker / Elderly Care', desc: 'Elderly care, companionship', slug: 'caretaker', bg: '#ec4899', cardBg: 'rgba(35,8,25,0.9)' },
-  { icon: Car, name: 'Driver / Car Rental', desc: 'Personal driver, car rental', slug: 'driver', bg: '#94a3b8', cardBg: 'rgba(18,22,28,0.9)' },
-  { icon: Stethoscope, name: 'Home-Visit Doctor', desc: 'Medical consultation at home', slug: 'doctor', bg: '#14b8a6', cardBg: 'rgba(6,28,26,0.9)' },
-  { icon: GraduationCap, name: 'Tutor / Coaching', desc: 'Academic tutoring, skills', slug: 'tutor', bg: '#a855f7', cardBg: 'rgba(25,8,40,0.9)' },
-  { icon: Settings, name: 'Appliance Repair', desc: 'Washing machine, laptop, WiFi', slug: 'appliance-repair', bg: '#6366f1', cardBg: 'rgba(15,15,40,0.9)' },
-  { icon: Hammer, name: 'Carpenter & Handyman', desc: 'Furniture, repairs, installation', slug: 'carpenter', bg: '#f59e0b', cardBg: 'rgba(35,28,6,0.9)' },
-  { icon: Leaf, name: 'Gardening & Pest Control', desc: 'Garden care, pest solutions', slug: 'gardening', bg: '#84cc16', cardBg: 'rgba(18,28,6,0.9)' },
-  { icon: Scissors, name: 'Beauty & Wellness', desc: 'Salon at home, spa services', slug: 'beauty', bg: '#f43f5e', cardBg: 'rgba(35,8,15,0.9)' },
-  { icon: ShoppingBasket, name: 'Farm Fresh Delivery', desc: 'Direct from farmers to you', slug: 'farm-fresh', bg: '#10b981', cardBg: 'rgba(6,28,20,0.9)' },
-  { icon: Truck, name: 'Delivery Gigs', desc: 'Earn by delivering nearby', slug: 'delivery', bg: '#f97316', cardBg: 'rgba(38,20,6,0.9)' },
-];
 
 const popularTags = ['Electrician', 'Plumber', 'Cleaning', 'Cook', 'Tutor', 'Farm Fresh'];
 
-const topProviders = [
-  { name: 'Amit Sharma', category: 'Electrician', rating: 4.9, reviews: 156, available: true, avatar: 'AS', color: 'from-amber-500 to-orange-600' },
-  { name: 'Priya Patel', category: 'Home Cleaning', rating: 4.8, reviews: 203, available: true, avatar: 'PP', color: 'from-pink-500 to-rose-600' },
-  { name: 'Ravi Kumar', category: 'Plumber', rating: 4.9, reviews: 89, available: true, avatar: 'RK', color: 'from-blue-500 to-cyan-600' },
-];
+const firstName = (full: string | null | undefined): string => {
+  const n = (full ?? '').trim().split(/\s+/)[0];
+  return n || 'there';
+};
 
-// Claims here must be literally true — a number we can't evidence is an unfair trade practice
-// under the Consumer Protection Act, and a safety claim we don't perform is far worse.
-const stats = [
-  { icon: Users, value: '25', label: 'Service Categories', color: '#FF9933', bg: 'rgba(255,153,51,0.25)' },
-  { icon: Shield, value: 'ID', label: 'Verified Providers', color: '#FF9933', bg: 'rgba(255,153,51,0.25)' },
-  { icon: MapPin, value: 'Bengaluru', label: 'Live Now', color: '#138808', bg: 'rgba(19,136,8,0.3)' },
-  { icon: Award, value: 'Escrow', label: 'Payment Protection', color: '#138808', bg: 'rgba(19,136,8,0.3)' },
-];
+const inr = (n: number) => `₹${Number(n).toLocaleString('en-IN')}`;
 
-const features = [
-  { icon: Shield, title: 'ID-Verified Providers', desc: 'Every provider submits a government photo ID that our team checks before they can take a booking.', bg: '#22c55e' },
-  { icon: Clock, title: 'Quick Booking', desc: 'Book services instantly or schedule for later. Get confirmed appointments within minutes.', bg: '#3b82f6' },
-  { icon: CreditCard, title: 'Secure Payments', desc: 'Pay by UPI, card or netbanking. Your money is held in escrow, not passed on until you confirm the work.', bg: '#a855f7' },
-  { icon: Star, title: 'Reviews You Can Trust', desc: 'Only customers who actually paid for a booking can leave a review. Every booking can be disputed.', bg: '#f59e0b' },
-  { icon: MapPin, title: 'Location-Based', desc: 'Find service providers in your exact area. Filter by distance and availability.', bg: '#ef4444' },
-  { icon: MessageCircle, title: 'Real-Time Chat', desc: 'Communicate directly with service providers through our in-app messaging system.', bg: '#14b8a6' },
-  { icon: Award, title: 'Tier Benefits', desc: 'Unlock exclusive benefits with Silver, Gold, and Platinum wallet tiers.', bg: '#f97316' },
-  { icon: Heart, title: 'Customer Care', desc: '24/7 support team ready to help. Dedicated dispute resolution for peace of mind.', bg: '#ec4899' },
-];
+/** A scheduled slot as a person reads it. Null date is legitimate — not every booking is dated. */
+function whenLabel(date: string | null, time: string | null): string {
+  if (!date) return 'Not scheduled';
+  const d = new Date(date + 'T00:00:00');
+  const day = d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+  return time ? `${day}, ${time.slice(0, 5)}` : day;
+}
+
+/* ── shared card chrome ─────────────────────────────────────────────────────── */
+
+function Panel({ children }: { children: React.ReactNode }) {
+  return <div className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-5">{children}</div>;
+}
+
+function PanelHead({ title, count, href, cta }: {
+  title: string; count?: number; href: string; cta: string;
+}) {
+  return (
+    <div className="flex items-center justify-between mb-4 gap-3">
+      <h2 className="font-semibold text-white flex items-center gap-2">
+        {title}
+        {typeof count === 'number' && count > 0 && (
+          <span className="text-xs font-bold text-[#FF9933] bg-[#FF9933]/10 border border-[#FF9933]/20 rounded-full px-2 py-0.5">
+            {count} need{count === 1 ? 's' : ''} you
+          </span>
+        )}
+      </h2>
+      <Link href={href} className="text-sm font-medium text-[#FF9933] hover:text-[#e8872e] transition-colors whitespace-nowrap flex items-center gap-1">
+        {cta} <ChevronRight className="w-4 h-4" />
+      </Link>
+    </div>
+  );
+}
+
+/** One booking row. The action label comes from lib/home, which derives it from actionsFor() —
+ *  so this can never advertise a move the transition RPC would reject. */
+function BookingRow({ b }: { b: HomeBooking }) {
+  const cfg = statusConfig[b.status];
+  const Icon = cfg?.icon ?? CalendarClock;
+  return (
+    <Link
+      href={`/bookings/${b.id}`}
+      className="flex items-center justify-between gap-3 rounded-xl border border-[#2a2a2a] bg-[#1a1a1a] px-4 py-3 hover:border-[#FF9933]/40 transition-colors"
+    >
+      <div className="flex items-center gap-3 min-w-0">
+        <div className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: cfg?.bg }}>
+          <Icon className="w-4 h-4" style={{ color: cfg?.color }} />
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-white truncate">{b.title}</p>
+          <p className="text-xs text-gray-400 truncate">
+            {b.category ? `${b.category} · ` : ''}{whenLabel(b.scheduledDate, b.scheduledTime)}
+          </p>
+        </div>
+      </div>
+      <div className="text-right flex-shrink-0">
+        {b.action
+          ? <span className="text-xs font-bold text-[#FF9933]">{b.action}</span>
+          : <span className="text-xs text-gray-500">{cfg?.label ?? b.status}</span>}
+        <p className="text-xs text-gray-500 mt-0.5">{inr(b.amount)}</p>
+      </div>
+    </Link>
+  );
+}
 
 export default function Home() {
-  const [searchQuery, setSearchQuery] = useState('');
-  const [city, setCity] = useState('');
-  /* The cities we can actually rank from, straight from the provider data — the same source
-     /services and /providers use, so the hero can never offer a city that then does nothing. */
-  const [anchors, setAnchors] = useState<CityAnchor[]>([]);
+  const { user, profile } = useAuth();
   const router = useRouter();
 
+  const [searchQuery, setSearchQuery] = useState('');
+  const [city, setCity] = useState('');
+  const [anchors, setAnchors] = useState<CityAnchor[]>([]);
+
+  const [stats, setStats] = useState<PlatformStats | null>(null);
+  const [customer, setCustomer] = useState<CustomerBand | null>(null);
+  const [provider, setProvider] = useState<ProviderBand | null>(null);
+  const [admin, setAdmin] = useState<AdminBand | null>(null);
+  const [top, setTop] = useState<TopProviders | null>(null);
+
+  const isAdmin = profile?.role === 'admin';
+
   useEffect(() => {
-    let mounted = true;
-    fetchCityAnchors().then((list) => { if (mounted) setAnchors(list); });
-    return () => { mounted = false; };
+    let on = true;
+    fetchCityAnchors().then((l) => { if (on) setAnchors(l); });
+    fetchPlatformStats().then((s) => { if (on) setStats(s); });
+    return () => { on = false; };
   }, []);
 
-  /* This box used to be a free-text "Your location" input that wrote ?location=… — a parameter
-     /services has never read. The customer typed their city, pressed the button, and landed on an
-     unranked national list with their choice silently discarded: a dead control, which the
-     honest-signposting principle forbids, on the front door of a location-matching product. The
-     same defect was fixed on /services itself; the hero was missed. It now emits ?city=, which
-     /services honours by ranking from that city's anchor. */
+  /* The bands depend on who is asking, so they wait for the session rather than firing on mount.
+     Provider and admin reads are additive, not exclusive: `profiles.role` holds one value but a
+     provider still books services, and /bookings has carried an "As Provider" tab for that same
+     person since Step 5. */
+  useEffect(() => {
+    if (!user) return;
+    let on = true;
+    fetchCustomerBand(user.id).then((b) => { if (on) setCustomer(b); });
+    fetchProviderBand().then((b) => { if (on) setProvider(b); });
+    fetchTopProviders(profile?.city ?? null).then((t) => { if (on) setTop(t); });
+    if (isAdmin) fetchAdminBand().then((b) => { if (on) setAdmin(b); });
+    return () => { on = false; };
+  }, [user, profile?.city, isAdmin]);
+
+  /* Emits ?q= and ?city=, both of which /services honours. It used to emit ?location=, a parameter
+     nothing has ever read — the customer's city was silently discarded on the front door of a
+     location-matching product. */
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     const params = new URLSearchParams();
     if (searchQuery) params.set('q', searchQuery);
     if (city) params.set('city', city);
-    router.push(`/services?${params.toString()}`);
+    router.push(`/providers?${params.toString()}`);
   };
+
+  const statTiles = [
+    { icon: Users, value: stats ? stats.providers.toLocaleString('en-IN') : '—', label: 'Verified providers', color: '#FF9933', bg: 'rgba(255,153,51,0.25)' },
+    { icon: Layers, value: stats ? String(stats.categories) : '—', label: 'Service categories', color: '#FF9933', bg: 'rgba(255,153,51,0.25)' },
+    { icon: Building2, value: stats ? String(stats.cities) : '—', label: 'Cities covered', color: '#138808', bg: 'rgba(19,136,8,0.3)' },
+    { icon: MapPin, value: 'Bengaluru', label: 'Live now', color: '#138808', bg: 'rgba(19,136,8,0.3)' },
+  ];
 
   return (
     <div className="min-h-screen bg-[#0d0d0d]">
-      {/* Hero Section */}
-      {/* pt-24, not pt-20 like the other pages: the navbar is transparent at
-          scroll-top and sits directly over this hero, so it needs more than the
-          bare 64px of nav height to clear the badge and headline. */}
-      <section className="relative min-h-screen flex items-center pt-24 overflow-hidden">
-        {/* Background Effects */}
+      {/* Greeting + search. pt-24 because the navbar is transparent at scroll-top and sits over this. */}
+      <section className="relative pt-24 pb-10 overflow-hidden">
         <div className="absolute inset-0 pointer-events-none">
-          <div className="absolute top-20 left-0 w-[600px] h-[600px] bg-[#FF9933]/8 rounded-full blur-[120px]" />
+          <div className="absolute top-0 left-0 w-[600px] h-[600px] bg-[#FF9933]/8 rounded-full blur-[120px]" />
           <div className="absolute bottom-0 right-0 w-[500px] h-[500px] bg-[#138808]/8 rounded-full blur-[120px]" />
           <div className="absolute inset-0" style={{ backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(255,255,255,0.03) 1px, transparent 0)', backgroundSize: '40px 40px' }} />
         </div>
 
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 w-full">
-          <div className="grid lg:grid-cols-2 gap-12 items-center">
-            {/* Left Column */}
-            <div className="animate-fade-up">
-              {/* Badge */}
-              <div className="inline-flex items-center gap-2 bg-[#FF9933]/10 border border-[#FF9933]/20 rounded-full px-4 py-1.5 mb-8">
-                <span className="text-base">🚀</span>
-                <span className="text-sm font-medium text-[#FF9933]">India's #1 Service Marketplace</span>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative">
+          <div className="flex items-center gap-3 mb-2">
+            <span className="text-3xl">🙏</span>
+            <h1 className="text-3xl sm:text-4xl font-black text-white">
+              Welcome back, <span className="text-[#138808]">{firstName(profile?.full_name)}</span>
+            </h1>
+          </div>
+          <p className="text-gray-400 mb-8">What do you need done today?</p>
+
+          <form onSubmit={handleSearch} className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-2xl p-2 mb-5 max-w-3xl hover:border-[#FF9933]/30 transition-colors">
+            {/* min-w-0 on every flex-1 child: flex items default to min-width:auto, so without it
+                these refuse to shrink and push the submit button out of its column. */}
+            <div className="flex flex-col sm:flex-row gap-2">
+              <div className="flex items-center gap-3 flex-1 min-w-0 px-4 py-2">
+                <Search className="w-5 h-5 text-gray-500 flex-shrink-0" />
+                <input
+                  type="text"
+                  placeholder="What service do you need?"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="flex-1 min-w-0 bg-transparent text-white placeholder-gray-500 text-sm focus:outline-none"
+                />
               </div>
-
-              {/* Brand */}
-              <div className="flex items-center gap-4 mb-4">
-                <span className="text-5xl">🙏</span>
-                <h1 className="text-5xl font-black text-[#138808] tracking-tight">Seva</h1>
-                <span className="text-5xl">🙏</span>
-              </div>
-
-              {/* Headline */}
-              <h2 className="text-4xl sm:text-5xl lg:text-6xl font-black text-white leading-tight mb-6">
-                Trusted Service<br />Providers at Your<br />
-                Doorstep
-              </h2>
-
-              <p className="text-lg text-gray-400 leading-relaxed mb-10 max-w-lg">
-                From electricians to home cooks, book independent professionals whose ID we've verified — with your payment held safely until the job is done.
-              </p>
-
-              {/* Search Bar */}
-              <form onSubmit={handleSearch} className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-2xl p-2 mb-6 hover:border-[#FF9933]/30 transition-colors">
-                {/* min-w-0 on every flex-1 child: flex items default to
-                    min-width:auto, so without it these refuse to shrink below
-                    their intrinsic width and push the submit button out of the
-                    grid column and underneath the card beside it. */}
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <div className="flex items-center gap-3 flex-1 min-w-0 px-4 py-2">
-                    <Search className="w-5 h-5 text-gray-500 flex-shrink-0" />
-                    <input
-                      type="text"
-                      placeholder="What service do you need?"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="flex-1 min-w-0 bg-transparent text-white placeholder-gray-500 text-sm focus:outline-none"
-                    />
-                  </div>
-                  <div className="hidden sm:block w-px bg-[#2a2a2a] self-stretch" />
-                  <div className="flex items-center gap-3 flex-1 min-w-0 px-4 py-2">
-                    <MapPin className="w-5 h-5 text-gray-500 flex-shrink-0" />
-                    <select
-                      value={city}
-                      onChange={(e) => setCity(e.target.value)}
-                      aria-label="City to search from"
-                      className="flex-1 min-w-0 bg-transparent text-white text-sm focus:outline-none [&>option]:bg-[#1a1a1a] [&>option]:text-white"
-                    >
-                      {/* Empty is a real choice, not a placeholder: /services then shows everything
-                          and still offers "Use my location" once they arrive. */}
-                      <option value="">Anywhere in India</option>
-                      {anchors.map((a) => (
-                        <option key={a.city} value={a.city}>{a.city} ({a.provider_count})</option>
-                      ))}
-                    </select>
-                  </div>
-                  <button
-                    type="submit"
-                    className="saffron-btn rounded-xl px-6 py-3 text-sm font-semibold whitespace-nowrap"
-                  >
-                    Find Services Near Me
-                  </button>
-                </div>
-              </form>
-
-              {/* Popular tags */}
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-sm text-gray-500">Popular:</span>
-                {popularTags.map((tag) => (
-                  <Link
-                    key={tag}
-                    href={`/services?q=${tag.toLowerCase()}`}
-                    className="text-sm px-3 py-1.5 border border-[#2a2a2a] rounded-lg text-gray-300 hover:border-[#FF9933]/50 hover:text-[#FF9933] transition-all duration-200"
-                  >
-                    {tag}
-                  </Link>
-                ))}
-              </div>
-            </div>
-
-            {/* Right Column - Stats + Top Providers */}
-            <div className="animate-fade-right delay-200 space-y-6">
-              {/* Stats Grid */}
-              <div className="grid grid-cols-2 gap-4">
-                {stats.map((stat, i) => (
-                  <div
-                    key={stat.label}
-                    className={`bg-[#161616] border border-[#2a2a2a] rounded-2xl p-5 seva-card-hover animate-fade-up delay-${(i + 1) * 100}`}
-                  >
-                    <div
-                      className="w-12 h-12 rounded-full flex items-center justify-center mb-3"
-                      style={{ background: stat.bg }}
-                    >
-                      <stat.icon className="w-6 h-6" style={{ color: stat.color }} />
-                    </div>
-                    <p className="text-2xl font-black text-white">{stat.value}</p>
-                    <p className="text-sm text-gray-400 mt-0.5">{stat.label}</p>
-                  </div>
-                ))}
-              </div>
-
-              {/* Top Providers Card */}
-              <div className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-5">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="font-semibold text-white">Top Rated Providers</h3>
-                  <span className="flex items-center gap-1.5 text-xs font-medium text-[#22c55e] bg-[#22c55e]/10 border border-[#22c55e]/20 rounded-full px-3 py-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#22c55e] animate-pulse" />
-                    Available Now
-                  </span>
-                </div>
-                <div className="space-y-4">
-                  {topProviders.map((p) => (
-                    <div key={p.name} className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="relative">
-                          <div className={`w-10 h-10 rounded-full bg-gradient-to-br ${p.color} flex items-center justify-center text-sm font-bold text-white`}>
-                            {p.avatar}
-                          </div>
-                          {p.available && (
-                            <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-[#22c55e] border-2 border-[#161616]" />
-                          )}
-                        </div>
-                        <div>
-                          <p className="text-sm font-semibold text-white">{p.name}</p>
-                          <p className="text-xs text-gray-400">{p.category}</p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="flex items-center gap-1 justify-end">
-                          <Star className="w-3.5 h-3.5 fill-[#FF9933] text-[#FF9933]" />
-                          <span className="text-sm font-semibold text-white">{p.rating}</span>
-                        </div>
-                        <p className="text-xs text-gray-500">{p.reviews} reviews</p>
-                      </div>
-                    </div>
+              <div className="hidden sm:block w-px bg-[#2a2a2a] self-stretch" />
+              <div className="flex items-center gap-3 flex-1 min-w-0 px-4 py-2">
+                <MapPin className="w-5 h-5 text-gray-500 flex-shrink-0" />
+                <select
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                  aria-label="City to search from"
+                  className="flex-1 min-w-0 bg-transparent text-white text-sm focus:outline-none [&>option]:bg-[#1a1a1a] [&>option]:text-white"
+                >
+                  {/* Empty is a real choice, not a placeholder: /providers then shows everything and
+                      still offers "Use my location" once they arrive. */}
+                  <option value="">Anywhere in India</option>
+                  {anchors.map((a) => (
+                    <option key={a.city} value={a.city}>{a.city} ({a.provider_count})</option>
                   ))}
-                </div>
-                <Link
-                  href="/providers"
-                  className="mt-4 flex items-center justify-center gap-2 text-sm font-medium text-[#FF9933] hover:text-[#e8872e] transition-colors"
-                >
-                  View all providers <ArrowRight className="w-4 h-4" />
-                </Link>
+                </select>
               </div>
+              <button type="submit" className="saffron-btn rounded-xl px-6 py-3 text-sm font-semibold whitespace-nowrap">
+                Find providers
+              </button>
             </div>
-          </div>
-        </div>
-      </section>
+          </form>
 
-      {/* Popular Services Grid */}
-      <section className="py-20 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
-        <div className="text-center mb-12">
-          <h2 className="text-3xl sm:text-4xl font-black text-[#138808] mb-3">Popular Services</h2>
-          <p className="text-gray-400 max-w-xl mx-auto">Connect with verified professionals for all your home and personal service needs</p>
-        </div>
-
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-          {categories.map((cat, i) => (
-            <Link
-              key={cat.slug}
-              href={`/services?category=${cat.slug}`}
-              className={`group rounded-2xl p-6 seva-card-hover border border-white/5 animate-fade-up delay-${Math.min((i % 4) * 100, 400)}`}
-              style={{ background: cat.cardBg }}
-            >
-              <div
-                className="w-14 h-14 rounded-full flex items-center justify-center mb-4 transition-transform duration-300 group-hover:scale-110"
-                style={{ background: cat.bg }}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm text-gray-500">Popular:</span>
+            {popularTags.map((tag) => (
+              <Link
+                key={tag}
+                href={`/providers?q=${tag.toLowerCase()}`}
+                className="text-sm px-3 py-1.5 border border-[#2a2a2a] rounded-lg text-gray-300 hover:border-[#FF9933]/50 hover:text-[#FF9933] transition-all duration-200"
               >
-                <cat.icon className="w-7 h-7 text-white" />
-              </div>
-              <h3 className="font-semibold text-white text-sm mb-1 group-hover:text-[#FF9933] transition-colors">{cat.name}</h3>
-              <p className="text-xs text-gray-500 leading-relaxed">{cat.desc}</p>
-            </Link>
-          ))}
-        </div>
-
-        <div className="text-center mt-10">
-          <Link
-            href="/services"
-            className="inline-flex items-center gap-2 saffron-btn rounded-xl px-8 py-3.5 text-sm font-semibold"
-          >
-            View All Services <ArrowRight className="w-4 h-4" />
-          </Link>
-        </div>
-      </section>
-
-      {/* Why Choose Seva */}
-      <section className="py-20 bg-[#0a0a0a]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="text-center mb-12">
-            <h2 className="text-3xl sm:text-4xl font-black text-[#138808] mb-3">Why Choose Seva?</h2>
-            <p className="text-gray-400 max-w-2xl mx-auto">
-              We've built a platform that prioritizes safety, convenience, and quality to ensure you get the best service experience every time.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
-            {features.map((f, i) => (
-              <div
-                key={f.title}
-                className={`group bg-[#161616] border border-[#2a2a2a] rounded-2xl p-6 seva-card-hover animate-fade-up delay-${Math.min(i * 100, 400)} text-center`}
-              >
-                <div
-                  className="w-14 h-14 rounded-2xl flex items-center justify-center mb-4 mx-auto transition-transform duration-300 group-hover:scale-110"
-                  style={{ background: f.bg }}
-                >
-                  <f.icon className="w-7 h-7 text-white" />
-                </div>
-                <h3 className="font-bold text-white mb-2 text-sm">{f.title}</h3>
-                <p className="text-xs text-gray-400 leading-relaxed">{f.desc}</p>
-              </div>
+                {tag}
+              </Link>
             ))}
           </div>
         </div>
       </section>
 
-      {/* CTA Banner */}
-      <section className="relative overflow-hidden">
-        <div
-          className="py-20 px-6"
-          style={{ background: 'linear-gradient(135deg, #FF9933 0%, #f59e0b 25%, #22c55e 55%, #138808 75%, #054187 100%)' }}
-        >
-          <div className="max-w-3xl mx-auto text-center relative z-10">
-            <h2 className="text-3xl sm:text-4xl font-black text-white mb-4">
-              Ready to Experience Premium Service?
-            </h2>
-            <p className="text-white/90 text-lg mb-10">
-              Join thousands of satisfied customers who trust Seva for their daily needs
-            </p>
-            <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <Link
-                href="/services"
-                className="bg-black/80 hover:bg-black text-[#FF9933] font-bold px-8 py-4 rounded-xl transition-all hover:scale-105"
-              >
-                Book a Service Now
+      {/* Role bands — additive, in order of how much they demand of this person right now. */}
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-5">
+        {isAdmin && admin && (
+          <Panel>
+            <PanelHead title="Moderation queue" href="/admin" cta="Open console" />
+            <div className="grid sm:grid-cols-2 gap-4">
+              <Link href="/admin/providers" className="flex items-center justify-between rounded-xl border border-[#2a2a2a] bg-[#1a1a1a] px-4 py-3 hover:border-[#FF9933]/40 transition-colors">
+                <span className="flex items-center gap-3 text-sm text-gray-300">
+                  <FileCheck className="w-4 h-4 text-[#FF9933]" /> Applications pending review
+                </span>
+                <span className="text-lg font-black text-white">{admin.pendingApplications}</span>
               </Link>
-              <Link
-                href="/become-provider"
-                className="border-2 border-white/80 text-white font-bold px-8 py-4 rounded-xl hover:bg-white/10 transition-all hover:scale-105"
-              >
-                Become a Provider
+              <Link href="/admin/disputes" className="flex items-center justify-between rounded-xl border border-[#2a2a2a] bg-[#1a1a1a] px-4 py-3 hover:border-[#FF9933]/40 transition-colors">
+                <span className="flex items-center gap-3 text-sm text-gray-300">
+                  <AlertTriangle className="w-4 h-4 text-[#ef4444]" /> Open disputes
+                </span>
+                <span className="text-lg font-black text-white">{admin.openDisputes}</span>
               </Link>
             </div>
+          </Panel>
+        )}
+
+        {provider && (
+          <Panel>
+            <PanelHead title="Your provider profile" count={provider.needsYou} href="/bookings" cta="All jobs" />
+            <div className="grid sm:grid-cols-3 gap-3 mb-4">
+              <div className="rounded-xl border border-[#2a2a2a] bg-[#1a1a1a] px-4 py-3">
+                <p className="text-xs text-gray-500 mb-1">Reputation</p>
+                <p className="text-lg font-black text-white">
+                  {provider.reputationScore ? provider.reputationScore.toFixed(2) : '—'}
+                  <span className="text-xs font-normal text-gray-500"> / 5</span>
+                </p>
+              </div>
+              <div className="rounded-xl border border-[#2a2a2a] bg-[#1a1a1a] px-4 py-3">
+                <p className="text-xs text-gray-500 mb-1">Reviews</p>
+                <p className="text-lg font-black text-white">
+                  {provider.totalReviews > 0
+                    ? <>{provider.rating.toFixed(1)}<span className="text-xs font-normal text-gray-500"> ({provider.totalReviews})</span></>
+                    : <span className="text-sm font-semibold text-[#3b82f6]">New on Seva</span>}
+                </p>
+              </div>
+              <div className="rounded-xl border border-[#2a2a2a] bg-[#1a1a1a] px-4 py-3">
+                <p className="text-xs text-gray-500 mb-1">Status</p>
+                <p className="text-sm font-bold capitalize" style={{ color: provider.status === 'approved' ? '#22c55e' : '#f59e0b' }}>
+                  {provider.status}
+                  {provider.status === 'approved' && (
+                    <span className="text-xs font-normal text-gray-500">
+                      {' · '}{provider.isAvailable ? 'available' : 'unavailable'}
+                    </span>
+                  )}
+                </p>
+              </div>
+            </div>
+            {provider.status !== 'approved' ? (
+              <Link href="/become-provider" className="flex items-center justify-between rounded-xl border border-[#f59e0b]/30 bg-[#f59e0b]/10 px-4 py-3 text-sm text-[#f59e0b] hover:border-[#f59e0b]/60 transition-colors">
+                Your application is {provider.status}. See what happens next.
+                <ArrowRight className="w-4 h-4" />
+              </Link>
+            ) : provider.incoming.length ? (
+              <div className="space-y-2">
+                {provider.incoming.map((b) => <BookingRow key={b.id} b={b} />)}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500 px-1">No jobs in flight. New requests will land here.</p>
+            )}
+          </Panel>
+        )}
+
+        {!isAdmin && customer && (
+          <Panel>
+            <PanelHead title="Your bookings" count={customer.needsYou} href="/bookings" cta="All bookings" />
+            {customer.open.length ? (
+              <div className="space-y-2">
+                {customer.open.map((b) => <BookingRow key={b.id} b={b} />)}
+              </div>
+            ) : (
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-[#2a2a2a] bg-[#1a1a1a] px-4 py-4">
+                <p className="text-sm text-gray-400">Nothing booked right now.</p>
+                <Link href="/services" className="saffron-btn rounded-xl px-5 py-2.5 text-sm font-semibold whitespace-nowrap self-start sm:self-auto">
+                  Browse services
+                </Link>
+              </div>
+            )}
+          </Panel>
+        )}
+      </section>
+
+      {/* Platform figures + genuinely top-rated people */}
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+        <div className="grid lg:grid-cols-2 gap-5">
+          <div className="grid grid-cols-2 gap-4">
+            {statTiles.map((s) => (
+              <div key={s.label} className="bg-[#161616] border border-[#2a2a2a] rounded-2xl p-5 seva-card-hover">
+                <div className="w-12 h-12 rounded-full flex items-center justify-center mb-3" style={{ background: s.bg }}>
+                  <s.icon className="w-6 h-6" style={{ color: s.color }} />
+                </div>
+                <p className="text-2xl font-black text-white">{s.value}</p>
+                <p className="text-sm text-gray-400 mt-0.5">{s.label}</p>
+              </div>
+            ))}
           </div>
+
+          <Panel>
+            {/* The heading says "near <city>" only when the query actually ranked from that city's
+                anchor — see fetchTopProviders. The card this replaced said "Available Now" over
+                three people who did not exist. */}
+            <PanelHead
+              title={top?.near ? `Top rated near ${top.near}` : 'Top rated on Seva'}
+              href="/providers"
+              cta="View all"
+            />
+            {top?.rows.length ? (
+              <div className="space-y-4">
+                {top.rows.map((p) => (
+                  <Link key={p.id} href={`/providers/${p.id}`} className="flex items-center justify-between gap-3 group">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="relative flex-shrink-0">
+                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center text-sm font-bold text-white">
+                          {(p.businessName ?? '?').split(' ').map((w) => w[0]).join('').toUpperCase().slice(0, 2)}
+                        </div>
+                        {p.isAvailable && (
+                          <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-[#22c55e] border-2 border-[#161616]" />
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-white truncate group-hover:text-[#FF9933] transition-colors">{p.businessName}</p>
+                        <p className="text-xs text-gray-400 truncate">
+                          {p.category}
+                          {p.distanceKm !== null && <> · {formatDistance(p.distanceKm)}</>}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      {p.totalReviews > 0 ? (
+                        <>
+                          <div className="flex items-center gap-1 justify-end">
+                            <Star className="w-3.5 h-3.5 fill-[#FF9933] text-[#FF9933]" />
+                            <span className="text-sm font-semibold text-white">{p.rating.toFixed(1)}</span>
+                          </div>
+                          <p className="text-xs text-gray-500">{p.totalReviews} reviews</p>
+                        </>
+                      ) : (
+                        <span className="text-xs font-medium text-[#3b82f6]">New on Seva</span>
+                      )}
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500">No providers to show yet.</p>
+            )}
+          </Panel>
         </div>
+      </section>
+
+      {/* One line to the directory — the full category grid lives on /services, not duplicated here. */}
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-20">
+        <Link
+          href="/services"
+          className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 rounded-2xl border border-[#2a2a2a] bg-[#161616] p-6 seva-card-hover"
+        >
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-full bg-[#FF9933]/20 flex items-center justify-center flex-shrink-0">
+              <Briefcase className="w-6 h-6 text-[#FF9933]" />
+            </div>
+            <div>
+              <p className="font-semibold text-white">Browse all {stats ? stats.categories : 25} categories</p>
+              <p className="text-sm text-gray-400">From electricians and masons to tiffin cooks, tailors and water tankers.</p>
+            </div>
+          </div>
+          <span className="inline-flex items-center gap-2 saffron-btn rounded-xl px-6 py-3 text-sm font-semibold self-start sm:self-auto whitespace-nowrap">
+            See services <ArrowRight className="w-4 h-4" />
+          </span>
+        </Link>
       </section>
     </div>
   );

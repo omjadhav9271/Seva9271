@@ -1,14 +1,15 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Search, Star, MapPin, Clock, CheckCircle, Users, Compass } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import type { ProviderSearchResult } from '@/lib/supabase';
 import {
   MAX_RADIUS_KM, PAGE_SIZE, RADIUS_STEPS_KM, catalogOrder, effectiveSort,
-  formatDistance, searchProvidersWidening,
-  type SearchOrigin, type SortMode,
+  fetchCityAnchors, formatDistance, searchProvidersWidening,
+  type CityAnchor, type SearchOrigin, type SortMode,
 } from '@/lib/matching';
 import SearchLocation from '@/components/search-location';
 import SearchControls from '@/components/search-controls';
@@ -59,13 +60,19 @@ function initials(name: string | null): string {
   return name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2);
 }
 
-export default function ProvidersPage() {
+function ProvidersContent() {
+  /* This page is now the ONE ranked list, so it is also the one landing place for every link that
+     carries a search: the home page's search box and popular tags, and every tile on the /services
+     directory. It previously read no URL parameters at all — `?category=` and `?q=` arrived and
+     were silently dropped, which made each of those links a dead control on arrival. */
+  const searchParams = useSearchParams();
+
   const [catalog, setCatalog] = useState<ProviderRow[]>([]);
   const [ranked, setRanked] = useState<ProviderSearchResult[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [origin, setOrigin] = useState<SearchOrigin | null>(null);
   const [locationNote, setLocationNote] = useState<string | null>(null);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(searchParams.get('q') || '');
   const [sortBy, setSortBy] = useState<SortMode>('match');
   const [availableOnly, setAvailableOnly] = useState(false);
   // Which radius produced the rows on screen — shown when it isn't the near one.
@@ -82,11 +89,13 @@ export default function ProvidersPage() {
      on. Categories come from the DB — service_categories is admin-managed, so a mirrored list goes
      stale on the next insert. */
   const [categories, setCategories] = useState<CategoryRow[]>([]);
-  const [categorySlug, setCategorySlug] = useState('');
+  const [categorySlug, setCategorySlug] = useState(searchParams.get('category') || '');
+  const [anchors, setAnchors] = useState<CityAnchor[]>([]);
 
   useEffect(() => {
     let mounted = true;
     fetchCategories().then((list) => { if (mounted) setCategories(list); });
+    fetchCityAnchors().then((list) => { if (mounted) setAnchors(list); });
     return () => { mounted = false; };
   }, []);
 
@@ -204,6 +213,21 @@ export default function ProvidersPage() {
     if (!next) { setOrigin(null); setRanked(null); setRadiusKm(null); return; }
     void runSearch(next);
   }, [runSearch]);
+
+  /* `?city=` from the home page's city picker, honoured exactly as /services honours it — same
+     shape deliberately, so the two landing pages cannot drift apart on what a link means. Waits
+     for the anchors, because a city is only meaningful once there is a point to search from, and
+     an unrecognised city says so rather than quietly ranking from nowhere. */
+  const cityParam = searchParams.get('city') || '';
+  const [cityParamApplied, setCityParamApplied] = useState(false);
+  useEffect(() => {
+    if (cityParamApplied || !cityParam || anchors.length === 0) return;
+    setCityParamApplied(true);
+    const anchor = anchors.find((a) => a.city === cityParam);
+    if (!anchor) { setLocationNote(`We don't have enough providers in ${cityParam} to search from yet.`); return; }
+    handleOrigin({ lat: anchor.lat, lng: anchor.lng, label: cityParam });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anchors, cityParam, cityParamApplied]);
 
   const cards: Card[] = ranked
     ? ranked.map((p) => ({
@@ -444,5 +468,16 @@ export default function ProvidersPage() {
         )}
       </div>
     </div>
+  );
+}
+
+/* useSearchParams() forces this subtree to render on the client, and Next requires the boundary to
+   be explicit — without it the whole route opts out of static generation at build time. Same
+   wrapper /services has carried since it started reading ?q=. */
+export default function ProvidersPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-[#0d0d0d] pt-20 flex items-center justify-center"><div className="text-gray-400">Loading...</div></div>}>
+      <ProvidersContent />
+    </Suspense>
   );
 }

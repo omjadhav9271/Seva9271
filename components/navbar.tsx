@@ -11,10 +11,24 @@ import {
 import { useAuth } from '@/lib/auth-context';
 import { supabase, type Notification } from '@/lib/supabase';
 
+/* Two entries, each answering a question the other cannot.
+   Services = "what can I get" (the 25-category directory); Providers = "who is near me" (the
+   ranked list). They used to be the same ranked list twice, ~450 duplicated lines apart, which is
+   a navigation you have to guess at rather than read.
+
+   GONE FROM HERE:
+   · "How It Works" — it is already a footer link (footer.tsx), so a top-level tab was the same
+     destination twice in one viewport.
+   · "Become a Provider" — moved to `customerLinks` below, because inviting someone who already
+     runs an approved provider profile to become a provider is a control that cannot do anything. */
 const navLinks = [
   { href: '/services', label: 'Services' },
   { href: '/providers', label: 'Providers' },
-  { href: '/how-it-works', label: 'How It Works' },
+];
+
+// Shown only to accounts that do NOT already own a provider profile. See `isProvider` in
+// auth-context: profiles.role does not track this — an approved provider still reads 'customer'.
+const customerLinks = [
   { href: '/become-provider', label: 'Become a Provider' },
 ];
 
@@ -55,7 +69,7 @@ export default function Navbar() {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
 
-  const { user, profile, signOut, loading } = useAuth();
+  const { user, profile, isProvider, signOut, loading } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
 
@@ -72,7 +86,10 @@ export default function Navbar() {
      IS someone — never optimistically, which would flash four dead links at a signed-out visitor
      on every load. There is no cost to the signed-in case: a gated page renders nothing but
      "Loading…" during that same window anyway. */
-  const links = !user ? [] : isAdmin ? adminLinks : navLinks;
+  const links = !user ? []
+    : isAdmin ? adminLinks
+    : isProvider ? navLinks
+    : [...navLinks, ...customerLinks];
 
   const walletRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);

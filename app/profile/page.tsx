@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { User, Phone, MapPin, Mail, Edit2, Save, X, Camera, Shield, ShieldCheck, Award, Wallet } from 'lucide-react';
+import { User, Phone, MapPin, Mail, Edit2, Save, X, Shield, ShieldCheck, Award, Wallet } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { supabase, type ReputationSnapshot } from '@/lib/supabase';
 import { toast } from 'sonner';
@@ -117,9 +117,12 @@ export default function ProfilePage() {
                 <div className="w-24 h-24 rounded-2xl bg-gradient-to-br from-[#FF9933] to-[#138808] flex items-center justify-center text-3xl font-black text-white border-4 border-[#161616]">
                   {initials}
                 </div>
-                <button className="absolute -bottom-1 -right-1 w-7 h-7 bg-[#FF9933] rounded-lg flex items-center justify-center">
-                  <Camera className="w-3.5 h-3.5 text-white" />
-                </button>
+                {/* GONE FROM HERE: a camera badge over the avatar's corner. It was a <button> with
+                    no onClick and no label — it promised "change your photo" and did nothing, on
+                    the one page whose entire job is editing your details. Avatar upload does not
+                    exist yet (there is no storage bucket or column behind it), so the honest thing
+                    is no control rather than a decorative one. Same reasoning as the four dead
+                    controls removed in f74aa05. Bring it back with the upload, not before. */}
               </div>
 
               {!editing ? (

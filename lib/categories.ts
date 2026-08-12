@@ -81,3 +81,36 @@ export async function fetchCategories(): Promise<CategoryRow[]> {
   }
   return (data ?? []) as CategoryRow[];
 }
+
+/**
+ * How many approved providers each category actually has, slug → count.
+ *
+ * One `head: true` count per category, in parallel. That is 25 requests where 1 would do, and the
+ * two obvious ways to make it 1 were both tried and rejected:
+ *
+ *   · `category_usage()` looks perfect — it returns per-category provider/booking/listing counts
+ *     and is GRANTed to `authenticated` — but it RAISEs 'admin only' at runtime. The grant is a
+ *     red herring; only /admin/categories can call it.
+ *   · PostgREST aggregates (`select('category_id, count()')`) are disabled on this project:
+ *     "Use of aggregate functions is not allowed".
+ *
+ * So this is the honest option that needs no schema change. Each request is a HEAD carrying no
+ * rows, `service_providers` is `SELECT USING (true)` so the counts are exact rather than
+ * RLS-trimmed, and the whole fan-out resolves in well under a second. If it ever becomes a
+ * problem the fix is a public `category_counts()` RPC mirroring `city_anchors()` — not a client
+ * that fetches 1,085 rows to count them, which would also hit the 1000-row cap and under-report.
+ */
+export async function fetchCategoryCounts(categories: CategoryRow[]): Promise<Record<string, number>> {
+  const entries = await Promise.all(categories.map(async (c) => {
+    const { count, error } = await supabase
+      .from('service_providers')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'approved')
+      .eq('category_id', c.id);
+    // A failed count is not zero. Returning null lets the caller render "—" instead of asserting
+    // an empty category, which would send a customer away from a trade that has providers.
+    if (error) { console.error(`Count failed for ${c.slug}:`, error.message); return [c.slug, null] as const; }
+    return [c.slug, count ?? 0] as const;
+  }));
+  return Object.fromEntries(entries.filter((e) => e[1] !== null)) as Record<string, number>;
+}

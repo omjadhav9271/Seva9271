@@ -8,6 +8,13 @@ type AuthContextType = {
   user: User | null;
   session: Session | null;
   profile: Profile | null;
+  /* Does this account own a service_providers row?
+     🔴 NOT derivable from `profile.role`. An APPROVED provider still carries role='customer' —
+     verified on the live DB — because a provider books services like anyone else and the column
+     holds one value. Reading role here would hide the provider UI from every real provider. The
+     only truth is owning a row, so it is fetched once per session and shared rather than
+     re-queried by every component that needs to ask. */
+  isProvider: boolean;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<{ error: string | null }>;
   signUp: (email: string, password: string, fullName: string) => Promise<{ error: string | null }>;
@@ -21,6 +28,7 @@ const AuthContext = createContext<AuthContextType>({
   user: null,
   session: null,
   profile: null,
+  isProvider: false,
   loading: true,
   signIn: async () => ({ error: null }),
   signUp: async () => ({ error: null }),
@@ -34,6 +42,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [isProvider, setIsProvider] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const fetchProfile = useCallback(async (userId: string) => {
@@ -43,6 +52,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .eq('id', userId)
       .maybeSingle();
     if (data) setProfile(data as Profile);
+    /* head: true — this asks whether a row EXISTS, not what is in it. Read through
+       my_provider_profile (the auth.uid()-filtered view) because service_providers withholds
+       several columns from `authenticated` at the column level. supabase-js resolves rather than
+       throws on error, so a failure here cannot stop `loading` from settling. */
+    const { count } = await supabase
+      .from('my_provider_profile')
+      .select('id', { count: 'exact', head: true });
+    setIsProvider((count ?? 0) > 0);
   }, []);
 
   const refreshProfile = useCallback(async () => {
@@ -83,6 +100,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (session?.user) {
         fetchProfile(session.user.id);
       } else {
+        setIsProvider(false);
         setProfile(null);
       }
     });
@@ -112,6 +130,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // user rather than just this tab's. That is the behaviour we want and rely on after a password
     // reset, so it is stated here rather than left to a library default that could change.
     await supabase.auth.signOut({ scope: 'global' });
+    setIsProvider(false);
     setProfile(null);
   };
 
@@ -144,7 +163,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider value={{
-      user, session, profile, loading,
+      user, session, profile, isProvider, loading,
       signIn, signUp, signOut, requestPasswordReset, updatePassword, refreshProfile,
     }}>
       {children}
