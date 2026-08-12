@@ -28,7 +28,7 @@ The second big principle: **your moat is not the app, it's the portable reputati
 2. **Everything on-platform is the moat — and the enemy is disintermediation.** Customer meets a great cook via Seva, then next month pays her directly in cash to dodge the fee. Every marketplace dies from this. Defenses are baked into the design (see §7).
 3. **Only *verified transactions* can be reviewed.** You can only rate a job you actually booked and paid for through Seva. This one rule kills ~90% of fake-review fraud at the source.
 4. **Reputation is *derived*, never *authored*.** Store the raw facts (jobs, payments, ratings, timestamps, disputes). Compute reputation from them on a schedule. Never let anyone write a reputation number directly.
-5. **Build for one city, a few categories, first.** Depth in Mumbai across 5 categories beats 50 cities × 20 categories with no liquidity. A marketplace with no nearby supply is useless.
+5. **Build for one city, a few categories, first.** Depth in Bengaluru across 5 categories beats 50 cities × 20 categories with no liquidity. A marketplace with no nearby supply is useless.
 
 ---
 

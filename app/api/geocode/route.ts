@@ -54,7 +54,7 @@ export async function GET(req: Request) {
   url.searchParams.set('format', 'jsonv2');
   url.searchParams.set('limit', '5');
   url.searchParams.set('addressdetails', '1');
-  url.searchParams.set('countrycodes', 'in'); // Mumbai-first launch; keeps results relevant.
+  url.searchParams.set('countrycodes', 'in'); // Bengaluru-first launch; keeps results relevant.
 
   try {
     const res = await throttled(() =>

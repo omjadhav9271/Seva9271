@@ -99,14 +99,15 @@ export default function Footer() {
             <p className="text-blue-200/70 text-sm leading-relaxed mb-5">
               Connecting you with verified service providers across India. From home services to professional help, we've got you covered.
             </p>
-            {/* "Based in" is doing real work. An unlabelled pin reading "Mumbai, Maharashtra,
+            {/* "Based in" is doing real work. An unlabelled pin reading "Bengaluru, Karnataka,
                 India" is ambiguous about WHOSE location it is — a visitor in Pune reasonably reads
                 it as the site's guess at where THEY are, which is exactly what the (now deleted)
-                navbar location chip was pretending to know. This is the company's base, and
-                Mumbai-first is true, so say which one it is. */}
+                navbar location chip was pretending to know. This is the company's base, so say
+                which one it is. "Bengaluru" is the city's official name (renamed 2014), not
+                "Bangalore". */}
             <div className="flex items-center gap-2 text-sm text-blue-200/60">
               <MapPin className="w-4 h-4 text-blue-300 flex-shrink-0" />
-              <span>Based in Mumbai, Maharashtra</span>
+              <span>Based in Bengaluru, Karnataka</span>
             </div>
           </div>
 

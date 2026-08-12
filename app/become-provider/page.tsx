@@ -201,7 +201,11 @@ export default function BecomeProviderPage() {
       experienceYears: Number(form.experience) || 0,
       hourlyRate: Number(form.hourlyRate) || 0,
       city: form.city.trim(),
-      state: profile?.state ?? 'Maharashtra',
+      // No hardcoded state. The column is nullable and p_state accepts null, so a provider whose
+      // profile has no state is stored WITHOUT one rather than stamped with the launch city's.
+      // Seva is pan-India; the old 'Maharashtra' default silently mislabelled every out-of-state
+      // applicant, and re-pointing it at 'Karnataka' would only move which ones it lied about.
+      state: profile?.state ?? null,
       area: form.area.trim(),
       documents: Object.values(pendingFiles),
     });
@@ -428,11 +432,11 @@ export default function BecomeProviderPage() {
           <div className="grid sm:grid-cols-2 gap-4">
             <Field label="City" required>
               <input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })}
-                className={inputClass} placeholder="Mumbai" />
+                className={inputClass} placeholder="Bengaluru" />
             </Field>
             <Field label="Area you cover">
               <input value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })}
-                className={inputClass} placeholder="Andheri, Bandra" />
+                className={inputClass} placeholder="Koramangala, Indiranagar" />
             </Field>
           </div>
 
@@ -595,7 +599,7 @@ function ServiceBaseSection({ value, onChange, onPersist, defaultQuery, userId }
     setSearching(false);
     if ('error' in res) { setError(res.error); return; }
     if (!res.results.length) {
-      setError('No match for that. Try adding the area and city — e.g. “Andheri East, Mumbai”.');
+      setError('No match for that. Try adding the area and city — e.g. “Koramangala, Bengaluru”.');
       return;
     }
     setHits(res.results);
@@ -674,7 +678,7 @@ function ServiceBaseSection({ value, onChange, onPersist, defaultQuery, userId }
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); find(); } }}
           className={inputClass}
-          placeholder="Or type your address — Shop No 4, Andheri East, Mumbai"
+          placeholder="Or type your address — Shop No 4, Koramangala, Bengaluru"
         />
         <button type="button" onClick={find} disabled={searching || saving}
           className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-[#2a2a2a] text-sm text-gray-300 hover:text-white hover:border-[#FF9933]/50 transition-all disabled:opacity-60 whitespace-nowrap">

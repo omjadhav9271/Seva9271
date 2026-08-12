@@ -1,7 +1,9 @@
 # CLAUDE.md — Seva (standing context for every Claude Code session)
 
 ## What Seva is
-A local-services marketplace (Mumbai first) where **individual** providers carry **portable, manipulation-resistant reputation**. It's a *store of individuals* (like the Play Store), **not** an employer of workers (not Urban Company). Full design in `/docs/Seva-Architecture.md`; build order in `/docs/Seva-Claude-Code-Playbook.md`. Read those before non-trivial work.
+A local-services marketplace where **individual** providers carry **portable, manipulation-resistant reputation**. It's a *store of individuals* (like the Play Store), **not** an employer of workers (not Urban Company). Full design in `/docs/Seva-Architecture.md`; build order in `/docs/Seva-Claude-Code-Playbook.md`. Read those before non-trivial work.
+
+**Pan-India by design, Bengaluru first.** Bengaluru is the beachhead — prove liquidity and unit economics in one city, raise on that, then expand. Two consequences for the code: never hardcode a city or state as a default (a nullable column stays null; don't stamp the launch city on out-of-state data), and never narrow copy or seed data to Bengaluru alone. The claim is "live in Bengaluru today", not "Bengaluru only" — the multi-city provider seed is deliberate, since ranking across cities is what shows the platform scales.
 
 ## Stack (do not change without asking)
 Next.js 13 App Router + TypeScript · Tailwind + shadcn/ui · Supabase (Postgres + Auth + Realtime + Storage + RLS). Payments: **Razorpay Route**. Geo: **PostGIS**. Hosting: Vercel + Supabase cloud.

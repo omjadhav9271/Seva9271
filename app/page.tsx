@@ -41,7 +41,7 @@ const topProviders = [
 const stats = [
   { icon: Users, value: '25', label: 'Service Categories', color: '#FF9933', bg: 'rgba(255,153,51,0.25)' },
   { icon: Shield, value: 'ID', label: 'Verified Providers', color: '#FF9933', bg: 'rgba(255,153,51,0.25)' },
-  { icon: MapPin, value: 'Mumbai', label: 'Live Now', color: '#138808', bg: 'rgba(19,136,8,0.3)' },
+  { icon: MapPin, value: 'Bengaluru', label: 'Live Now', color: '#138808', bg: 'rgba(19,136,8,0.3)' },
   { icon: Award, value: 'Escrow', label: 'Payment Protection', color: '#138808', bg: 'rgba(19,136,8,0.3)' },
 ];
 

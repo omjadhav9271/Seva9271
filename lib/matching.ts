@@ -48,6 +48,7 @@ export type CityAnchor = LatLng & { city: string; provider_count: number };
    The live list now comes from the DB, so the cities offered and the cities that can rank are the
    same set by construction. Never re-introduce a hardcoded list as the primary source. */
 export const CITY_ANCHORS: Record<string, LatLng> = {
+  Bengaluru: { lat: 12.9716, lng: 77.5946 },
   Mumbai: { lat: 19.076, lng: 72.8777 },
   Thane: { lat: 19.2183, lng: 72.9781 },
   'Navi Mumbai': { lat: 19.033, lng: 73.0297 },

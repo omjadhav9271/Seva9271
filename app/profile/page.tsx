@@ -197,7 +197,7 @@ export default function ProfilePage() {
                     value={form.city}
                     onChange={(e) => setForm({ ...form, city: e.target.value })}
                     className="w-full bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-[#FF9933]"
-                    placeholder="Mumbai"
+                    placeholder="Bengaluru"
                   />
                 ) : (
                   <div className="flex items-center gap-2.5 text-sm text-gray-300">
@@ -214,7 +214,7 @@ export default function ProfilePage() {
                     value={form.state}
                     onChange={(e) => setForm({ ...form, state: e.target.value })}
                     className="w-full bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-[#FF9933]"
-                    placeholder="Maharashtra"
+                    placeholder="Karnataka"
                   />
                 ) : (
                   <div className="flex items-center gap-2.5 text-sm text-gray-300">
