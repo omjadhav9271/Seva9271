@@ -21,6 +21,49 @@ export type Profile = {
   updated_at: string;
 };
 
+/* How Seva engages with a category's money — decided per category, never globally, because the
+   cost of each shape differs by category (CGST §9(5) notifies house-keeping and passenger
+   transport; §24(x) makes a TCS-collecting operator register regardless of turnover). Set through
+   admin_set_category_model; see 20260828120000 and /docs/Seva-Decisions-Log.md.
+
+   `null` on ServiceCategory.engagement_model means NOT YET DECIDED, which /admin/categories renders
+   grey. Nothing in the booking, payment or fee path reads this yet — it records the decision. */
+export type EngagementModel = 'placement' | 'lead' | 'escrow' | 'directory';
+
+/* Every class below must be a COMPLETE literal. Tailwind scans source text, so a class assembled
+   at runtime (`m.bg.replace('/10','/70')`) is one that never reaches the stylesheet and renders as
+   nothing — hence the separate `rail` rather than a derived shade. lib/ is in the content globs
+   for the same reason. */
+export const ENGAGEMENT_MODELS: Record<
+  EngagementModel,
+  { label: string; blurb: string; text: string; bg: string; ring: string; rail: string }
+> = {
+  placement: {
+    label: 'Placement',
+    blurb: 'Household pays the provider directly; Seva charges a one-time introduction fee.',
+    text: 'text-emerald-300', bg: 'bg-emerald-500/10', ring: 'ring-emerald-500/30',
+    rail: 'bg-emerald-500',
+  },
+  lead: {
+    label: 'Lead',
+    blurb: 'Provider pays to be listed or per lead. No transaction passes through Seva.',
+    text: 'text-sky-300', bg: 'bg-sky-500/10', ring: 'ring-sky-500/30',
+    rail: 'bg-sky-500',
+  },
+  escrow: {
+    label: 'Escrow',
+    blurb: 'Seva collects, holds and releases. Highest trust, highest tax exposure.',
+    text: 'text-[#FF9933]', bg: 'bg-[#FF9933]/10', ring: 'ring-[#FF9933]/30',
+    rail: 'bg-[#FF9933]',
+  },
+  directory: {
+    label: 'Directory',
+    blurb: 'Listed, no money, no fee. A liquidity play rather than a revenue one.',
+    text: 'text-violet-300', bg: 'bg-violet-500/10', ring: 'ring-violet-500/30',
+    rail: 'bg-violet-500',
+  },
+};
+
 export type ServiceCategory = {
   id: string;
   name: string;
@@ -29,6 +72,8 @@ export type ServiceCategory = {
   icon: string | null;
   color: string | null;
   bg_color: string | null;
+  engagement_model: EngagementModel | null; // null = undecided
+  model_decided_at: string | null;          // trigger-stamped; never written by hand
   created_at: string;
 };
 

@@ -6,6 +6,10 @@ const config: Config = {
     './pages/**/*.{js,ts,jsx,tsx,mdx}',
     './components/**/*.{js,ts,jsx,tsx,mdx}',
     './app/**/*.{js,ts,jsx,tsx,mdx}',
+    // lib/ too: ENGAGEMENT_MODELS in lib/supabase.ts carries class names, and a class Tailwind
+    // never scans is a class that never reaches the stylesheet — it renders as nothing at all,
+    // silently. Any shared map of Tailwind classes outside these globs has the same problem.
+    './lib/**/*.{js,ts,jsx,tsx,mdx}',
   ],
   theme: {
     extend: {

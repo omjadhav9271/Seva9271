@@ -621,6 +621,156 @@ the honest rendering is only the stopgap that stops the site misrouting people i
 
 ---
 
+## Per-category engagement model — cost is a design input, not an afterthought (2026-08-19, ONGOING)
+
+> **This section is a living worklist.** The table at the bottom is the record; rows move from
+> *undecided* to a model as we work through categories one at a time. A future session must not
+> assume an undecided row is an oversight — it is a decision not yet made.
+
+Migration `20260828120000_seva_category_engagement_model.sql` · board at `/admin/categories` ·
+`scripts/verify-category-model.mjs` (24/24, DB) · `scripts/ui-check-category-board.mjs` (20/20,
+real Chrome). Both are wired into `verify-all`.
+
+### The problem this opens
+
+Every one of the 25 live categories ran the **identical** money flow: UPI → Razorpay escrow → a
+global 1% fee (`platform_fee_pct()`) → provider wallet → release on customer confirm. Nothing in the
+schema could say otherwise, so **Seva was the transacting party in all 25** — including the ones
+where that is the most expensive posture available.
+
+- **CGST §9(5)** notifies *"house-keeping, such as plumbing, carpentering"* (illustrative, not
+  exhaustive) and passenger transport. Where it bites, the **e-commerce operator pays GST on the
+  full service value, not on its fee**: 18% of an ₹800 cleaning job is **₹144 against an ₹8 platform
+  fee**. And the carve-out is *"except where the provider is liable for registration"* — so the
+  sting **inverts: the smaller the provider, the more Seva owes.** Of the 25, eight sit squarely
+  inside it (Maid, House Cleaning, Plumber, Carpenter, Painter, Mason, Driver, Auto/Bike Taxi).
+- **§24(x)** requires an operator collecting TCS to register **regardless of turnover**. Escrow does
+  not merely add tax — it **deletes the under-₹20L plan outright**.
+
+The fix is not to pick one model globally. It is to let each category carry its own, decided on that
+category's own merits.
+
+### The four models
+
+| Code | Money path | Seva's revenue | Cost / tax posture | Benchmark |
+|---|---|---|---|---|
+| `placement` | household → provider **direct** | one-time introduction fee | GST on the fee only; not the transacting party | BookMyBai |
+| `lead` | never touches Seva | listing subscription or per-lead | advertising revenue; no transaction liability | JustDial / Sulekha |
+| `escrow` | into Seva, held, released | % of job value | §9(5) where notified + TCS 0.5% + **mandatory registration** | Urban Company (deliberately) |
+| `directory` | none | none | none — a liquidity play, not a revenue one | — |
+
+**⚠️ The assumption the lighter models rest on, stated so it is not mistaken for settled law:**
+whether §9(5) reaches a platform that *facilitates but does not collect* is **genuinely contested**.
+The defensible read — the one BookMyBai and JustDial operate on — is that **collecting the
+consideration and controlling the price** is what makes you the transacting party. This is the
+assumption we are building on. CA validation stays deferred until revenue justifies it (near ₹20L,
+or the moment Seva starts handling service money), per the standing principle.
+
+### What was built, and what deliberately was not
+
+- **`engagement_model` is nullable, and NULL means UNDECIDED.** Not a fifth `'undecided'` enum
+  value: a nullable column needs no backfill for the existing 25 and no `DEFAULT` for future ones,
+  so **everything starts undecided by construction**. (A `CHECK … IN (…)` passes on NULL — it fails
+  only on FALSE — so no `OR IS NULL` is needed. Noted because it reads like an oversight.)
+- **🔴 Nothing reads the model yet.** No booking, payment, escrow or fee path branches on it. This
+  records decisions; wiring a model to a different checkout is later work, **per category**. The
+  column existing is not the same as the model being live, and a future session must not read it as
+  such.
+- **Grey is cosmetic, and admin-only.** An undecided category stays **fully bookable and fully
+  searchable**. Greying it out customer-side would strand its providers and any in-flight booking —
+  and per item 22, a control that looks disabled but works is the defect this log keeps catching.
+  Customer-facing `/services` and the home chips are **unchanged**.
+- **`model_decided_at` is trigger-stamped, not RPC-stamped.** The RPC is the only path *granted to a
+  client*, but not the only path that *exists* — the service-role key writes this table directly, and
+  a future second RPC would have to remember. The stamp belongs to the column, so it is enforced
+  where the column is. Verified in all four directions: set, change, **unchanged (does not
+  re-stamp)**, and clear.
+- **The board walks backwards.** `admin_set_category_model(id, NULL)` returns a category to grey. A
+  decision made early gets re-opened when a later category shows the reasoning was wrong, and a board
+  you cannot reverse is one people stop trusting.
+- **The rationale does NOT live in the DB.** `service_categories` is world-readable (table-level
+  SELECT to `anon`). *"We chose placement to stay outside §9(5)"* is strategy, and strategy is not
+  something to serve to `anon`. It lives here.
+
+### The missing third verb, found on the way
+
+The screen could **create and delete — it could not edit**. So fixing a typo meant deleting a
+category, which is refused the moment anything points at it, and which would cascade away its KYC
+requirement rows if it weren't. `admin_update_category` closes that.
+
+**Its arguments are deliberately asymmetric, and this is the part that looks like a bug:**
+
+- **A blank `p_slug` KEEPS the current slug** — it is *not* re-derived from the name. `/services` and
+  the category pages route on the slug, so renaming *"Maid / House Help"* to *"House Help"* must not
+  silently 404 every link already pointing at `/maid`. Changing it takes an explicit value, and the
+  UI warns before it does. **Asserted:** a rename leaves the slug untouched.
+- **A blank `p_description` CLEARS it** — free text nothing references, and the form round-trips the
+  current value, so an empty box is an instruction rather than an omission.
+
+`admin_create_category` is **untouched**: adding a parameter would create an **overload**, not a
+replacement, and PostgREST could no longer resolve the existing 6-argument call — the lesson already
+paid for with `set_provider_service_base` in Step 11.
+
+### Two traps hit while building this
+
+- **`./lib/**` was not in Tailwind's `content` globs.** `ENGAGEMENT_MODELS` holds the model colours,
+  and **a class Tailwind never scans never reaches the stylesheet** — every model would have rendered
+  as no colour at all, silently, with nothing failing. Added to the globs. Same root cause as the
+  runtime-built class it replaced (`m.bg.replace('/10','/70')`), which is unscannable *by
+  construction*; the map carries an explicit `rail` literal instead. **Never assemble a Tailwind
+  class at runtime, and never define one outside the content globs.**
+  **Proven in a real browser, and it had to be:** `ui-check-category-board` reads the rail's
+  **computed** `backgroundColor`, not its class attribute — a class in the DOM proves only that
+  React wrote a string, and an unscanned Tailwind class produces exactly that, the right class name
+  and no rule behind it. The rail measured `rgb(51,51,51)` undecided → `rgb(16,185,129)` on
+  placement. Every DB assertion was green either way.
+- **The `trust_tier` grant trap did not recur — but only because it was checked.** `service_providers`
+  carries an explicit *column* list, which is why `trust_tier` shipped unreadable for a release
+  (`20260813120000`). `service_categories` turned out to carry a **table-level** grant, so the new
+  columns are readable automatically. `information_schema.column_privileges` **cannot tell the two
+  apart** — a table-wide grant expands to per-column rows there. `table_privileges` is the
+  discriminator. The migration asserts the grant in a `DO` block rather than trusting the finding.
+
+### The record — 25 categories, decided one at a time
+
+Undecided is the honest starting state for all of them: the escrow they run today is a default
+nobody chose per category, not a decision. **Order of work is the owner's; the board sorts undecided
+to the top.**
+
+| Category | Model | Decided | Reasoning |
+|---|---|---|---|
+| Maid / House Help | — | — | ⚠️ §9(5) housekeeping · on escrow today |
+| House Cleaning | — | — | ⚠️ §9(5) housekeeping · on escrow today |
+| Plumber | — | — | ⚠️ §9(5) housekeeping (named in the section) · on escrow today |
+| Carpenter & Handyman | — | — | ⚠️ §9(5) housekeeping (named in the section) · on escrow today |
+| Painter | — | — | ⚠️ §9(5) housekeeping · on escrow today |
+| Mason / Labour | — | — | ⚠️ §9(5) housekeeping · on escrow today |
+| Driver / Car Rental | — | — | ⚠️ §9(5) passenger transport · on escrow today |
+| Auto Rickshaw / Bike Taxi | — | — | ⚠️ §9(5) passenger transport · on escrow today |
+| Home Cook / Tiffin | — | — | recurring; salary-shaped |
+| Caretaker / Elderly Care | — | — | recurring; salary-shaped; high trust stakes |
+| Security Guard | — | — | recurring; salary-shaped |
+| Home-Visit Doctor | — | — | healthcare by an authorised practitioner is GST-**exempt** — different answer entirely |
+| Tutor / Coaching | — | — | recurring; providers typically under threshold |
+| Beauty & Wellness | — | — | one-off, small ticket |
+| Appliance Repair | — | — | one-off; price discovered on site |
+| Electrician | — | — | one-off; price discovered on site |
+| Gardening & Pest Control | — | — | mixed one-off / recurring |
+| Laundry & Ironing | — | — | recurring, very small ticket |
+| Tailor / Stitching | — | — | one-off, small ticket |
+| Mobile Repair / Accessories | — | — | one-off; part goods, part service |
+| Cycle Repair / Bicycle | — | — | one-off, very small ticket |
+| Delivery Service | — | — | non-notified — provider bears GST + TCS |
+| Farm Fresh Delivery | — | — | **goods**, not services — a different tax regime again |
+| Water Tanker / RO | — | — | goods + service; often locally regulated |
+| Cow Dung / Gobar | — | — | goods; likely nil-rated |
+
+*The Reasoning column currently holds only the **shape of the question** for each — the facts that
+will drive the choice. It is replaced with the actual decision, and its cost consequence, as each
+category is worked.*
+
+---
+
 ## Principles reaffirmed during the issue passes
 
 - **Friction asymmetric to intent:** customers frictionless; providers do a short, one-time, honestly-status'd application; strict guarantees underneath.
